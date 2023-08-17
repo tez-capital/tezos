@@ -110,7 +110,7 @@ let compute_reward_coeff_ratio =
     let inv_f = Q.(mul (mul stake_ratio stake_ratio) q_800) in
     let f = Q.inv inv_f (* f = 1/800 * (1/x)^2 = yearly issuance rate *) in
     let f = Q.add f q_bonus in
-    (* f is truncated so that 0.05% <= f <= 7.5% *)
+    (* f is truncated so that 0.05% <= f <= 5.0% *)
     let f = Q.(min f issuance_ratio_max) in
     let f = Q.(max f issuance_ratio_min) in
     f

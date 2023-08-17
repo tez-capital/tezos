@@ -1010,8 +1010,8 @@ let prepare_first_block ~level ~timestamp chain_id ctxt =
         Constants_parametric_repr.
           {
             issuance_ratio_min = Q.(5 // 10000) (* 0.05% *);
-            issuance_ratio_max = Q.(3 // 40) (* 7.5% *);
-            max_bonus = 70_000_000_000_000L (* 7.0% *);
+            issuance_ratio_max = Q.(1 // 20) (* 5.0% *);
+            max_bonus = 50_000_000_000_000L (* 5.0% *);
             growth_rate =
               115_740_740L
               (* 0.01 * [bonus_unit] / second_per_day
