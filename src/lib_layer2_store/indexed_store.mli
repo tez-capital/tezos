@@ -78,7 +78,8 @@ module type INDEXABLE_STORE = sig
 
   (** Load (or initializes) a store in the file [path]. If [readonly] is [true],
       the store will only be accessed in read only mode. *)
-  val load : path:string -> 'a mode -> 'a t tzresult Lwt.t
+  val load :
+    path:string -> index_buffer_size:int -> 'a mode -> 'a t tzresult Lwt.t
 
   (** Returns [true] if the key has a value associated in
       the store. *)
@@ -99,6 +100,26 @@ module type INDEXABLE_STORE = sig
 
   (** [readonly t] returns a read only version of the store [t]. *)
   val readonly : [> `Read] t -> [`Read] t
+
+  (** [gc ?async t filter] garbage collects data stored in the index [t] by
+      keeping only elements that satisfy the predicate [filter]. This call runs
+      the GC asynchronously unless [async] is [false]. If a GC is already
+      ongoing this new request is ignored and this call is a no-op. *)
+  val gc :
+    ?async:bool ->
+    rw t ->
+    (key -> value -> bool tzresult Lwt.t) ->
+    unit tzresult Lwt.t
+
+  (** [wait_gc_completion t] returns a blocking thread if a GC run is ongoing. *)
+  val wait_gc_completion : 'a t -> unit Lwt.t
+
+  (** [is_gc_finished t] returns [true] if there is no GC running. *)
+  val is_gc_finished : 'a t -> bool
+
+  (** [cancel_gc t] stops the currently ongoing GC if any. It returns [true] if
+      a GC was canceled. *)
+  val cancel_gc : 'a t -> bool Lwt.t
 end
 
 (** An index store mapping keys to values. Keys are associated to optional
@@ -151,7 +172,12 @@ module type INDEXED_FILE = sig
     unit tzresult Lwt.t
 
   (** Loads a new or existing indexed file store in the directory [path]. *)
-  val load : path:string -> cache_size:int -> 'a mode -> 'a t tzresult Lwt.t
+  val load :
+    path:string ->
+    index_buffer_size:int ->
+    cache_size:int ->
+    'a mode ->
+    'a t tzresult Lwt.t
 
   (** Close the index and the file. One must call {!load} again to read or write
       data in the store. *)
@@ -159,6 +185,27 @@ module type INDEXED_FILE = sig
 
   (** [readonly t] returns a read only version of the store [t]. *)
   val readonly : [> `Read] t -> [`Read] t
+
+  (** [gc ?async t filter] garbage collects data stored in the store [t] by
+      keeping only elements that satisfy the predicate [filter]. This call runs
+      the GC asynchronously unless [async] is [false]. If a GC is already
+      ongoing this new request is ignored and this call is a no-op. *)
+  val gc :
+    ?async:bool ->
+    rw t ->
+    (key -> header -> value -> bool tzresult Lwt.t) ->
+    unit tzresult Lwt.t
+
+  (** [wait_gc_completion t] returns a blocking thread if a GC run is currently
+      ongoing. *)
+  val wait_gc_completion : 'a t -> unit Lwt.t
+
+  (** [is_gc_finished t] returns [true] if there is no GC running. *)
+  val is_gc_finished : 'a t -> bool
+
+  (** [cancel_gc t] stops the currently ongoing GC if any. It returns [true] if
+      a GC was canceled. *)
+  val cancel_gc : 'a t -> bool Lwt.t
 end
 
 (** Same as {!INDEXED_FILE} but where headers are extracted from values. *)
@@ -173,6 +220,13 @@ end
 (** Names for stores.  *)
 module type NAME = sig
   val name : string
+end
+
+(** Values that can be used as keys for indices. *)
+module type INDEX_KEY = sig
+  include Index.Key.S
+
+  val pp : Format.formatter -> t -> unit
 end
 
 (** Values that can be encoded. *)
@@ -203,15 +257,15 @@ end
 module Make_singleton (S : ENCODABLE_VALUE) :
   SINGLETON_STORE with type value := S.t
 
-module Make_indexable (_ : NAME) (K : Index.Key.S) (V : Index.Value.S) :
+module Make_indexable (_ : NAME) (K : INDEX_KEY) (V : Index.Value.S) :
   INDEXABLE_STORE with type key := K.t and type value := V.t
 
-module Make_indexable_removable (_ : NAME) (K : Index.Key.S) (V : Index.Value.S) :
+module Make_indexable_removable (_ : NAME) (K : INDEX_KEY) (V : Index.Value.S) :
   INDEXABLE_REMOVABLE_STORE with type key := K.t and type value := V.t
 
 module Make_indexed_file
     (_ : NAME)
-    (K : Index.Key.S)
+    (K : INDEX_KEY)
     (V : ENCODABLE_VALUE_HEADER) :
   INDEXED_FILE
     with type key := K.t
@@ -220,7 +274,8 @@ module Make_indexed_file
 
 module Make_simple_indexed_file
     (_ : NAME)
-    (K : Index.Key.S) (V : sig
+    (K : INDEX_KEY)
+    (V : sig
       include ENCODABLE_VALUE_HEADER
 
       val header : t -> Header.t
@@ -242,4 +297,4 @@ module Make_index_key (E : sig
   include FIXED_ENCODABLE_VALUE
 
   val equal : t -> t -> bool
-end) : Index.Key.S with type t = E.t
+end) : INDEX_KEY with type t = E.t

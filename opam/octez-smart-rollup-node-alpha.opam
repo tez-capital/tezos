@@ -8,37 +8,25 @@ bug-reports: "https://gitlab.com/tezos/tezos/issues"
 dev-repo: "git+https://gitlab.com/tezos/tezos.git"
 license: "MIT"
 depends: [
-  "dune" { >= "3.0" }
+  "dune" { >= "3.11.1" }
   "ocaml" { >= "4.14" }
-  "octez-libs"
-  "tezos-client-base"
-  "tezos-client-base-unix"
-  "tezos-client-alpha"
-  "tezos-protocol-alpha"
-  "tezos-protocol-plugin-alpha"
-  "tezos-dal-node-services"
-  "tezos-dal-node-lib"
-  "tezos-dac-alpha"
-  "tezos-dac-lib"
-  "tezos-dac-client-lib"
-  "octez-smart-rollup"
-  "tezos-smart-rollup-alpha"
-  "tezos-smart-rollup-layer2-alpha"
-  "tezos-layer2-utils-alpha"
-  "tezos-layer2-store"
-  "octez-crawler"
-  "data-encoding" { >= "0.7.1" & < "1.0.0" }
-  "irmin-pack" { >= "3.7.2" & < "3.8.0" }
-  "irmin" { >= "3.7.2" & < "3.8.0" }
-  "aches" { >= "1.0.0" }
-  "aches-lwt" { >= "1.0.0" }
-  "octez-injector"
-  "octez-smart-rollup-node-lib"
-  "tezos-scoru-wasm"
-  "tezos-scoru-wasm-fast"
-  "tezos-version"
-  "tezos-clic"
-  "tezos-client-commands"
+  "octez-libs" { = version }
+  "octez-shell-libs" { = version }
+  "octez-protocol-alpha-libs" { = version }
+  "tezos-protocol-alpha" { = version }
+  "tezos-dal-node-services" { = version }
+  "tezos-dal-node-lib" { = version }
+  "tezos-dac-lib" { = version }
+  "tezos-dac-client-lib" { = version }
+  "octez-l2-libs" { = version }
+  "octez-crawler" { = version }
+  "octez-internal-libs" { = version }
+  "aches" { >= "1.1.0" }
+  "aches-lwt" { >= "1.1.0" }
+  "octez-injector" { = version }
+  "octez-smart-rollup-node-lib" { = version }
+  "octez-riscv-pvm" { = version }
+  "octez-version" { = version }
 ]
 conflicts: [
   "checkseum" { = "0.5.0" }
@@ -48,4 +36,4 @@ build: [
   ["dune" "build" "-p" name "-j" jobs]
   ["dune" "runtest" "-p" name "-j" jobs] {with-test}
 ]
-synopsis: "Tezos/Protocol: protocol specific Smart rollup node"
+synopsis: "Protocol specific (for alpha) library for smart rollup node"

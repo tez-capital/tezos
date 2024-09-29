@@ -3,11 +3,10 @@
 
 (library
  (name tezos_crypto_dal_octez_dal_config)
- (public_name octez-libs.tezos-crypto-dal.octez-dal-config)
+ (public_name octez-libs.crypto-dal.dal-config)
  (instrumentation (backend bisect_ppx))
  (libraries
-  data-encoding)
- (js_of_ocaml)
+  octez-libs.data-encoding)
  (flags
   (:standard)
   -open Data_encoding))

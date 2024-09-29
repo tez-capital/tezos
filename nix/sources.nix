@@ -1,25 +1,40 @@
 let
-  opam-nix-integration = import (
-    fetchTarball {
-      url = "https://github.com/vapourismo/opam-nix-integration/archive/ea79c9787ef571724b49157c003b832b83a133a5.tar.gz";
-      sha256 = "1m2fsb3np0a0mwh8gbpazf4mxcsqc64hiaxx2f9njcksx1hjvsyh";
-    }
-  );
+  default-opam-nix-integration-src = fetchTarball {
+    url = "https://github.com/vapourismo/opam-nix-integration/archive/0f98236c75cdb436be7669ccaa249264456baa37.tar.gz";
+    sha256 = "0m9v7s8zgkr280f7l8qy12dnjmi7pf0mza16b5xral9fsqi9j1sa";
+  };
 
-  rust-overlay = import (
-    fetchTarball {
-      url = "https://github.com/oxalica/rust-overlay/archive/b91706f9d5a68fecf97b63753da8e9670dff782b.tar.gz";
-      sha256 = "1c34aihrnwv15l8hyggz92rk347z05wwh00h33iw5yyjxkvb8mqc";
-    }
-  );
+  default-rust-overlay-src = fetchTarball {
+    url = "https://github.com/oxalica/rust-overlay/archive/38c2f156fca1868c8be7195ddac150522752f6ab.tar.gz";
+    sha256 = "0dsalgdr99k02zzym3j2ql9awlxgavzafsm1frp4pf45ci6awf4n";
+  };
 
-  pkgs =
-    import
-    (fetchTarball {
-      url = "https://github.com/NixOS/nixpkgs/archive/6025d713d198ec296eaf27a1f2f78983eccce4d8.tar.gz";
-      sha256 = "0fa6nd1m5lr4fnliw21ppc4qdd4s85x448967333dvmslnvj35xi";
-    })
-    {overlays = [opam-nix-integration.overlay rust-overlay];};
-in {
-  inherit opam-nix-integration rust-overlay pkgs;
-}
+  default-pkgs-src = fetchTarball {
+    url = "https://github.com/NixOS/nixpkgs/archive/refs/tags/24.05.tar.gz";
+    sha256 = "1lr1h35prqkd1mkmzriwlpvxcb34kmhc9dnr48gkm8hh089hifmx";
+  };
+in
+  {
+    opam-nix-integration-src ? default-opam-nix-integration-src,
+    pkgs-src ? default-pkgs-src,
+    rust-overlay-src ? default-rust-overlay-src,
+  }: let
+    opam-nix-integration = import opam-nix-integration-src;
+
+    rust-overlay = import rust-overlay-src;
+
+    pkgs = import pkgs-src {
+      overlays = [
+        opam-nix-integration.overlay
+        rust-overlay
+      ];
+    };
+
+    riscv64Pkgs = import pkgs-src {
+      crossSystem.config = "riscv64-unknown-linux-gnu";
+    };
+
+    opam-repository = pkgs.callPackage ./opam-repo.nix {};
+  in {
+    inherit pkgs riscv64Pkgs opam-repository;
+  }

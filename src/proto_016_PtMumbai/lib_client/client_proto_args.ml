@@ -931,7 +931,7 @@ module Sc_rollup_params = struct
         [
           desc;
           "Can be an alias or a literal (autodetected in order).\n\
-           Use 'alias:name' or 'text:literal' to force.";
+           Use 'alias:<name>' or 'text:<literal>' to force.";
         ]
     in
     Tezos_clic.param ~name ~desc sc_rollup_address_parameter next
@@ -1148,14 +1148,15 @@ let fee_parameter_args =
            | None -> failwith "Bad burn cap"))
   in
   Tezos_clic.map_arg
-    ~f:
-      (fun _cctxt
-           ( minimal_fees,
-             minimal_nanotez_per_byte,
-             minimal_nanotez_per_gas_unit,
-             force_low_fee,
-             fee_cap,
-             burn_cap ) ->
+    ~f:(fun
+        _cctxt
+        ( minimal_fees,
+          minimal_nanotez_per_byte,
+          minimal_nanotez_per_gas_unit,
+          force_low_fee,
+          fee_cap,
+          burn_cap )
+      ->
       return
         {
           Injection.minimal_fees;

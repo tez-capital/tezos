@@ -8,14 +8,13 @@ bug-reports: "https://gitlab.com/tezos/tezos/issues"
 dev-repo: "git+https://gitlab.com/tezos/tezos.git"
 license: "MIT"
 depends: [
-  "dune" { >= "3.0" }
+  "dune" { >= "3.11.1" }
   "ocaml" { >= "4.14" }
-  "zarith" { >= "1.12" & < "1.13" }
-  "zarith_stubs_js"
-  "octez-libs"
-  "tezt" { with-test & >= "3.1.1" }
-  "tezos-protocol-alpha" {with-test}
-  "tezos-client-alpha" {with-test}
+  "zarith" { >= "1.13" & < "1.14" }
+  "octez-libs" { = version }
+  "tezt" { with-test & >= "4.1.0" & < "5.0.0" }
+  "tezos-protocol-alpha" { with-test & = version }
+  "octez-protocol-alpha-libs" { with-test & = version }
 ]
 build: [
   ["rm" "-r" "vendors" "contrib"]

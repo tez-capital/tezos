@@ -92,7 +92,7 @@ module MakeBulkOperations (G : Bls12_381.CURVE) = struct
         (Hex.show (Hex.of_bytes (G.to_bytes right)))
 
   let test_pippenger_contiguous_chunk () =
-    let n = 10 + Random.int 1_000 in
+    let n = 10 + Random.int 1000 in
     let nb_chunks = 1 + Random.int 10 in
     let chunk_size = n / nb_chunks in
     let rest = n mod nb_chunks in
@@ -493,7 +493,7 @@ module MakeECProperties (G : Bls12_381.CURVE) = struct
     assert (G.(eq (double s) (add s s)))
 
   let test_bulk_add () =
-    let n = 10 + Random.int 1_000 in
+    let n = 10 + Random.int 1000 in
     let xs = List.init n (fun _ -> G.random ()) in
     assert (G.(eq (List.fold_left G.add G.zero xs) (G.add_bulk xs)))
 

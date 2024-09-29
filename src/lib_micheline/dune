@@ -3,18 +3,16 @@
 
 (library
  (name tezos_micheline)
- (public_name octez-libs.tezos-micheline)
+ (public_name octez-libs.micheline)
  (instrumentation (backend bisect_ppx))
  (libraries
   uutf
   zarith
-  zarith_stubs_js
-  octez-libs.tezos-stdlib
-  octez-libs.tezos-error-monad
-  data-encoding)
- (inline_tests (flags -verbose) (modes native js))
+  octez-libs.stdlib
+  octez-libs.error-monad
+  octez-libs.data-encoding)
+ (inline_tests (flags -verbose) (modes native))
  (preprocess (pps ppx_expect))
- (js_of_ocaml)
  (flags
   (:standard)
   -open Tezos_stdlib

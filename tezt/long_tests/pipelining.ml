@@ -31,6 +31,8 @@
    validator time and the baker forging time.
 *)
 
+let team = Team.layer1
+
 (** {2 Test parameters} *)
 let manager_kinds = [`Transfer; `Origination; `Call]
 
@@ -41,11 +43,11 @@ let manager_kind_to_string = function
 
 (* These operations numbers are computed to consume the maximum number of gas
    unit in a block without exceeding the `hard_gas_limit_per_block` from the
-   protocol (2.6M gas unit since Mumbai). *)
+   protocol (1.73M gas unit since P). *)
 let number_of_operation_from_manager_kind = function
-  | `Transfer -> 2500 (* x1040 gas units *)
-  | `Origination -> 26 (* x100_000 gas units *)
-  | `Call -> 3 (* x850_000 gas units *)
+  | `Transfer -> 1333 (* x1040 gas units *)
+  | `Origination -> 13 (* x100_000 gas units *)
+  | `Call -> 2 (* x650_000 gas units *)
 
 let protocols = Protocol.all
 
@@ -120,7 +122,7 @@ let grafana_panels : Grafana.panel list =
 let synchronize_mempool client node =
   let mempool_notify_waiter = Node.wait_for_request ~request:`Notify node in
   let*? _ =
-    RPC.Client.spawn client @@ RPC.post_chain_mempool_request_operations ()
+    Client.RPC.spawn client @@ RPC.post_chain_mempool_request_operations ()
   in
   mempool_notify_waiter
 
@@ -160,9 +162,11 @@ let bake_for ?(keys = []) ?(wait_for_flush = false) ~empty ~protocol node client
 let init_node () =
   let node = Node.create Node.[Synchronisation_threshold 0; Connections 2] in
   let* () = Node.config_init node [] in
-  Node.Config_file.update
-    node
-    (Node.Config_file.set_prevalidator ~operations_request_timeout:100.) ;
+  let* () =
+    Node.Config_file.update
+      node
+      (Node.Config_file.set_prevalidator ~operations_request_timeout:100.)
+  in
   let* () =
     Node.run
       ~event_sections_levels:
@@ -183,7 +187,12 @@ let init_node_client_with_protocol number_of_additional_bootstrap protocol =
     Client.stresstest_gen_keys number_of_additional_bootstrap client
   in
   let additional_bootstrap_accounts =
-    List.map (fun x -> (x, Some 500_000_000, true)) additional_bootstrap_account
+    List.map
+      (fun x -> (x, Some 500_000_000, false))
+      additional_bootstrap_account
+    (* Starting with Oxford, bootstrap delegates have part of their balance
+       frozen. To avoid having account with none available balance we don't use
+       revealed bootstrap account and we reveal them later on. *)
   in
   let* parameter_file =
     Protocol.write_parameter_file
@@ -194,7 +203,7 @@ let init_node_client_with_protocol number_of_additional_bootstrap protocol =
   let* () =
     Client.activate_protocol_and_wait ~parameter_file ~protocol ~node client
   in
-  return (client, node)
+  return (client, node, additional_bootstrap_account)
 
 (** Originate the contract and bake a block to apply the origination *)
 let originate_contract ~protocol client node =
@@ -210,38 +219,51 @@ let originate_contract ~protocol client node =
   let* lvl = bake_for ~wait_for_flush:true ~empty:false ~protocol node client in
   return (contract_hash, lvl)
 
-(** [forging_operation manager_kind ~source ~branch ~counter contract_hash
+(** [forging_operation ?contract_hash manager_kind ~source ~branch ~counter
     client] create an {Operation_core.t} value that can be use by the
     [inject_operations] RPCs.
 
-    - If [manager_kind] if [`Transfer] a transfer from [source] to
+    - If [manager_kind] is [`Reveal], a reveal of [source] is forged
+
+    - If [manager_kind] is [`Transfer] a transfer from [source] to
       [bootstrap1] is forged
 
-    - If [manager_kind] if [`Call] a call to [contract_hash] is forged with an
+    - If [manager_kind] is [`Call] a call to [contract_hash] is forged with an
       argument that make the operation consume approximately ~1M of gas unit.
 
-    - If [manager_kind] if [`Origination] an origination of a big contract is
+    - If [manager_kind] is [`Origination] an origination of a big contract is
       forged. *)
-let forging_operation manager_kind ~source ~branch ~counter contract_hash client
-    =
+let forging_operation ?contract_hash manager_kind ~source ~branch ~counter
+    client =
   let operation =
     match manager_kind with
+    | `Reveal ->
+        Operation.Manager.make ~source ~counter
+        @@ Operation.Manager.reveal source
     | `Transfer ->
         Operation.Manager.make ~source ~counter
         @@ Operation.Manager.transfer
              ~dest:Account.Bootstrap.keys.(1)
              ~amount:1
              ()
-    | `Call ->
+    | `Call -> (
         (* Magical constant that makes the contract consume around 850K gas unit *)
-        let arg = `O [("int", `String "8206473")] in
-        Operation.Manager.make ~source ~counter ~fee:850_000 ~gas_limit:850_000
-        @@ Operation.Manager.call
-             ~amount:0
-             ~entrypoint:"default"
-             ~arg
-             ~dest:contract_hash
-             ()
+        let arg = `O [("int", `String "6306473")] in
+        match contract_hash with
+        | None ->
+            Test.fail "Contract hash should be given to craft Call operations"
+        | Some contract_hash ->
+            Operation.Manager.make
+              ~source
+              ~counter
+              ~fee:650_000
+              ~gas_limit:650_000
+            @@ Operation.Manager.call
+                 ~amount:0
+                 ~entrypoint:"default"
+                 ~arg
+                 ~dest:contract_hash
+                 ())
     | `Origination ->
         let contract =
           Format.asprintf
@@ -275,10 +297,10 @@ let forging_operation manager_kind ~source ~branch ~counter contract_hash client
   in
   Operation.Manager.operation ~branch ~signer:source [operation] client
 
-let forging_n_operations bootstraps contract_hash manager_kind client =
+let forging_n_operations ?contract_hash bootstraps manager_kind client =
   (* explicitly anchor the forged operations on the first block *)
   let* branch =
-    RPC.Client.call client @@ RPC.get_chain_block_hash ~block:"0" ()
+    Client.RPC.call client @@ RPC.get_chain_block_hash ~block:"0" ()
   in
   (* recover the counter of a bootstrap account, all other bootstrap accounts
      have the same counter *)
@@ -288,41 +310,71 @@ let forging_n_operations bootstraps contract_hash manager_kind client =
   Lwt_list.map_s
     (fun source ->
       forging_operation
+        ?contract_hash
         manager_kind
         ~source
         ~counter
         ~branch
-        contract_hash
         client)
     bootstraps
 
+let revealing_additional_bootstrap_accounts additional_bootstraps
+    number_of_operations protocol node client =
+  let* ops = forging_n_operations additional_bootstraps `Reveal client in
+  let* op_hashes =
+    Operation.inject_operations
+      ~use_tmp_file:true
+      ~protocol:Protocol.Alpha
+      ~force:false
+      ops
+      client
+  in
+  Check.(List.length op_hashes = number_of_operations)
+    Check.int
+    ~error_msg:"Expected %R forged operations. Got %L" ;
+
+  let bake_and_get_ophs () =
+    let* _lvl =
+      bake_for ~wait_for_flush:true ~empty:false ~protocol node client
+    in
+    let* block_ophs =
+      Client.RPC.call client
+      @@ RPC.get_chain_block_operation_hashes_of_validation_pass 3
+    in
+    return block_ophs
+  in
+
+  (* Reveal operations cost more than simple transfers, we may need to bake 2
+     blocks to reveal all additional accounts. *)
+  let* block_ophs =
+    let rec aux block_ophs_acc () =
+      let* block_ophs = bake_and_get_ophs () in
+      let block_ophs = List.rev_append block_ophs block_ophs_acc in
+      let* mempool = Mempool.get_mempool client in
+      if List.length mempool.validated <> 0 then aux block_ophs ()
+      else return block_ophs
+    in
+    aux [] ()
+  in
+  Check.(List.length block_ophs = number_of_operations)
+    Check.int
+    ~error_msg:"Expected %R operations in the block. Got %L" ;
+
+  let op_hashes = List.map (fun (`OpHash oph) -> oph) op_hashes in
+  if
+    not
+      (List.for_all2
+         String.equal
+         (List.sort String.compare op_hashes)
+         (List.sort String.compare block_ophs))
+  then Test.fail ~__LOC__ "Block does not contains all reveal operation" ;
+  unit
+
 (* Test *)
 let operation_and_block_validation protocol manager_kind tag =
-  let margin =
-    match manager_kind with `Call | `Origination -> 1. | `Transfer -> 0.5
-  in
-  Log.info
-    "\nParameters of the test:\n  Protocol: %s\n  Operations: %s"
-    (Protocol.name protocol)
-    (manager_kind_to_string manager_kind) ;
-  let number_of_operations =
-    number_of_operation_from_manager_kind manager_kind
-  in
-  Log.info
-    "Initialise node and client with %d bootstrap accounts with protocol %s"
-    number_of_operations
-    (Protocol.name protocol) ;
-  let* client, node =
-    init_node_client_with_protocol number_of_operations protocol
-  in
-  let additional_bootstraps = Client.additional_bootstraps client in
-  let* contract_hash, lvl = originate_contract ~protocol client node in
-
   let color = Log.Color.FG.green in
   let tags = [(tag, tag)] in
-  let measure_and_check_regression ?margin time f =
-    Long_test.measure_and_check_regression ?margin ~tags time (fun () -> f)
-  in
+  let measure time f = Long_test.measure ~tags time (fun () -> f) in
   let get_previous_stats time_mean time title =
     let* res =
       Long_test.get_previous_stats
@@ -333,16 +385,53 @@ let operation_and_block_validation protocol manager_kind tag =
         "duration"
         Long_test.Stats.mean
     in
-    match res with
-    | None -> unit
+    (match res with
+    | None -> ()
     | Some (count, average) ->
         Log.info ~color "%s:%s, count:%d, average:%f" title tag count average ;
-        measure_and_check_regression time_mean average
+        measure time_mean average) ;
+    unit
   in
 
-  Log.info "Forging %d operations" number_of_operations ;
+  Log.info
+    "\nParameters of the test:\n  Protocol: %s\n  Operations: %s"
+    (Protocol.name protocol)
+    (manager_kind_to_string manager_kind) ;
+  let number_of_operations =
+    number_of_operation_from_manager_kind manager_kind
+  in
+  Log.info
+    "Initialise node and client with %d additional bootstrap accounts with \
+     protocol %s"
+    number_of_operations
+    (Protocol.name protocol) ;
+  let* client, node, additional_bootstraps =
+    init_node_client_with_protocol number_of_operations protocol
+  in
+
+  Log.info "Revealing the %d additional bootstrap accounts" number_of_operations ;
+  let* () =
+    revealing_additional_bootstrap_accounts
+      additional_bootstraps
+      number_of_operations
+      protocol
+      node
+      client
+  in
+
+  Log.info "Originate toy contract" ;
+  let* contract_hash, lvl = originate_contract ~protocol client node in
+
+  Log.info
+    "Forging %d %s operations"
+    number_of_operations
+    (manager_kind_to_string manager_kind) ;
   let* ops =
-    forging_n_operations additional_bootstraps contract_hash manager_kind client
+    forging_n_operations
+      ~contract_hash
+      additional_bootstraps
+      manager_kind
+      client
   in
 
   Log.info "Injecting %d operations" number_of_operations ;
@@ -372,7 +461,7 @@ let operation_and_block_validation protocol manager_kind tag =
   let* client2 = Client.init ~endpoint:(Node node2) () in
   let classify_t, classify_u = Lwt.task () in
   let on_notify_event u cpt list time Node.{name; value; timestamp} =
-    if name = "operation_reclassified.v0" then (
+    if name = "operation_classified.v0" then (
       list := JSON.encode value :: !list ;
       if !cpt = 0 then time := timestamp ;
       incr cpt ;
@@ -408,9 +497,7 @@ let operation_and_block_validation protocol manager_kind tag =
     "Classification time on %s: %f"
     (Node.name node2)
     !classification_time ;
-  let* () =
-    measure_and_check_regression ~margin classify_title !classification_time
-  in
+  measure classify_title !classification_time ;
 
   Log.info
     "Measure the time that take a node to reclassify %d operations after a \
@@ -448,19 +535,15 @@ let operation_and_block_validation protocol manager_kind tag =
     "Reclassification time on %s: %f"
     (Node.name node2)
     !reclassification_time ;
-  let* () =
-    measure_and_check_regression ~margin reclassify_title !reclassification_time
-  in
+  measure reclassify_title !reclassification_time ;
 
-  Log.info "Ensure that the mempool contains %d operations" number_of_operations ;
-  let* json =
-    RPC.Client.call ~endpoint:(Node node2) client
-    @@ RPC.get_chain_mempool_pending_operations ()
-  in
-  let json_list = JSON.(json |-> "applied" |> as_list) in
-  Check.(List.length json_list = number_of_operations)
+  Log.info
+    "Ensure that the mempool contains %d validated operations"
+    number_of_operations ;
+  let* mempool = Mempool.get_mempool client in
+  Check.(List.length mempool.validated = number_of_operations)
     Check.int
-    ~error_msg:"Expected %R operations in block. Got %L" ;
+    ~error_msg:"Expected %R validated operations in the mempool. Got %L" ;
 
   (* Setting up a event watchers on validation and application of blocks to
      measure the time needed to validate and apply a block *)
@@ -468,10 +551,10 @@ let operation_and_block_validation protocol manager_kind tag =
   let application_time = ref 0. in
   let on_bake_event u Node.{name; value = _; timestamp} =
     match name with
-    | "prechecking_block.v0" -> validation_time := timestamp
-    | "prechecked_block.v0" -> validation_time := timestamp -. !validation_time
-    | "validating_block.v0" -> application_time := timestamp
-    | "validation_success.v0" ->
+    | "validating_block.v0" -> validation_time := timestamp
+    | "validated_block.v0" -> validation_time := timestamp -. !validation_time
+    | "applying_block.v0" -> application_time := timestamp
+    | "validation_and_application_success.v0" ->
         application_time := timestamp -. !application_time ;
         Lwt.wakeup u ()
     | _ -> ()
@@ -523,30 +606,26 @@ let operation_and_block_validation protocol manager_kind tag =
   let* injecting_timestamp = get_timestamp_of_event "injecting_block.v0" io in
   let forging_time = injecting_timestamp -. prepare_timestamp in
   Log.info ~color "Block forging time on node A : %f" forging_time ;
-  let* () = measure_and_check_regression ~margin forging_title forging_time in
+  measure forging_title forging_time ;
 
   let* () = node_t in
 
   let* lvl = Node.wait_for_level node2 (lvl + 1) in
   Log.info ~color "Block validation time on node B: %f" !validation_time ;
-  let* () =
-    measure_and_check_regression ~margin validation_title !validation_time
-  in
+  measure validation_title !validation_time ;
 
   Log.info ~color "Block application time on node B: %f" !application_time ;
-  let* () =
-    measure_and_check_regression ~margin application_title !application_time
-  in
+  measure application_title !application_time ;
 
   let total_time = !application_time +. !validation_time in
   Log.info ~color "Block validation + application time on node B: %f" total_time ;
-  let* () = measure_and_check_regression ~margin total_title total_time in
+  measure total_title total_time ;
 
   Log.info
     "Ensure that the block baked contains %d operations"
     number_of_operations ;
   let* block =
-    RPC.Client.call client @@ RPC.get_chain_block ~block:(string_of_int lvl) ()
+    Client.RPC.call client @@ RPC.get_chain_block ~block:(string_of_int lvl) ()
   in
   let ops =
     JSON.(List.nth (block |> get "operations" |> as_list) 3 |> as_list)
@@ -582,6 +661,7 @@ let operation_and_block_validation ~executors =
       [
         "flush"; "classification"; "prevalidator"; "block"; "baker"; "pipelining";
       ]
+    ~team
     ~executors
     ~timeout:(Hours 2)
   @@ fun () ->

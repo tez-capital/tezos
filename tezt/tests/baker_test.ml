@@ -30,6 +30,91 @@
    Subject:      Run the baker while performing a lot of transfers
 *)
 
+let team = Tag.layer1
+
+let hooks = Tezos_regression.hooks
+
+let check_node_version_check_bypass_test =
+  Protocol.register_test
+    ~__FILE__
+    ~title:"baker node version check bypass test"
+    ~tags:[team; "node"; "baker"]
+    ~supports:Protocol.(From_protocol 021)
+    ~uses:(fun protocol -> [Protocol.baker protocol])
+  @@ fun protocol ->
+  let* node, client = Client.init_with_protocol `Client ~protocol () in
+  let baker =
+    Baker.create ~protocol ~node_version_check_bypass:true node client
+  in
+  let check_bypassed_event_promise =
+    Baker.wait_for baker "node_version_check_bypass.v0" (fun _ -> Some ())
+  in
+  let* () = Baker.run baker in
+  let* () = check_bypassed_event_promise in
+  unit
+
+let check_node_version_allowed_test =
+  Protocol.register_test
+    ~__FILE__
+    ~title:"baker node version allowed test"
+    ~tags:[team; "node"; "baker"]
+    ~supports:Protocol.(From_protocol 022)
+    ~uses:(fun protocol -> [Protocol.baker protocol])
+  @@ fun protocol ->
+  let* node, client = Client.init_with_protocol `Client ~protocol () in
+  let* _baker =
+    Baker.init
+      ~protocol
+      ~node_version_allowed:"octez-v7894.789:1a991a03"
+      node
+      client
+  in
+  unit
+
+let check_node_version_no_commit_allowed_test =
+  Protocol.register_test
+    ~__FILE__
+    ~title:"baker node version no commit allowed test"
+    ~tags:[team; "node"; "baker"]
+    ~supports:Protocol.(From_protocol 022)
+    ~uses:(fun protocol -> [Protocol.baker protocol])
+  @@ fun protocol ->
+  let* node, client = Client.init_with_protocol `Client ~protocol () in
+  let* _baker =
+    Baker.init ~protocol ~node_version_allowed:"octez-v7894.789" node client
+  in
+  unit
+
+let baker_reward_test =
+  Protocol.register_regression_test
+    ~__FILE__
+    ~title:"Baker rewards"
+    ~tags:[team; "baker"; "rewards"]
+    ~uses:(fun protocol -> [Protocol.baker protocol])
+    (fun protocol ->
+      let* parameter_file =
+        Protocol.write_parameter_file
+          ~base:(Either.Right (protocol, Some Constants_mainnet))
+          []
+      in
+      let* node, client =
+        Client.init_with_protocol
+          `Client
+          ~protocol
+          ~timestamp:Now
+          ~parameter_file
+          ()
+      in
+      let level_2_promise = Node.wait_for_level node 2 in
+      let* baker = Baker.init ~protocol node client in
+      Log.info "Wait for new head." ;
+      Baker.log_events baker ;
+      let* _ = level_2_promise in
+      let* _ =
+        Client.RPC.call ~hooks client @@ RPC.get_chain_block_metadata ()
+      in
+      unit)
+
 let baker_test ?force_apply protocol ~keys =
   let* parameter_file =
     Protocol.write_parameter_file
@@ -58,7 +143,11 @@ let baker_test ?force_apply protocol ~keys =
   Lwt.return client
 
 let baker_simple_test =
-  Protocol.register_test ~__FILE__ ~title:"baker test" ~tags:["node"; "baker"]
+  Protocol.register_test
+    ~__FILE__
+    ~title:"baker test"
+    ~tags:[team; "node"; "baker"]
+    ~uses:(fun protocol -> [Protocol.baker protocol])
   @@ fun protocol ->
   let* _ =
     baker_test protocol ~keys:(Account.Bootstrap.keys |> Array.to_list)
@@ -69,7 +158,8 @@ let baker_stresstest =
   Protocol.register_test
     ~__FILE__
     ~title:"baker stresstest"
-    ~tags:["node"; "baker"; "stresstest"]
+    ~tags:[team; "node"; "baker"; "stresstest"]
+    ~uses:(fun protocol -> [Protocol.baker protocol])
   @@ fun protocol ->
   let* node, client =
     Client.init_with_protocol `Client ~protocol () ~timestamp:Now
@@ -85,7 +175,8 @@ let baker_stresstest_apply =
   Protocol.register_test
     ~__FILE__
     ~title:"baker stresstest with forced application"
-    ~tags:["node"; "baker"; "stresstest"; "apply"]
+    ~tags:[team; "node"; "baker"; "stresstest"; "apply"]
+    ~uses:(fun protocol -> [Protocol.baker protocol])
   @@ fun protocol ->
   let* node, client =
     Client.init_with_protocol `Client ~protocol () ~timestamp:Now
@@ -100,7 +191,7 @@ let baker_bls_test =
   Protocol.register_test
     ~__FILE__
     ~title:"No BLS baker test"
-    ~tags:["node"; "baker"; "bls"]
+    ~tags:[team; "node"; "baker"; "bls"]
   @@ fun protocol ->
   let* client0 = Client.init_mockup ~protocol () in
   Log.info "Generate BLS keys for client" ;
@@ -138,7 +229,8 @@ let baker_remote_test =
   Protocol.register_test
     ~__FILE__
     ~title:"Baker in RPC-only mode"
-    ~tags:["baker"; "remote"]
+    ~tags:[team; "baker"; "remote"]
+    ~uses:(fun protocol -> [Protocol.baker protocol])
   @@ fun protocol ->
   let* node, client =
     Client.init_with_protocol `Client ~protocol () ~timestamp:Now
@@ -147,9 +239,66 @@ let baker_remote_test =
   let* _ = Node.wait_for_level node 3 in
   unit
 
+let baker_check_consensus_branch =
+  Protocol.register_test
+    ~__FILE__
+    ~title:"Baker check branch in consensus operations"
+    ~tags:[team; "baker"; "grandparent"; "parent"]
+    ~uses:(fun protocol -> [Protocol.baker protocol])
+  @@ fun protocol ->
+  Log.info "Init client and node with protocol %s" (Protocol.name protocol) ;
+  let* node, client =
+    Client.init_with_protocol `Client ~protocol () ~timestamp:Now
+  in
+
+  let target_level = 5 in
+  Log.info "Start a baker and bake until level %d" target_level ;
+  let* baker = Baker.init ~protocol node client in
+  let* _ = Node.wait_for_level node target_level in
+  let* () = Baker.kill baker in
+
+  Log.info "Retrieve mempool" ;
+  let* mempool =
+    Client.RPC.call client
+    @@ RPC.get_chain_mempool_pending_operations ~outdated:false ()
+  in
+
+  let branch_s, branch_lvl =
+    if Protocol.number protocol >= Protocol.number ParisC then ("grandparent", 2)
+    else ("parent", 1)
+  in
+  Log.info "Check that consensus operations are branched on %s block" branch_s ;
+  let ops = JSON.(mempool |-> "validated" |> as_list) in
+  assert (not ([] = ops)) ;
+  Tezos_base__TzPervasives.List.iter_s
+    (fun op ->
+      let branch = JSON.(op |-> "branch" |> as_string) in
+      let content = JSON.(op |-> "contents" |> as_list |> List.hd) in
+      let level = JSON.(content |-> "level" |> as_int) in
+
+      let* target_branch =
+        Client.RPC.call client
+        @@ RPC.get_chain_block_header
+             ~block:(string_of_int (level - branch_lvl))
+             ()
+      in
+      let target_branch = JSON.(target_branch |-> "hash" |> as_string) in
+
+      Tezt.Check.(
+        (target_branch = branch)
+          string
+          ~error_msg:"Consensus operation should be branch on block %L, got %R") ;
+      unit)
+    ops
+
 let register ~protocols =
+  check_node_version_check_bypass_test protocols ;
+  check_node_version_allowed_test protocols ;
+  check_node_version_no_commit_allowed_test protocols ;
   baker_simple_test protocols ;
+  baker_reward_test protocols ;
   baker_stresstest protocols ;
   baker_stresstest_apply protocols ;
   baker_bls_test protocols ;
-  baker_remote_test protocols
+  baker_remote_test protocols ;
+  baker_check_consensus_branch protocols

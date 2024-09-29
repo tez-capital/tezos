@@ -97,20 +97,21 @@ module type T = sig
        and type validation_state = P.validation_state
 
   class ['chain, 'block] proto_rpc_context :
-    Tezos_rpc.Context.t
-    -> (unit, (unit * 'chain) * 'block) RPC_path.t
-    -> ['chain * 'block] RPC_context.simple
+    Tezos_rpc.Context.t ->
+    (unit, (unit * 'chain) * 'block) RPC_path.t ->
+    ['chain * 'block] RPC_context.simple
 
   class ['block] proto_rpc_context_of_directory :
-    ('block -> RPC_context.t)
-    -> RPC_context.t RPC_directory.t
-    -> ['block] RPC_context.simple
+    ('block -> RPC_context.t) ->
+    RPC_context.t RPC_directory.t ->
+    ['block] RPC_context.simple
 end
 
-module Make (Param : sig
-  val name : string
-end)
-() =
+module Make
+    (Param : sig
+      val name : string
+    end)
+    () =
 struct
   module CamlinternalFormatBasics = CamlinternalFormatBasics
   include Stdlib
@@ -703,58 +704,57 @@ struct
   module RPC_context = struct
     type t = rpc_context
 
-    class type ['pr] simple =
-      object
-        method call_proto_service0 :
-          'm 'q 'i 'o.
-          (([< RPC_service.meth] as 'm), t, t, 'q, 'i, 'o) RPC_service.t ->
-          'pr ->
-          'q ->
-          'i ->
-          'o Error_monad.shell_tzresult Lwt.t
+    class type ['pr] simple = object
+      method call_proto_service0 :
+        'm 'q 'i 'o.
+        (([< RPC_service.meth] as 'm), t, t, 'q, 'i, 'o) RPC_service.t ->
+        'pr ->
+        'q ->
+        'i ->
+        'o Error_monad.shell_tzresult Lwt.t
 
-        method call_proto_service1 :
-          'm 'a 'q 'i 'o.
-          (([< RPC_service.meth] as 'm), t, t * 'a, 'q, 'i, 'o) RPC_service.t ->
-          'pr ->
-          'a ->
-          'q ->
-          'i ->
-          'o Error_monad.shell_tzresult Lwt.t
+      method call_proto_service1 :
+        'm 'a 'q 'i 'o.
+        (([< RPC_service.meth] as 'm), t, t * 'a, 'q, 'i, 'o) RPC_service.t ->
+        'pr ->
+        'a ->
+        'q ->
+        'i ->
+        'o Error_monad.shell_tzresult Lwt.t
 
-        method call_proto_service2 :
-          'm 'a 'b 'q 'i 'o.
-          ( ([< RPC_service.meth] as 'm),
-            t,
-            (t * 'a) * 'b,
-            'q,
-            'i,
-            'o )
-          RPC_service.t ->
-          'pr ->
-          'a ->
-          'b ->
-          'q ->
-          'i ->
-          'o Error_monad.shell_tzresult Lwt.t
+      method call_proto_service2 :
+        'm 'a 'b 'q 'i 'o.
+        ( ([< RPC_service.meth] as 'm),
+          t,
+          (t * 'a) * 'b,
+          'q,
+          'i,
+          'o )
+        RPC_service.t ->
+        'pr ->
+        'a ->
+        'b ->
+        'q ->
+        'i ->
+        'o Error_monad.shell_tzresult Lwt.t
 
-        method call_proto_service3 :
-          'm 'a 'b 'c 'q 'i 'o.
-          ( ([< RPC_service.meth] as 'm),
-            t,
-            ((t * 'a) * 'b) * 'c,
-            'q,
-            'i,
-            'o )
-          RPC_service.t ->
-          'pr ->
-          'a ->
-          'b ->
-          'c ->
-          'q ->
-          'i ->
-          'o Error_monad.shell_tzresult Lwt.t
-      end
+      method call_proto_service3 :
+        'm 'a 'b 'c 'q 'i 'o.
+        ( ([< RPC_service.meth] as 'm),
+          t,
+          ((t * 'a) * 'b) * 'c,
+          'q,
+          'i,
+          'o )
+        RPC_service.t ->
+        'pr ->
+        'a ->
+        'b ->
+        'c ->
+        'q ->
+        'i ->
+        'o Error_monad.shell_tzresult Lwt.t
+    end
 
     let make_call0 s (ctxt : _ simple) = ctxt#call_proto_service0 s
 
@@ -821,7 +821,7 @@ struct
   module Logging = Legacy_logging
 
   module Updater = struct
-    type nonrec validation_result = validation_result = {
+    type nonrec validation_result = legacy_validation_result = {
       context : Context.t;
       fitness : Fitness.t;
       message : string option;
@@ -845,7 +845,7 @@ struct
       Environment_protocol_T_V0.T
         with type context := Context.t
          and type quota := quota
-         and type validation_result := validation_result
+         and type validation_result := legacy_validation_result
          and type rpc_context := rpc_context
          and type tztrace := Error_monad.tztrace
          and type 'a tzresult := 'a Error_monad.tzresult
@@ -943,17 +943,22 @@ struct
 
     let finalize_block c =
       let open Lwt_syntax in
-      let+ r = finalize_block c in
-      wrap_tzresult r
+      let* r = finalize_block c in
+      match r with
+      | Ok (vr, metadata) ->
+          Lwt.return_ok (lift_legacy_validation_result vr, metadata)
+      | Error e -> Lwt.return (wrap_tzresult (Error e))
 
     let init c bh =
       let open Lwt_syntax in
-      let+ r = init c bh in
-      wrap_tzresult r
+      let* r = init c bh in
+      match r with
+      | Ok vr -> Lwt.return_ok (lift_legacy_validation_result vr)
+      | Error e -> Lwt.return (wrap_tzresult (Error e))
   end
 
   module Lift (P : Updater.PROTOCOL) = struct
-    include IgnoreCaches (Environment_protocol_T.V0toV10 (LiftV2 (P)))
+    include IgnoreCaches (Environment_protocol_T.V0toV13 (LiftV2 (P)))
 
     let set_log_message_consumer _ = ()
 

@@ -63,7 +63,19 @@ type media_type = Json | Binary | Any
     Not all arguments are available here.
     Some are simply not implemented, and some are handled separately
     because they need special care. The latter are implemented as optional
-    labeled arguments (e.g. [?net_port] and [?data_dir]). *)
+    labeled arguments (e.g. [?net_port] and [?data_dir]).
+
+    About [RPC_additional_addr], at least one RPC port is always passed by
+    [Node.run], which causes the RPC ports from the configuration file to be
+    ignored. So these arguments are not written in the config file when using
+    [Node.init] and kept in the list of arguments of the persistent state to
+    make sure [Node.run] passes them too.
+
+    [Singleprocess] argument does not exist in the configuration file of the
+    node. It is only known as a command-line option. [Node.init] will neither
+    pass it to [Node.config] nor register it into node's arguments, but only
+    use it for [Node.run] function.
+*)
 type argument =
   | Network of string  (** [--network] *)
   | History_mode of history_mode  (** [--history-mode] *)
@@ -78,13 +90,20 @@ type argument =
   | Disable_p2p_swap  (** [--disable-p2p-swap] *)
   | Peer of string  (** [--peer] *)
   | No_bootstrap_peers  (** [--no-bootstrap-peers] *)
-  | Disable_operations_precheck  (** [--disable-mempool-precheck] *)
   | Media_type of media_type  (** [--media-type] *)
   | Metadata_size_limit of int option  (** --metadata-size-limit *)
   | Metrics_addr of string  (** [--metrics-addr] *)
   | Cors_origin of string  (** [--cors-origin] *)
   | Disable_mempool  (** [--disable-mempool] *)
   | Version  (** [--version] *)
+  | RPC_additional_addr of string  (** [--rpc-addr] *)
+  | RPC_additional_addr_external of string  (** [--external-rpc-addr] *)
+  | Max_active_rpc_connections of int  (** [--max-active-rpc-connections] *)
+  | Enable_http_cache_headers  (** [--enable-http-cache-headers] *)
+  | Disable_context_pruning  (** [--disable_context-pruning] *)
+  | Storage_maintenance_delay of string  (** [--storage-maintenance-delay]*)
+  | Force_history_mode_switch  (** [--force-history-mode-switch] *)
+  | Allow_yes_crypto  (** [--allow-yes-crypto] *)
 
 (** A TLS configuration for the node: paths to a [.crt] and a [.key] file.
 
@@ -93,6 +112,34 @@ type tls_config = {certificate_path : string; key_path : string}
 
 (** Tezos node states. *)
 type t
+
+(** This placeholder aims to handle the activation of the external RPC
+    process for the Tezt nodes. Indeed, the external RPC process is an
+    important feature that is not activated by default in the node and
+    thus not tested on the CI. The tests on master are thus not
+    testing the feature. To test the external RPC process anyway, a
+    scheduled pipeline is launched every week, with the feature
+    enabled, running all tests.
+    When the scheduled pipeline is launched, the TZ_SCHEDULE_KIND
+    environment variable is set to "EXTENDED_RPC_TESTS" to turn on the
+    external RPC process. Look for the
+    [ci/bin/custom_extended_test_pipeline.ml] file for more details. *)
+val enable_external_rpc_process : bool
+
+(** This placeholder aims to handle the activation of the
+    singleprocess validation for the Tezt nodes. Indeed, the
+    singleprocess validation is an alternative way of validating
+    blocks that is not activated by default in the node and thus not
+    tested by the CI. The tests on master are thus not testing the
+    feature. To test the singleprocess validation anyway, a scheduled
+    pipeline is launched every week, with the feature enabled, running
+    all tests.
+    When the scheduled pipeline is launched, the TZ_SCHEDULE_KIND
+    environment variable is set to "EXTENDED_VALIDATION_TESTS" to turn
+    on the singleprocess validation. Look for the
+    [ci/bin/singleprocess_validation_pipeline.ml] file for more
+    details. *)
+val enable_singleprocess : bool
 
 (** Create a node.
 
@@ -109,9 +156,12 @@ type t
     whose name is derived from [name]. It will be created
     as a named pipe so that node events can be received.
 
-    Default value for [net_addr] is either [127.0.0.1] if no [runner] is
+    Default value for [net_addr] is either [Constant.default_host] if no [runner] is
     provided, or a value allowing the local Tezt program to connect to it
     if it is.
+
+    Default [rpc_external] is [false]. If [rpc_external] is [true],
+    the node will spawn a process for non-blocking RPCs.
 
     Default values for [net_port] or [rpc_port] are chosen automatically
     with values starting from 16384 (configurable with `--starting-port`).
@@ -121,6 +171,12 @@ type t
     through some other means, your node will not listen.
 
     Default value for [allow_all_rpc] is [true].
+
+    Default value for [max_active_rpc_connections] is [500].
+
+    [local_rpc_server] specify whether or not the RPC server must be
+    run locally, if true (default), or on a external process. It is
+    not allowed yet to run both server kinds at the same time.
 
     The argument list is a list of configuration options that the node
     should run with. It is passed to the first run of [octez-node config init].
@@ -140,10 +196,14 @@ val create :
   ?net_addr:string ->
   ?net_port:int ->
   ?advertised_net_port:int ->
+  ?metrics_addr:string ->
+  ?metrics_port:int ->
+  ?rpc_external:bool ->
   ?rpc_host:string ->
   ?rpc_port:int ->
   ?rpc_tls:tls_config ->
   ?allow_all_rpc:bool ->
+  ?max_active_rpc_connections:int ->
   argument list ->
   t
 
@@ -151,15 +211,18 @@ val create :
 
     The argument is passed to the next run of [octez-node config init].
     It is also passed to all runs of [octez-node run] that occur before
-    the next [octez-node config init]. *)
+    the next [octez-node config init].
+
+    There are some exceptions, see definition of type [argument]. *)
 val add_argument : t -> argument -> unit
 
 (** Add a [--peer] argument to a node.
 
     Usage: [add_peer node peer]
 
-    Same as [add_argument node (Peer "127.0.0.1:<PORT>")]
-    where [<PORT>] is the P2P port of [peer]. *)
+    Same as [add_argument node (Peer "<HOST>:<PORT>")]
+    where [<HOST>] is given by [Runner.address] and [<PORT>] is the P2P port of
+    [peer]. *)
 val add_peer : t -> t -> unit
 
 (** Returns the list of address of all [Peer <addr>] arguments. *)
@@ -169,8 +232,9 @@ val get_peers : t -> string list
 
     Usage: [add_peer node peer]
 
-    Same as [add_argument node (Peer "127.0.0.1:<PORT>#<ID>")]
-    where [<PORT>] is the P2P port and [<ID>] is the identity of [peer]. *)
+    Same as [add_argument node (Peer "<HOST>:<PORT>#<ID>")]
+    where [<HOST>] is given by [Runner.address], [<PORT>] is the P2P port and
+    [<ID>] is the identity of [peer]. *)
 val add_peer_with_id : t -> t -> unit Lwt.t
 
 (** Removes the file peers.json that is at the root of data-dir.
@@ -210,10 +274,15 @@ val net_port : t -> int
 (** Get the network port given as [--advertised-net-port] to a node. *)
 val advertised_net_port : t -> int option
 
+val metrics_port : t -> int
+
 (** Get the RPC scheme of a node.
 
     Returns [https] if node is started with [--rpc-tls], otherwise [http] *)
 val rpc_scheme : t -> string
+
+(** Returns [True] if RPCs are handled by a dedicated process. *)
+val rpc_external : t -> bool
 
 (** Get the RPC host given as [--rpc-addr] to a node. *)
 val rpc_host : t -> string
@@ -223,9 +292,11 @@ val rpc_port : t -> int
 
 (** Get the node's RPC endpoint URI.
 
-    These are composed of the node's [--rpc-tls], [--rpc-addr]
-    and [--rpc-port] arguments. *)
-val rpc_endpoint : t -> string
+    These are composed of the node's [--rpc-tls], [--rpc-addr] and
+    [--rpc-port] arguments. If [local] is given ([false] by default),
+    then [Constant.default_host] is used (it overrides [rpc-addr] or
+    the [runner] argument). *)
+val rpc_endpoint : ?local:bool -> t -> string
 
 (** Get the data-dir of a node. *)
 val data_dir : t -> string
@@ -273,10 +344,10 @@ val show_history_mode : history_mode -> string
 (** Run [octez-node config init]. *)
 val config_init : t -> argument list -> unit Lwt.t
 
-(** Run [tezos-node config update]. *)
+(** Run [octez-node config update]. *)
 val config_update : t -> argument list -> unit Lwt.t
 
-(** Run [tezos-node config reset]. *)
+(** Run [octez-node config reset]. *)
 val config_reset : t -> argument list -> unit Lwt.t
 
 (** Run [octez-node config show]. Returns the node configuration. *)
@@ -286,16 +357,16 @@ module Config_file : sig
   (** Node configuration files. *)
 
   (** Read the configuration file ([config.json]) of a node. *)
-  val read : t -> JSON.t
+  val read : t -> JSON.t Lwt.t
 
   (** Write the configuration file of a node, replacing the existing one. *)
-  val write : t -> JSON.t -> unit
+  val write : t -> JSON.t -> unit Lwt.t
 
   (** Update the configuration file of a node. If the node is already
      running, it needs to be restarted manually.
 
       Example: [Node.Config_file.update node (JSON.put ("p2p", new_p2p_config))] *)
-  val update : t -> (JSON.t -> JSON.t) -> unit
+  val update : t -> (JSON.t -> JSON.t) -> unit Lwt.t
 
   (** Set the network config to a sandbox with the given user
       activated upgrades. *)
@@ -321,7 +392,6 @@ module Config_file : sig
     ?operations_request_timeout:float ->
     ?max_refused_operations:int ->
     ?operations_batch_size:int ->
-    ?disable_operations_precheck:bool ->
     JSON.t ->
     JSON.t
 
@@ -410,6 +480,7 @@ val spawn_reconstruct : t -> Process.t
     for a more precise semantic.
  *)
 val run :
+  ?env:string String_map.t ->
   ?patch_config:(JSON.t -> JSON.t) ->
   ?on_terminate:(Unix.process_status -> unit) ->
   ?event_level:Daemon.Level.default_level ->
@@ -424,6 +495,9 @@ val run :
     In particular it also supports events.
     One key difference is that the node will eventually stop.
 
+    Note that the `--network` argument is infered by the `node replay`
+    command itself, thanks to the configuration value.
+
     See {!run} for a description of the arguments. *)
 val replay :
   ?on_terminate:(Unix.process_status -> unit) ->
@@ -432,7 +506,6 @@ val replay :
   ?strict:bool ->
   ?blocks:string list ->
   t ->
-  argument list ->
   unit Lwt.t
 
 (** {2 Events} *)
@@ -444,6 +517,12 @@ exception
     where : string option;
   }
 
+(** Wait for synchronisation status changes
+
+More precisely, wait until a [synchronisation_status] event occurs with a status
+change listed in [statuses]. *)
+val wait_for_synchronisation : statuses:string list -> t -> unit Lwt.t
+
 (** Wait until the node is ready.
 
     More precisely, wait until a [node_is_ready] event occurs.
@@ -452,21 +531,36 @@ val wait_for_ready : t -> unit Lwt.t
 
 (** Wait for a given chain level.
 
-    More precisely, wait until a [head_increment] or [branch_switch] with a
-    [level] greater or equal to the requested level occurs. If such an event
-    already occurred, return immediately. *)
+    More precisely, wait until a [head_increment] or [branch_switch]
+    (or [store_synchronized_on_head] when the node is running with
+    [rpc_external] set to true) with a [level] greater or equal to the
+    requested level occurs. If such an event already occurred, return
+    immediately. *)
 val wait_for_level : t -> int -> int Lwt.t
 
-(** Get the current known level of a node.
+(** Get the current known level of the node.
 
     Returns [0] if the node is not running or if no [head_increment] or
     [branch_switch] event was received yet. This makes this function equivalent
     to [wait_for_level node 0] except that it does not actually wait for the
     level to be known.
 
-    Note that, as the node's status is updated only on head
-    increments, this value is wrong just after a snapshot import. *)
-val get_level : t -> int
+    Note that, as the node's status is updated only on head increments, this
+    value is wrong for instance right after a node restart or snapshot
+    import. Therefore it is recommended to use the function {!get_level}
+    instead, which does not have this problem. A use case for this function is
+    to check for a level increase, when the exact level does not matter, and
+    {!get_level}'s promise may not resolve. *)
+val get_last_seen_level : t -> int
+
+(** Return a promise that is fulfilled as soon as the node is running and its
+    level is known, which is then the value of the promise.
+
+    If the node is not running or if no [head_increment] or [branch_switch]
+    event was received yet, then wait until one of these events occur. It is
+    equivalent to [wait_for_level node 0], and thus avoids the pitfalls of
+    getting a misleading 0 value. *)
+val get_level : t -> int Lwt.t
 
 (** Wait for the node to read its identity.
 
@@ -507,7 +601,7 @@ type event = {name : string; value : JSON.t; timestamp : float}
 val on_event : t -> (event -> unit) -> unit
 
 (** See [Daemon.Make.log_events]. *)
-val log_events : t -> unit
+val log_events : ?max_length:int -> t -> unit
 
 type observe_memory_consumption = Observe of (unit -> int option Lwt.t)
 
@@ -545,6 +639,9 @@ val init :
   ?event_pipe:string ->
   ?net_port:int ->
   ?advertised_net_port:int ->
+  ?metrics_addr:string ->
+  ?metrics_port:int ->
+  ?rpc_external:bool ->
   ?rpc_host:string ->
   ?rpc_port:int ->
   ?rpc_tls:tls_config ->
@@ -559,8 +656,17 @@ val init :
     port of [node]. *)
 val send_raw_data : t -> data:string -> unit Lwt.t
 
-(** [upgrade_storage node] upprades the given [node] storage. *)
+(** [upgrade_storage node] upgrades the given [node] storage. *)
 val upgrade_storage : t -> unit Lwt.t
 
 (** Run [octez-node --version] and return the node's version. *)
 val get_version : t -> string Lwt.t
+
+(** Expose the RPC server address of this node as a foreign endpoint. *)
+val as_rpc_endpoint : t -> Endpoint.t
+
+module RPC : sig
+  include RPC_core.CALLERS with type uri_provider := t
+
+  include module type of RPC
+end

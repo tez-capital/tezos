@@ -24,20 +24,31 @@
 (*****************************************************************************)
 
 let node_tls () =
-  Test.register ~title:"Test TLS" ~tags:["node"; "tls"] ~__FILE__ @@ fun () ->
+  Test.register
+    ~title:"Test TLS"
+    ~tags:["node"; "tls"]
+    ~uses_client:false
+    ~uses_admin_client:false
+    ~__FILE__
+  @@ fun () ->
   let certificate_path = "tezt/tests/tls/tezos.crt" in
   let key_path = "tezt/tests/tls/tezos.key" in
   let rpc_tls = Node.{certificate_path; key_path} in
-  let* node = Node.init ~rpc_tls [] in
+  (* We set rpc_host to "localhost" instead of Constant.default_host
+     to conform to the DNS value stored in the tezos.crt. *)
+  let* node = Node.init ~rpc_host:"localhost" ~rpc_tls [] in
   Log.info "Check that a curl call to a node RPC fails without --cacert" ;
-  let get_version_url = RPC.(make_uri node get_version |> Uri.to_string) in
+  let get_version_url =
+    RPC_core.make_uri (Node.as_rpc_endpoint node) Node.RPC.get_version
+    |> Uri.to_string
+  in
   let* () =
-    let*? process = RPC.Curl.get get_version_url in
+    let*? process = Curl.get get_version_url in
     Process.check_error process
   in
   Log.info "Check that a curl to a node RPC works with --cacert" ;
   let*! (_ : JSON.t) =
-    RPC.Curl.get ~args:["--cacert"; certificate_path] get_version_url
+    Curl.get ~args:["--cacert"; certificate_path] get_version_url
   in
   unit
 

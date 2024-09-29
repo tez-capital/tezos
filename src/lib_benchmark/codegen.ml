@@ -73,6 +73,8 @@ module Codegen : Costlang.S with type 'a repr = Parsetree.expression = struct
 
   type size = int
 
+  let size_ty = Costlang.Ty.int
+
   open Codegen_helpers
   open Ast_helper
 
@@ -113,10 +115,12 @@ module Codegen : Costlang.S with type 'a repr = Parsetree.expression = struct
 
   let shift_right i bits = call ["lsr"] [i; Exp.constant (Const.int bits)]
 
-  let lam ~name f =
+  let lam' ~name _ty f =
     let patt = pvar name in
     let var = ident name in
     Exp.fun_ Nolabel None patt (f var)
+
+  let lam ~name = lam' ~name size_ty
 
   let app x y = Exp.apply x [(Nolabel, y)]
 
@@ -126,6 +130,23 @@ module Codegen : Costlang.S with type 'a repr = Parsetree.expression = struct
     Exp.let_ Nonrecursive [Vb.mk var m] (f id)
 
   let if_ cond ift iff = Exp.ifthenelse cond ift (Some iff)
+end
+
+(* Very similar to Codegen but for human eyes *)
+module Comment : Costlang.S with type 'a repr = Parsetree.expression = struct
+  include Codegen
+  open Ast_helper
+  open Codegen_helpers
+
+  let int i = Exp.constant (Const.int i)
+
+  let float f = Exp.constant @@ Const.float (string_of_float f)
+
+  let sat_sub x y = call ["sub"] [x; y]
+
+  let max x y = call ["max"] [x; y]
+
+  let min x y = call ["min"] [x; y]
 end
 
 let detach_funcs =
@@ -157,17 +178,20 @@ let open_m =
   let open Codegen_helpers in
   Str.open_ (Opn.mk (Mod.ident (loc_ident "S.Syntax")))
 
-(* let name size1 size2 ... =
-     let open S.Syntax in
-     let size1 = S.safe_int size1 in
-     let size2 = S.safe_int size2 in
-     ...
-     expr
+(* [let name size1 size2 ... =
+      let open S.Syntax in
+      let size1 = S.safe_int size1 in
+      let size2 = S.safe_int size2 in
+      ...
+      expr
+   ]
+
+   If [takes_saturation_reprs=true], skips [let sizeN = S.safe_int sizeN in]
 *)
 let generate_let_binding =
   let open Ast_helper in
   let open Codegen_helpers in
-  fun name expr ->
+  fun ~takes_saturation_reprs name expr ->
     let args, expr = detach_funcs expr in
     let used_vars =
       let vs = ref [] in
@@ -182,26 +206,23 @@ let generate_let_binding =
       !vs
     in
     let expr =
-      List.fold_left
-        (fun e arg ->
-          if List.mem ~equal:String.equal arg used_vars then
-            let var = ident arg in
-            let patt = pvar arg in
-            Exp.let_
-              Nonrecursive
-              [Vb.mk patt (call (saturated "safe_int") [var])]
-              e
-          else e)
-        expr
-        args
+      if takes_saturation_reprs then expr
+      else
+        List.fold_left
+          (fun e arg ->
+            if List.mem ~equal:String.equal arg used_vars then
+              let var = ident arg in
+              let patt = pvar arg in
+              Exp.let_
+                Nonrecursive
+                [Vb.mk patt (call (saturated "safe_int") [var])]
+                e
+            else e)
+          expr
+          args
     in
     let expr = restore_funcs ~used_vars (args, expr) in
     Str.value Asttypes.Nonrecursive [Vb.mk (pvar name) expr]
-
-(* ------------------------------------------------------------------------- *)
-
-(* Precompose pretty-printing by let-lifting *)
-module Lift_then_print = Costlang.Let_lift (Codegen)
 
 (* ------------------------------------------------------------------------- *)
 type solution = {
@@ -292,25 +313,20 @@ let save_solution s fn =
   save_solution_in_binary s fn ;
   save_solution_in_json s (fn ^ ".json")
 
-let load_exclusions exclude_fn =
-  (* one model name like N_IXxx_yyy__alpha per line *)
-  let open In_channel in
-  with_open_text exclude_fn (fun ic ->
-      let rec loop acc =
-        match input_line ic with
-        | None -> acc
-        | Some l -> loop (String.Set.add l acc)
-      in
-      loop String.Set.empty)
-
 (* ------------------------------------------------------------------------- *)
 
 (* [Parsetree.structure_item] has no construction for comment *)
 type code =
   | Comment of string list (* comment not attached to a binding *)
-  | Item of {comments : string list; code : Parsetree.structure_item}
+  | Item of {
+      comments : string list;
+      name : string option;
+      code : Parsetree.structure_item;
+    }
 
 type module_ = code list
+
+let get_name_of_code = function Item {name; _} -> name | _ -> None
 
 let pp_code fmtr =
   let open Format in
@@ -323,7 +339,7 @@ let pp_code fmtr =
            ~pp_sep:(fun fmtr () -> fprintf fmtr "@;")
            pp_print_string)
         lines
-  | Item {comments; code} ->
+  | Item {comments; name = _; code} ->
       List.iter (fprintf fmtr "(* %s *)@;") comments ;
       Pprintast.structure_item fmtr code
 
@@ -361,6 +377,7 @@ let make_toplevel_module structure_items =
     Item
       {
         comments = [];
+        name = None;
         code =
           Str.attribute
             (Attr.mk
@@ -372,12 +389,13 @@ let make_toplevel_module structure_items =
     Item
       {
         comments = [];
+        name = None;
         code =
           Str.module_
             (Mb.mk (loc (Some "S")) (Mod.ident (loc_ident "Saturation_repr")));
       }
   in
-  let open_syntax = Item {comments = []; code = open_m} in
+  let open_syntax = Item {comments = []; name = None; code = open_m} in
   [
     this_file_was_autogenerated;
     suppress_unused_open_warning;
@@ -399,66 +417,74 @@ let codegen (Model.Model model) (sol : solution)
     | None -> raise (Codegen_error (Variable_not_found fv))
     | Some f -> f
   in
-  let module T = (val transform) in
-  let module Impl = T (Lift_then_print) in
-  let module Subst_impl =
-    Costlang.Subst
-      (struct
-        let subst = subst
-      end)
-      (Impl)
-  in
   let module M = (val model) in
+  let takes_saturation_reprs = M.takes_saturation_reprs in
   let comments =
-    let module Sub =
-      Costlang.Subst
-        (struct
-          let subst = subst
-        end)
-        (Costlang.Pp)
+    let open Costlang in
+    let ( ++ ) = compose in
+    let ((module Transform) : transform) =
+      (module Beta_normalize)
+      ++ (module Ast.At_least_10)
+      ++ (module Subst (struct
+           let subst = subst
+         end))
     in
-    let module M = M.Def (Sub) in
-    let expr = Sub.prj M.model in
+    let module X = Transform (Comment) in
+    let module M = M.Def (X) in
+    let expr = X.prj M.model in
+    (* Need to think the indentation by the comment head *)
+    let expr = Format.asprintf "(* @[%a@]" Pprintast.expression expr in
+    let expr = Stdlib.Option.get @@ String.remove_prefix ~prefix:"(* " expr in
     ["model " ^ Namespace.to_string model_name; expr]
   in
-  let module M = M.Def (Subst_impl) in
-  let expr = Lift_then_print.prj @@ Impl.prj @@ Subst_impl.prj M.model in
   let fun_name = function_name model_name in
-  Item {comments; code = generate_let_binding fun_name expr}
+  let code =
+    let open Costlang in
+    let ( ++ ) = compose in
+    let ((module Transform) : transform) =
+      (module Ast.Optimize)
+      ++ (module Ast.At_least_10)
+      ++ (module Let_lift)
+      ++ transform
+      ++ (module Subst (struct
+           let subst = subst
+         end))
+    in
+    let module X = Transform (Codegen) in
+    let module M = M.Def (X) in
+    let expr = X.prj M.model in
+    generate_let_binding ~takes_saturation_reprs fun_name expr
+  in
+  Item {comments; name = Some fun_name; code}
 
-let get_codegen_destinations
-    Registration.{model = Model.Model (module M); from = local_models_info} =
-  if Namespace.equal M.name @@ Builtin_models.ns "timer_model" then []
-  else
-    List.filter_map
-      (fun Registration.{bench_name; _} ->
-        let open Option_syntax in
-        let* (module B : Benchmark.S) =
-          Registration.find_benchmark bench_name
-        in
-        let destination =
-          match B.purpose with Generate_code d -> Some d | _ -> None
-        in
-        destination)
-      local_models_info
-    |> List.sort_uniq String.compare
-
-let codegen_models models sol transform ~exclusions =
-  List.filter_map
-    (fun (model_name, ({Registration.model; from = _} as info)) ->
-      let benchmark_destinations = get_codegen_destinations info in
-      if
-        String.Set.mem (Namespace.to_string model_name) exclusions
-        || List.is_empty benchmark_destinations
-      then None
+let get_codegen_destination
+    Registration.
+      {
+        model = Model.Model (module M);
+        from = local_models_info;
+        codegen_destination;
+      } =
+  match codegen_destination with
+  | Some s -> Some s
+  | None ->
+      if Namespace.equal M.name @@ Builtin_models.ns "timer_model" then None
       else
-        let code = codegen model sol transform model_name in
-        Some
-          (List.map
-             (fun destination -> (destination, code))
-             benchmark_destinations))
+        List.find_map
+          (fun Registration.{bench_name; _} ->
+            let open Option_syntax in
+            let* (module B : Benchmark.S) =
+              Registration.find_benchmark bench_name
+            in
+            match B.purpose with Generate_code d -> Some d | _ -> None)
+          local_models_info
+
+let codegen_models models sol transform =
+  List.map
+    (fun (model_name, info) ->
+      let benchmark_destination = get_codegen_destination info in
+      let code = codegen info.model sol transform model_name in
+      (benchmark_destination, code))
     models
-  |> List.flatten
 
 let%expect_test "basic_printing" =
   let open Codegen in
@@ -468,7 +494,7 @@ let%expect_test "basic_printing" =
     let_ ~name:"tmp1" (int 42) @@ fun tmp1 ->
     let_ ~name:"tmp2" (int 43) @@ fun tmp2 -> x + y + tmp1 + tmp2
   in
-  let item = generate_let_binding "name" term in
+  let item = generate_let_binding ~takes_saturation_reprs:false "name" term in
   Format.printf "%a" Pprintast.structure_item item ;
   [%expect
     {|
@@ -484,7 +510,7 @@ let%expect_test "anonymous_int_literals" =
     lam ~name:"x" @@ fun x ->
     lam ~name:"y" @@ fun y -> x + y + int 42 + int 43
   in
-  let item = generate_let_binding "name" term in
+  let item = generate_let_binding ~takes_saturation_reprs:false "name" term in
   Format.printf "%a" Pprintast.structure_item item ;
   [%expect
     {|
@@ -500,7 +526,7 @@ let%expect_test "let_bound_lambda" =
     let_ ~name:"incr" (lam ~name:"x" (fun x -> x + int 1)) @@ fun incr ->
     app incr x + app incr y
   in
-  let item = generate_let_binding "name" term in
+  let item = generate_let_binding ~takes_saturation_reprs:false "name" term in
   Format.printf "%a" Pprintast.structure_item item ;
   [%expect
     {|
@@ -516,7 +542,7 @@ let%expect_test "ill_typed_higher_order" =
     lam ~name:"x" @@ fun x ->
     lam ~name:"y" @@ fun y -> app incr x + app incr y
   in
-  let item = generate_let_binding "name" term in
+  let item = generate_let_binding ~takes_saturation_reprs:false "name" term in
   Format.printf "%a" Pprintast.structure_item item ;
   [%expect
     {|
@@ -530,7 +556,7 @@ let%expect_test "if_conditional_operator" =
     lam ~name:"x" @@ fun x ->
     lam ~name:"y" @@ fun y -> if_ (lt x y) y x
   in
-  let item = generate_let_binding "name" term in
+  let item = generate_let_binding ~takes_saturation_reprs:false "name" term in
   Format.printf "%a" Pprintast.structure_item item ;
   [%expect
     {|
@@ -540,11 +566,20 @@ let%expect_test "if_conditional_operator" =
 let%expect_test "module_generation" =
   let open Codegen in
   let term = lam ~name:"x" @@ fun x -> x in
+  let name = "func_name" in
   let module_ =
     make_toplevel_module
       [
         Item
-          {comments = ["comment"]; code = generate_let_binding "func_name" term};
+          {
+            comments = ["comment"];
+            name = Some name;
+            code =
+              generate_let_binding
+                ~takes_saturation_reprs:false
+                "func_name"
+                term;
+          };
       ]
   in
   Format.printf "%a" pp_module module_ ;
@@ -565,6 +600,23 @@ let%expect_test "module_generation" =
     let func_name x =
       let x = S.safe_int x in
       x |}]
+
+(* Same as "basic_printing", but no [S.safe_int] conversions for [x] and [y] *)
+let%expect_test "takes_saturation_reprs" =
+  let open Codegen in
+  let term =
+    lam' ~name:"x" Costlang.Ty.num @@ fun x ->
+    lam' ~name:"y" Costlang.Ty.num @@ fun y ->
+    let_ ~name:"tmp1" (int 42) @@ fun tmp1 ->
+    let_ ~name:"tmp2" (int 43) @@ fun tmp2 -> x + y + tmp1 + tmp2
+  in
+  let item = generate_let_binding ~takes_saturation_reprs:true "name" term in
+  Format.printf "%a" Pprintast.structure_item item ;
+  [%expect
+    {|
+    let name x y =
+      let tmp1 = S.safe_int 42 in
+      let tmp2 = S.safe_int 43 in ((x + y) + tmp1) + tmp2 |}]
 
 (* Module to get the name of cost functions manually/automatically defined
    in a source file *)

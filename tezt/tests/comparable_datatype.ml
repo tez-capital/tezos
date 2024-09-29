@@ -214,7 +214,7 @@ let test_order_of_pairs client () =
 
 let test_comparable_chain_id client () =
   let* () = Client.typecheck_data ~data:"{}" ~typ:"(set chain_id)" client in
-  let* chain1 = RPC.Client.call client @@ RPC.get_chain_chain_id () in
+  let* chain1 = Client.RPC.call client @@ RPC.get_chain_chain_id () in
   let chain2 = "NetXZVhNXbDTx5M" in
   let data = sf {|{"%s" ; "%s"}|} chain1 chain2 in
   let* () = assert_typecheck_data_failure ~data ~typ:"(set chain_id)" client in
@@ -311,6 +311,7 @@ let register ~protocols =
         ~__FILE__
         ~title
         ~tags:["client"; "michelson"; "typechecking"; "comparable"]
+        ~uses_node:false
         (fun protocol ->
           let* client = Client.init_mockup ~protocol () in
           test_function client ())

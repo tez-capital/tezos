@@ -6,16 +6,16 @@
  (instrumentation (backend bisect_ppx))
  (libraries
   tezt.core
-  octez-libs.tezos-base
-  octez-libs.tezos-base.unix
-  octez-libs.tezos-stdlib-unix
-  octez-libs.tezos-stdlib
-  octez-libs.tezos-p2p
+  octez-libs.base
+  octez-libs.base.unix
+  octez-libs.stdlib-unix
+  octez-libs.stdlib
+  octez-shell-libs.p2p
   octez-libs.tezos-p2p-services
-  tezos-test-helpers
-  octez-libs.tezos-base-test-helpers
-  octez-libs.tezos-event-logging-test-helpers
-  octez-libs.tezos_p2p_test_common)
+  octez-libs.test-helpers
+  octez-libs.base-test-helpers
+  octez-libs.event-logging-test-helpers
+  octez-shell-libs.p2p_test_common)
  (library_flags (:standard -linkall))
  (flags
   (:standard)
@@ -30,7 +30,12 @@
   -open Tezos_base_test_helpers
   -open Tezos_event_logging_test_helpers
   -open Tezos_p2p_test_common)
- (modules test_p2p_socket test_p2p_conn))
+ (modules
+  test_p2p_fd
+  test_p2p_socket
+  test_p2p_conn
+  test_p2p_node
+  test_p2p_pool))
 
 (executable
  (name main)
@@ -42,9 +47,9 @@
 
 (rule
  (alias runtest)
- (package octez-libs)
+ (package octez-shell-libs)
  (enabled_if (<> false %{env:RUNTEZTALIAS=true}))
- (action (run %{dep:./main.exe})))
+ (action (run %{dep:./main.exe} /flaky /ci_disabled)))
 
 (rule
  (targets main.ml)

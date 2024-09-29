@@ -30,11 +30,13 @@
    Subject:      .
 *)
 
+let team = Tag.layer1
+
 let test_metadata_consistency ~migrate_from ~migrate_to =
   Test.register
     ~__FILE__
     ~title:"metadata consistency"
-    ~tags:["rpc"; "metadata"; "migration"]
+    ~tags:[team; "rpc"; "metadata"; "migration"]
   @@ fun () ->
   let migration_level = 3 in
   let* node =
@@ -50,7 +52,7 @@ let test_metadata_consistency ~migrate_from ~migrate_to =
     repeat (migration_level - 1) (fun () -> Client.bake_for_and_wait client)
   in
   let* non_migration_block =
-    RPC.Client.call client
+    Client.RPC.call client
     @@ RPC.get_chain_block_metadata
          ~block:(string_of_int (migration_level - 1))
          ()
@@ -66,7 +68,7 @@ let test_metadata_consistency ~migrate_from ~migrate_to =
       ~error_msg:"expected next_protocol = %R, got %L") ;
   Log.info "checking consistency of block at level %d" migration_level ;
   let* migration_block =
-    RPC.Client.call client
+    Client.RPC.call client
     @@ RPC.get_chain_block_metadata ~block:(string_of_int migration_level) ()
   in
   Check.(
@@ -83,7 +85,7 @@ let test_metadata_consistency ~migrate_from ~migrate_to =
     "checking consistency of block at level %d (again)"
     (migration_level - 1) ;
   let* non_migration_block =
-    RPC.Client.call client
+    Client.RPC.call client
     @@ RPC.get_chain_block_metadata
          ~block:(string_of_int (migration_level - 1))
          ()

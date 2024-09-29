@@ -68,8 +68,8 @@ module Term = struct
                 tzfail (Node_run_command.Invalid_sandbox_file filename)
             | Ok json -> return_some ("sandbox_parameter", json))
       in
-      Lwt_lock_file.try_with_lock
-        ~when_locked:(fun () -> tzfail Locked_directory)
+      Lwt_lock_file.with_lock
+        ~when_locked:(`Fail Locked_directory)
         ~filename:(Data_version.lock_file data_dir)
       @@ fun () ->
       let context_dir = Data_version.context_dir data_dir in
@@ -90,6 +90,7 @@ module Term = struct
           node_config.shell.block_validator_limits.operation_metadata_size_limit
         ~progress_display_mode
     in
+    Lwt.Exception_filter.(set handle_all_except_runtime) ;
     match Lwt_main.run @@ Lwt_exit.wrap_and_exit run with
     | Ok () -> `Ok ()
     | Error err -> `Error (false, Format.asprintf "%a" pp_print_trace err)

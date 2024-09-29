@@ -24,16 +24,10 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-module type PRINTABLE = sig
-  type t
-
-  val pp : Format.formatter -> t -> unit
-end
-
 module type ITERABLE = sig
   type t
 
-  include Compare.S with type t := t
+  include COMPARABLE with type t := t
 
   include PRINTABLE with type t := t
 
@@ -54,13 +48,27 @@ module type AUTOMATON_SUBCONFIG = sig
         id. Message ids should be defined so that this function can be
         implemented. *)
     val get_topic : t -> Topic.t
+
+    val valid : t -> [`Valid | `Unknown | `Outdated | `Invalid]
   end
 
   module Message : sig
     include PRINTABLE
 
-    (** [valid] performs an application layer-level validity check on a message. *)
-    val valid : t -> Message_id.t -> [`Valid | `Unknown | `Invalid]
+    (** [valid] performs an application layer-level validity check on a message
+        id and a message if given.
+
+        The message id (and message if any) could either be [`Valid] in the
+        current context or [`Invalid], meaning that it is/they are not valid (in
+        the present time, in the past and in the future). The application layer
+        could also return [`Outdated] or [`Unknown] if the message id is
+        outdated or if the application doesn't care about validity. In this
+        case, the application might omit some costly validity checks. *)
+    val valid :
+      ?message:t ->
+      message_id:Message_id.t ->
+      unit ->
+      [`Valid | `Unknown | `Outdated | `Invalid]
   end
 end
 
@@ -410,12 +418,14 @@ module type SCORE = sig
 
   val pp_value : Format.formatter -> value -> unit
 
+  module Introspection : sig
+    (** Convert a score value into a float.  *)
+    val to_float : value -> float
+  end
+
   module Internal_for_tests : sig
     val get_topic_params :
       ('topic, 'span) score_limits -> 'topic -> 'span per_topic_score_limits
-
-    (** Convert a score value into a float.  *)
-    val to_float : value -> float
 
     (** [is_active topic t] returns [true] if the peer's score for [topic] is marked as active,
         and [false] otherwise. *)
@@ -434,16 +444,16 @@ module type MESSAGE_CACHE = sig
 
   module Time : TIME
 
-  (** A sliding window cache that stores published messages and their first seen
-    time. The module also keeps track of the number of accesses to a message by
-    a peer, thus indirectly tracking the number of IWant requests a peer makes
-    for the same message between two heartbeats.
+  (** A sliding window cache that stores published messages, their first seen
+      time, and their senders. The module also keeps track of the number of
+      accesses to a message by a peer, thus indirectly tracking the number of
+      IWant requests a peer makes for the same message between two heartbeats.
 
-    The module assumes that no two different messages have the same message
-    id. However, the cache stores duplicates; for instance, if [add_message id
-    msg topic] is called exactly twice, then [msg] will appear twice in
-    [get_message_ids_to_gossip]'s result (assuming not more than [gossip_slots]
-    shifts have been executed in the meanwhile). *)
+      The module assumes that no two different messages have the same message
+      id. However, the cache stores duplicates; for instance, if [add_message
+      peer id msg topic] is called exactly twice, then [msg] will appear twice
+      in [get_message_ids_to_gossip]'s result (assuming not more than
+      [gossip_slots] shifts have been executed in the meanwhile). *)
   type t
 
   (** [create ~history_slots ~gossip_slots ~seen_message_slots] creates two
@@ -473,8 +483,11 @@ module type MESSAGE_CACHE = sig
 
   (** Add message to the most recent cache slot. If the message already exists
       in the cache, the message is not overridden, instead a duplicate message
-      id is stored (the message itself is only stored once). *)
-  val add_message : Message_id.t -> Message.t -> Topic.t -> t -> t
+      id is stored (the message itself is only stored once). The [peer] argument
+      represents the message sender. It is [None] in case the message is
+      produced and not received (thus it has no sender). *)
+  val add_message :
+    peer:Peer.t option -> Message_id.t -> Message.t -> Topic.t -> t -> t
 
   (** Get the message associated to the given message id, increase the access
       counter for the peer requesting the message, and also returns the updated
@@ -488,10 +501,12 @@ module type MESSAGE_CACHE = sig
       messages in the output. *)
   val get_message_ids_to_gossip : Topic.t -> t -> Message_id.t list
 
-  (** [get_first_seen_time message_id t] returns the time the message with [message_id]
-      was first seen. Returns [None] if the message was not seen during the period
-      covered by the sliding window. *)
-  val get_first_seen_time : Message_id.t -> t -> Time.t option
+  (** [get_first_seen_time_and_senders message_id t] returns the time the
+      message with [message_id] was first seen and the senders of that message
+      during the tracked sliding window. Returns [None] if the message was not
+      seen during the period covered by the sliding window. *)
+  val get_first_seen_time_and_senders :
+    Message_id.t -> t -> (Time.t * Peer.Set.t) option
 
   (** [seen_message message_id t] returns [true] if the message was seen during the
       period covered by the sliding window and returns [false] if otherwise. *)
@@ -500,6 +515,12 @@ module type MESSAGE_CACHE = sig
   (** Shift the sliding window by one slot (usually corresponding to one
       heartbeat tick). *)
   val shift : t -> t
+
+  module Introspection : sig
+    module Map : Map.S with type key = Int64.t
+
+    val get_message_ids : t -> Message_id.t list Topic.Map.t Map.t
+  end
 
   module Internal_for_tests : sig
     val get_access_counters : t -> (Message_id.t * int Peer.Map.t) Seq.t
@@ -519,6 +540,8 @@ module type AUTOMATON = sig
 
     (** Computes the topic of the given message id. *)
     val get_topic : t -> Topic.t
+
+    val valid : t -> [`Valid | `Unknown | `Outdated | `Invalid]
   end
 
   (** Module for message *)
@@ -549,7 +572,12 @@ module type AUTOMATON = sig
 
   (** The types of payloads for inputs to the gossipsub automaton. *)
 
-  type add_peer = {direct : bool; outbound : bool; peer : Peer.t}
+  type add_peer = {
+    direct : bool;
+    outbound : bool;
+    peer : Peer.t;
+    bootstrap : bool;
+  }
 
   type remove_peer = {peer : Peer.t}
 
@@ -609,6 +637,8 @@ module type AUTOMATON = sig
         (** The messages ids we want to request from the peer which sent us an
             IHave message. The implementation honors the
             [max_sent_iwant_per_heartbeat] limit. *)
+    | Invalid_message_id : [`IHave] output
+        (** A message id received via IHave message is invalid. *)
     | Iwant_from_peer_with_low_score : {
         score : Score.t;
         threshold : float;
@@ -678,8 +708,10 @@ module type AUTOMATON = sig
         (** Received a message from a remote peer for a topic we are not
             subscribed to (called "unknown topic" in the Go implementation). *)
     | Invalid_message : [`Receive_message] output
-    | Unknown_validity : [`Receive_message] output
         (** Attempting to publish a message that is invalid. *)
+    | Unknown_validity : [`Receive_message] output
+        (** Validity cannot be decided yet. *)
+    | Outdated : [`Receive_message] output  (** The message is outdated. *)
     | Already_joined : [`Join] output
         (** Attempting to join a topic we already joined. *)
     | Joining_topic : {to_graft : Peer.Set.t} -> [`Join] output
@@ -864,7 +896,12 @@ module type AUTOMATON = sig
   val pp_output : Format.formatter -> 'a output -> unit
 
   module Introspection : sig
-    type connection = {topics : Topic.Set.t; direct : bool; outbound : bool}
+    type connection = {
+      topics : Topic.Set.t;
+      direct : bool;
+      outbound : bool;
+      bootstrap : bool;
+    }
 
     type fanout_peers = {peers : Peer.Set.t; last_published_time : Time.t}
 
@@ -883,6 +920,7 @@ module type AUTOMATON = sig
         Peer.t ->
         direct:bool ->
         outbound:bool ->
+        bootstrap:bool ->
         t ->
         [`added of t | `already_known]
 
@@ -899,20 +937,18 @@ module type AUTOMATON = sig
       val iter : (Peer.t -> connection -> unit) -> t -> unit
 
       val peers_in_topic : Topic.t -> t -> Peer.Set.t
+
+      val peers_per_topic_map : t -> Peer.Set.t Topic.Map.t
     end
 
-    module Message_cache : sig
-      type t
-
-      val get_message_for_peer :
-        Peer.t -> Message_id.t -> t -> (t * Message.t * int) option
-
-      val seen_message : Message_id.t -> t -> bool
-
-      module Internal_for_tests : sig
-        val get_access_counters : t -> (Message_id.t * int Peer.Map.t) Seq.t
-      end
-    end
+    module Message_cache :
+      MESSAGE_CACHE
+        with type Peer.t = Peer.t
+         and type 'a Peer.Map.t = 'a Peer.Map.t
+         and type Topic.t = Topic.t
+         and type Message_id.t = Message_id.t
+         and type Message.t = Message.t
+         and type Time.t = Time.t
 
     type view = {
       limits : limits;
@@ -1013,6 +1049,8 @@ module type WORKER_CONFIGURATION = sig
   (** The gossipsub automaton that will be used by the worker. *)
   module GS : AUTOMATON
 
+  module Point : ITERABLE
+
   (** Abstraction of the IO monad used by the worker. *)
   module Monad : sig
     (** The monad type. *)
@@ -1046,6 +1084,9 @@ module type WORKER_CONFIGURATION = sig
     (** Returns and removes all available elements of the stream l without
         blocking. *)
     val get_available : 'a t -> 'a list
+
+    (** Returns the number of elements in the stream. *)
+    val length : 'a t -> int
   end
 end
 
@@ -1080,7 +1121,12 @@ module type WORKER = sig
       layer. *)
   type p2p_input =
     | In_message of {from_peer : GS.Peer.t; p2p_message : p2p_message}
-    | New_connection of {peer : GS.Peer.t; direct : bool; outbound : bool}
+    | New_connection of {
+        peer : GS.Peer.t;
+        direct : bool;
+        trusted : bool;
+        bootstrap : bool;
+      }
     | Disconnection of {peer : GS.Peer.t}
 
   (** The different kinds of input events that could be received from the
@@ -1089,6 +1135,10 @@ module type WORKER = sig
     | Publish_message of message_with_header
     | Join of GS.Topic.t
     | Leave of GS.Topic.t
+
+  (** A peer's origin is either another peer (i.e. advertised via PX), or none
+      if it is trusted. *)
+  type peer_origin = PX of GS.Peer.t | Trusted
 
   (** The different kinds of outputs that could be emitted by the worker for the
       P2P layer. *)
@@ -1099,12 +1149,17 @@ module type WORKER = sig
         (** End the connection with the peer [peer]. *)
     | Kick of {peer : GS.Peer.t}
         (** Kick the peer [peer]: the peer is disconnected and blacklisted.*)
-    | Connect of {px : GS.Peer.t; origin : GS.Peer.t}
+    | Connect of {peer : GS.Peer.t; origin : peer_origin}
         (** Inform the p2p_output messages processor that we want to connect to
-            the peer [px] advertised by some other peer [origin]. *)
-    | Forget of {px : GS.Peer.t; origin : GS.Peer.t}
+            the peer [peer] advertised by some other peer [origin]. *)
+    | Connect_point of {point : Point.t}
+        (** Version of connect where we provide a point directly. *)
+    (* TODO: https://gitlab.com/tezos/tezos/-/issues/6741
+
+       Unify the two Connect versions. Have the peers cache in the worker. *)
+    | Forget of {peer : GS.Peer.t; origin : GS.Peer.t}
         (** Inform the p2p_output messages processor that we don't want to
-            connect to the peer [px] advertised by some other peer [origin]. *)
+            connect to the peer [peer] advertised by some other peer [origin]. *)
 
   (** The application layer will be advertised about full messages it's
       interested in. *)
@@ -1115,13 +1170,17 @@ module type WORKER = sig
     | Heartbeat
     | P2P_input of p2p_input
     | App_input of app_input
+    | Check_unknown_messages
 
-  (** [make ~events_logging rng limits parameters] initializes a new Gossipsub
-      automaton with the given arguments. Then, it initializes and returns a
-      worker for it. The [events_logging] function can be used to define a
-      handler for logging the worker's events. *)
+  (** [make ~events_logging ~bootstrap_points rng limits parameters] initializes
+      a new Gossipsub automaton with the given arguments. Then, it initializes
+      and returns a worker for it. The [events_logging] function can be used to
+      define a handler for logging the worker's events. The list of
+      [bootstrap_points] represents the list of initially known peers' addresses
+      to which we may want to reconnect in the worker. *)
   val make :
     ?events_logging:(event -> unit Monad.t) ->
+    ?bootstrap_points:Point.t list ->
     Random.State.t ->
     (GS.Topic.t, GS.Peer.t, GS.Message_id.t, GS.span) limits ->
     (GS.Peer.t, GS.Message_id.t) parameters ->
@@ -1129,7 +1188,7 @@ module type WORKER = sig
 
   (** [start topics state] runs the (not already started) worker whose [state]
       is given together with the initial list of [topics] the caller is interested in. *)
-  val start : GS.Topic.t list -> t -> t
+  val start : GS.Topic.t list -> t -> unit
 
   (** [shutdown state] allows stopping the worker whose [state] is given. *)
   val shutdown : t -> unit Monad.t
@@ -1150,6 +1209,10 @@ module type WORKER = sig
       application layer. *)
   val app_output_stream : t -> app_output Stream.t
 
+  (** [input_events_stream t] returns the input stream in which we push events
+      to be processed by the worker. *)
+  val input_events_stream : t -> event Stream.t
+
   (** [is_subscribed t topic] checks whether [topic] is in the mesh of [t]. *)
   val is_subscribed : t -> GS.Topic.t -> bool
 
@@ -1158,4 +1221,49 @@ module type WORKER = sig
 
   (** Pretty-printer for values of type {!app_output}. *)
   val pp_app_output : Format.formatter -> app_output -> unit
+
+  (** Introspection and stats facilities *)
+  module Introspection : sig
+    (** A record containing some stats about what happened in the Gossipsub
+        worker.  *)
+    type stats = private {
+      mutable count_topics : int64;
+          (** Counts the number of topics of the node. It's the diff between Join
+            and Leave topics events. *)
+      mutable count_connections : int64;
+          (** Counts the number of connections of the node. It's the diff between
+            New_connection and Disconnection events. *)
+      mutable count_bootstrap_connections : int64;
+          (** Counts the number of connections of the node to bootstrap
+            peers. It's a refinement of [count_connections] for when the remote
+            peer declares itself as a bootstrap peer. *)
+      mutable count_sent_app_messages : int64;  (** Count sent app messages. *)
+      mutable count_sent_grafts : int64;  (** Count sent grafts. *)
+      mutable count_sent_prunes : int64;  (** Count sent prunes. *)
+      mutable count_sent_ihaves : int64;  (** Count sent ihaves. *)
+      mutable count_sent_iwants : int64;  (** Count sent iwants. *)
+      mutable count_recv_valid_app_messages : int64;
+          (** Count received app messages that are known to be valid. *)
+      mutable count_recv_invalid_app_messages : int64;
+          (** Count received app messages that are known to be invalid. *)
+      mutable count_recv_unknown_validity_app_messages : int64;
+          (** Count received app messages we won't validate. *)
+      mutable count_recv_outdated_app_messages : int64;
+          (** Count received app messages that are outdated. *)
+      mutable count_recv_grafts : int64;
+          (** Count successfully received & processed grafts. *)
+      mutable count_recv_prunes : int64;
+          (** Count successfully received & processed prunes. *)
+      mutable count_recv_ihaves : int64;
+          (** Count successfully received & processed ihaves. *)
+      mutable count_recv_iwants : int64;
+          (** Count successfully received & processed iwants. *)
+    }
+
+    val empty_stats : unit -> stats
+  end
+
+  val stats : t -> Introspection.stats
+
+  val state : t -> GS.Introspection.view
 end

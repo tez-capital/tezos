@@ -299,7 +299,7 @@ The command to update the consensus key is::
 
    octez-client set consensus key for <mgr> to consensus
 
-The update becomes active after ``PRESERVED_CYCLES + 1`` cycles. We therefore distinguish
+The update becomes active after ``CONSENSUS_RIGHTS_DELAY + 1`` cycles. We therefore distinguish
 the active consensus key and the pending consensus keys.
 The active consensus key is by default the delegate’s manager key, which cannot change.
 
@@ -325,7 +325,7 @@ The delegate will seamlessly keep baking when the transition happens::
 Draining a Manager's Account With its Consensus Key
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This operation immediately transfers all the spendable balance of the ``baker_pkh``’s implicit account into the ``destination_pkh`` implicit account::
+This operation immediately transfers all the spendable balance of the ``baker_pkh``’s user account into the ``destination_pkh`` user account::
 
    octez-client drain delegate <baker_pkh> to <destination_pkh> with <consensus_pkh>
 

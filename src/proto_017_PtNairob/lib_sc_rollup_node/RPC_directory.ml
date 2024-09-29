@@ -27,6 +27,7 @@
 
 open Rpc_directory_helpers
 open Protocol
+open Context_wrapper.Irmin
 
 module Slot_pages_map = struct
   open Protocol
@@ -70,8 +71,11 @@ end)
 module Common = struct
   let () =
     Block_directory.register0 Sc_rollup_services.Block.block
-    @@ fun (node_ctxt, block) () () ->
-    Node_context.get_full_l2_block node_ctxt block
+    @@ fun (node_ctxt, block) outbox () ->
+    let get_outbox_messages =
+      if not outbox then None else Some Pvm_plugin.get_outbox_messages
+    in
+    Node_context.get_full_l2_block ?get_outbox_messages node_ctxt block
 
   let () =
     Block_directory.register0 Sc_rollup_services.Block.num_messages
@@ -109,10 +113,12 @@ let get_state (node_ctxt : _ Node_context.t) block_hash =
   let open Lwt_result_syntax in
   let* ctxt = Node_context.checkout_context node_ctxt block_hash in
   let*! state = Context.PVMState.find ctxt in
-  match state with None -> failwith "No state" | Some state -> return state
+  match state with
+  | None -> failwith "No state"
+  | Some state -> return (state, of_node_pvmstate state)
 
 let simulate_messages (node_ctxt : Node_context.ro) block ~reveal_pages
-    ~insight_requests messages =
+    ~insight_requests ~log_kernel_debug_file messages =
   let open Lwt_result_syntax in
   let open Alpha_context in
   let module PVM = (val Pvm.of_kind node_ctxt.kind) in
@@ -138,27 +144,28 @@ let simulate_messages (node_ctxt : Node_context.ro) block ~reveal_pages
     Simulation.start_simulation
       node_ctxt
       ~reveal_map
+      ?log_kernel_debug_file
       Layer1.{hash = block; level}
   in
-  let* sim, num_ticks_0 = Simulation.simulate_messages node_ctxt sim messages in
-  let* {state; inbox_level; _}, num_ticks_end =
-    Simulation.end_simulation node_ctxt sim
-  in
+  let* sim, num_ticks_0 = Simulation.simulate_messages sim messages in
+  let* {state; inbox_level; _}, num_ticks_end = Simulation.end_simulation sim in
   let*! insights =
     List.map_p
       (function
-        | Sc_rollup_services.Pvm_state_key key -> PVM.State.lookup state key
-        | Durable_storage_key key -> PVM.Inspect_durable_state.lookup state key)
+        | Sc_rollup_services.Pvm_state_key key ->
+            PVM.State.lookup (of_node_pvmstate state) key
+        | Durable_storage_key key ->
+            PVM.Inspect_durable_state.lookup (of_node_pvmstate state) key)
       insight_requests
   in
   let num_ticks = Z.(num_ticks_0 + num_ticks_end) in
   let level = Raw_level.of_int32_exn inbox_level in
-  let*! outbox = PVM.get_outbox level state in
+  let*! outbox = PVM.get_outbox level (of_node_pvmstate state) in
   let output =
     List.filter (fun Sc_rollup.{outbox_level; _} -> outbox_level = level) outbox
   in
-  let*! state_hash = PVM.state_hash state in
-  let*! status = PVM.get_status state in
+  let*! state_hash = PVM.state_hash (of_node_pvmstate state) in
+  let*! status = PVM.get_status (of_node_pvmstate state) in
   let status = PVM.string_of_status status in
   return
     Sc_rollup_services.
@@ -168,7 +175,7 @@ let () =
   Block_directory.register0 Sc_rollup_services.Block.total_ticks
   @@ fun (node_ctxt, block) () () ->
   let open Lwt_result_syntax in
-  let* state = get_state node_ctxt block in
+  let* _, state = get_state node_ctxt block in
   let module PVM = (val Pvm.of_kind node_ctxt.kind) in
   let*! tick = PVM.get_tick state in
   return tick
@@ -177,7 +184,7 @@ let () =
   Block_directory.register0 Sc_rollup_services.Block.state_hash
   @@ fun (node_ctxt, block) () () ->
   let open Lwt_result_syntax in
-  let* state = get_state node_ctxt block in
+  let* _, state = get_state node_ctxt block in
   let module PVM = (val Pvm.of_kind node_ctxt.kind) in
   let*! hash = PVM.state_hash state in
   return hash
@@ -186,7 +193,7 @@ let () =
   Block_directory.register0 Sc_rollup_services.Block.state_current_level
   @@ fun (node_ctxt, block) () () ->
   let open Lwt_result_syntax in
-  let* state = get_state node_ctxt block in
+  let* _, state = get_state node_ctxt block in
   let module PVM = (val Pvm.of_kind node_ctxt.kind) in
   let*! current_level = PVM.get_current_level state in
   return current_level
@@ -195,9 +202,9 @@ let () =
   Block_directory.register0 Sc_rollup_services.Block.state_value
   @@ fun (node_ctxt, block) {key} () ->
   let open Lwt_result_syntax in
-  let* state = get_state node_ctxt block in
+  let* ctx, _state = get_state node_ctxt block in
   let path = String.split_on_char '/' key in
-  let*! value = Context.PVMState.lookup state path in
+  let*! value = Context.PVMState.lookup ctx path in
   match value with
   | None -> failwith "No such key in PVM state"
   | Some value ->
@@ -208,7 +215,7 @@ let () =
   Block_directory.register0 Sc_rollup_services.Block.status
   @@ fun (node_ctxt, block) () () ->
   let open Lwt_result_syntax in
-  let* state = get_state node_ctxt block in
+  let* _, state = get_state node_ctxt block in
   let module PVM = (val Pvm.of_kind node_ctxt.kind) in
   let*! status = PVM.get_status state in
   return (PVM.string_of_status status)
@@ -230,7 +237,7 @@ let () =
   Block_directory.register0 Sc_rollup_services.Block.outbox
   @@ fun (node_ctxt, block) outbox_level () ->
   let open Lwt_result_syntax in
-  let* state = get_state node_ctxt block in
+  let* _, state = get_state node_ctxt block in
   let module PVM = (val Pvm.of_kind node_ctxt.kind) in
   let*! outbox = PVM.get_outbox outbox_level state in
   return outbox
@@ -239,23 +246,34 @@ let () =
   Block_directory.register1 Sc_rollup_services.Block.outbox_messages
   @@ fun (node_ctxt, block) outbox_level () () ->
   let open Lwt_result_syntax in
-  let* state = get_state node_ctxt block in
+  let* _, state = get_state node_ctxt block in
   let module PVM = (val Pvm.of_kind node_ctxt.kind) in
   let*! outbox = PVM.get_outbox outbox_level state in
   return outbox
 
 let () =
-  Block_helpers_directory.register0
-    Sc_rollup_services.Block.Helpers.outbox_proof
-  @@ fun (node_ctxt, _block_hash) output () ->
+  Block_helpers_directory.register1
+    Sc_rollup_services.Block.Helpers.outbox_proof_simple
+  @@ fun (node_ctxt, _block_hash) outbox_level message_index () ->
   let open Lwt_result_syntax in
-  let+ commitment, proof = Outbox.proof_of_output node_ctxt output in
+  let+ commitment, proof =
+    Outbox.proof_of_output_simple node_ctxt ~outbox_level ~message_index
+  in
   (Sc_rollup_proto_types.Commitment_hash.of_octez commitment, proof)
 
 let () =
   Block_directory.register0 Sc_rollup_services.Block.simulate
-  @@ fun (node_ctxt, block) () {messages; reveal_pages; insight_requests} ->
-  simulate_messages node_ctxt block ~reveal_pages ~insight_requests messages
+  @@ fun (node_ctxt, block)
+             ()
+             {messages; reveal_pages; insight_requests; log_kernel_debug_file}
+    ->
+  simulate_messages
+    node_ctxt
+    block
+    ~reveal_pages
+    ~insight_requests
+    ~log_kernel_debug_file
+    messages
 
 let block_directory (node_ctxt : _ Node_context.t) =
   let module PVM = (val Pvm_rpc.of_kind node_ctxt.kind) in

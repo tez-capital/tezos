@@ -30,6 +30,8 @@
    Subject:      Tests related to Micheline conversions
 *)
 
+let team = Tag.layer1
+
 let convert_source_formats = [`Michelson; `Json; `Binary]
 
 let convert_destination_formats = [`Michelson; `Json; `Binary; `OCaml]
@@ -117,7 +119,8 @@ let test_convert_script =
   Protocol.register_test
     ~__FILE__
     ~title:"convert script"
-    ~tags:["michelson"; "conversion"]
+    ~tags:[team; "michelson"; "conversion"]
+    ~uses_node:false
   @@ fun protocol ->
   let* client = Client.init_mockup ~protocol () in
   iter convert_source_formats @@ fun src_format ->
@@ -143,7 +146,8 @@ let test_convert_data =
   Protocol.register_test
     ~__FILE__
     ~title:"convert data"
-    ~tags:["michelson"; "conversion"]
+    ~tags:[team; "michelson"; "conversion"]
+    ~uses_node:false
   @@ fun protocol ->
   let* client = Client.init_mockup ~protocol () in
   iter convert_source_formats @@ fun src_format ->

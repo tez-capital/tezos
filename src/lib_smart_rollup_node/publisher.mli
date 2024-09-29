@@ -2,6 +2,8 @@
 (*                                                                           *)
 (* Open Source License                                                       *)
 (* Copyright (c) 2022 TriliTech <contact@trili.tech>                         *)
+(* Copyright (c) 2022 Nomadic Labs, <contact@nomadic-labs.com>               *)
+(* Copyright (c) 2023 Marigold <contact@marigold.dev>                        *)
 (*                                                                           *)
 (* Permission is hereby granted, free of charge, to any person obtaining a   *)
 (* copy of this software and associated documentation files (the "Software"),*)
@@ -53,6 +55,17 @@ val process_head :
   Context.rw ->
   Commitment.Hash.t option tzresult Lwt.t
 
+(** [create_commitment_if_necessary plugin node_ctxt ~predecessor level ctxt]
+    returns the commitment for inbox level [level] if there needs to be
+    one. [ctxt] should be the context checkouted for [level]. *)
+val create_commitment_if_necessary :
+  (module Protocol_plugin_sig.S) ->
+  'a Node_context.t ->
+  predecessor:Block_hash.t ->
+  int32 ->
+  'a Context.t ->
+  (Commitment.t option, tztrace) result Lwt.t
+
 (** [publish_single_commitment node_ctxt commitment] publishes a single
     [commitment] if it is missing. This function is meant to be used by the {e
     accuser} mode to sparingly publish commitments when it detects a
@@ -60,19 +73,31 @@ val process_head :
 val publish_single_commitment :
   _ Node_context.t -> Commitment.t -> unit tzresult Lwt.t
 
-(** Initialize worker for publishing and cementing commitments. *)
+(** [recover_bond node_ctxt] publishes a recover bond operator for the
+    Operating key. The submitter is either the operator or another
+    address depending of the rollup node configuration. This function
+    is intended to be used by the {e bailout} mode. *)
+val recover_bond : _ Node_context.t -> unit tzresult Lwt.t
+
+(** Initialize worker for publishing and cementing commitments, if the
+    rollup node mode supports it. *)
 val init : _ Node_context.t -> unit tzresult Lwt.t
 
-(** [publish_commitments ()] publishes the commitments that were not yet
+(** [publish_commitments] publishes the commitments that were not yet
     published up to the finalized head and which are after the last cemented
-    commitment. *)
+    commitment. This is a no-op if the rollup node is not in the appropriate
+    mode. *)
 val publish_commitments : unit -> unit tzresult Lwt.t
 
-(** [cement_commitments ()] cements the commitments that can be cemented,
+(** [cement_commitments] cements the commitments that can be cemented,
     i.e. the commitments that are after the current last cemented commitment and
     which have [sc_rollup_challenge_period] levels on top of them since they
-    were originally published.  *)
+    were originally published. This is a no-op if the rollup node is not in the
+    appropriate mode. *)
 val cement_commitments : unit -> unit tzresult Lwt.t
 
 (** Stop worker for publishing and cementing commitments. *)
 val shutdown : unit -> unit Lwt.t
+
+(** Returns the status of the publisher worker. *)
+val worker_status : unit -> [`Running | `Not_running | `Crashed of error]

@@ -44,7 +44,7 @@ let test_emit_event protocol =
       ["mini_scenarios"; "emit_events"]
       protocol
   in
-  let* () = Client.bake_for client in
+  let* () = Client.bake_for_and_wait client in
   let* () =
     Client.transfer
       ~gas_limit:100_000
@@ -58,7 +58,7 @@ let test_emit_event protocol =
       ~force:true
       client
   in
-  let* () = Client.bake_for client in
+  let* () = Client.bake_for_and_wait client in
   let* first_manager_operation =
     Client.rpc
       Client.GET
@@ -107,7 +107,7 @@ let check_client_events =
   Protocol.register_test
     ~__FILE__
     ~title:"Events: events from client"
-    ~tags:["check_client_events"]
+    ~tags:[Tag.layer1; "check_client_events"]
     test_emit_event
 
 let register ~protocols = check_client_events protocols

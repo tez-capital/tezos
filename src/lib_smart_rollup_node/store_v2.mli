@@ -55,6 +55,51 @@ module Commitments :
      and type value := Octez_smart_rollup.Commitment.t
      and type header := unit
 
+module Outbox_messages : sig
+  type +'a t
+
+  val load : path:string -> 'a Store_sigs.mode -> 'a t tzresult Lwt.t
+
+  val readonly : [> `Read] t -> [`Read] t
+
+  val by_outbox_level :
+    [> `Read] t -> outbox_level:int32 -> (int * bool) list tzresult Lwt.t
+
+  val pending :
+    [> `Read] t ->
+    min_level:int32 ->
+    max_level:int32 ->
+    (int32 * int list) list tzresult Lwt.t
+
+  val register_new_outbox_messages :
+    [> `Read | `Write] t ->
+    outbox_level:int32 ->
+    indexes:int list ->
+    unit tzresult Lwt.t
+
+  val register_missing_outbox_messages :
+    [> `Read | `Write] t ->
+    outbox_level:int32 ->
+    indexes:int list ->
+    unit tzresult Lwt.t
+
+  val set_outbox_message_executed :
+    [> `Read | `Write] t ->
+    outbox_level:int32 ->
+    index:int ->
+    unit tzresult Lwt.t
+end
+
+(** Storage containing the last cemented commitment. *)
+module Lcc : sig
+  type lcc = {commitment : Commitment.Hash.t; level : int32}
+
+  include SINGLETON_STORE with type value := lcc
+end
+
+(** Storage containing a single commitment for the last published commitment. *)
+module Lpc : SINGLETON_STORE with type value := Octez_smart_rollup.Commitment.t
+
 (** Published slot headers per block hash,
     stored as a list of bindings from [Dal_slot_index.t]
     to [Dal.Slot.t]. The encoding function converts this
@@ -64,20 +109,6 @@ module Dal_slots_headers :
     with type primary_key := Block_hash.t
      and type secondary_key := Dal.Slot_index.t
      and type value := Dal.Slot_header.t
-     and type 'a store := 'a Irmin_store.t
-
-module Dal_confirmed_slots_history :
-  Store_sigs.Append_only_map
-    with type key := Block_hash.t
-     and type value := Dal.Slot_history.t
-     and type 'a store := 'a Irmin_store.t
-
-(** Confirmed DAL slots histories cache. See documentation of
-    {!Dal_slot_repr.Slots_history} for more details. *)
-module Dal_confirmed_slots_histories :
-  Store_sigs.Append_only_map
-    with type key := Block_hash.t
-     and type value := Dal.Slot_history_cache.t
      and type 'a store := 'a Irmin_store.t
 
 module Protocols : sig
@@ -101,17 +132,51 @@ module Protocols : sig
   include SINGLETON_STORE with type value = proto_info list
 end
 
+(** Data related to the effects of garbage collection. *)
+module Gc_levels : sig
+  type levels = {
+    last_gc_level : int32;
+        (** Records the last level at which GC was called. *)
+    first_available_level : int32;
+        (** Records the first level for which data is guaranteed to be stored.
+        Data for all previous levels might have been removed. *)
+  }
+
+  include SINGLETON_STORE with type value = levels
+end
+
+(** Level at which context was last split. *)
+module Last_context_split : SINGLETON_STORE with type value := int32
+
+(** History mode of the rollup node. *)
+module History_mode :
+  SINGLETON_STORE with type value := Configuration.history_mode
+
 type +'a store = {
   l2_blocks : 'a L2_blocks.t;
   messages : 'a Messages.t;
   inboxes : 'a Inboxes.t;
   commitments : 'a Commitments.t;
   commitments_published_at_level : 'a Commitments_published_at_level.t;
+  outbox_messages : 'a Outbox_messages.t;
   l2_head : 'a L2_head.t;
   last_finalized_level : 'a Last_finalized_level.t;
+  lcc : 'a Lcc.t;
+  lpc : 'a Lpc.t;
   levels_to_hashes : 'a Levels_to_hashes.t;
   protocols : 'a Protocols.t;
   irmin_store : 'a Irmin_store.t;
+  gc_levels : 'a Gc_levels.t;
+  successful_gc_levels : 'a Gc_levels.t;
+  last_context_split_level : 'a Last_context_split.t;
+  history_mode : 'a History_mode.t;
 }
 
 include Store_sig.S with type 'a store := 'a store
+
+(** [is_gc_finished t] returns [true] if there is no GC running. *)
+val is_gc_finished : 'a t -> bool
+
+(** [cancel_gc t] stops any currently ongoing GC. It returns [true] if a GC was
+    canceled. *)
+val cancel_gc : 'a t -> bool Lwt.t

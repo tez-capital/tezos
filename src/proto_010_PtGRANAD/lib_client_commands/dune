@@ -3,26 +3,26 @@
 
 (library
  (name tezos_client_010_PtGRANAD_commands)
- (public_name tezos-client-010-PtGRANAD.commands)
+ (public_name octez-protocol-010-PtGRANAD-libs.client.commands)
  (instrumentation (backend bisect_ppx))
  (libraries
-  octez-libs.tezos-base
-  tezos-clic
-  tezos-protocol-010-PtGRANAD
-  octez-libs.tezos-stdlib-unix
-  tezos-protocol-environment
-  octez-libs.tezos-shell-services
-  tezos-client-base
-  tezos-client-010-PtGRANAD
-  tezos-client-commands
-  octez-libs.tezos-rpc
-  tezos-client-base-unix
-  tezos-protocol-plugin-010-PtGRANAD)
+  octez-libs.base
+  octez-libs.clic
+  tezos-protocol-010-PtGRANAD.protocol
+  octez-libs.stdlib-unix
+  octez-proto-libs.protocol-environment
+  octez-shell-libs.shell-services
+  octez-shell-libs.client-base
+  octez-protocol-010-PtGRANAD-libs.client
+  octez-shell-libs.client-commands
+  octez-libs.rpc
+  octez-shell-libs.client-base-unix
+  octez-protocol-010-PtGRANAD-libs.plugin)
  (library_flags (:standard -linkall))
  (flags
   (:standard)
   -open Tezos_base.TzPervasives
-  -open Tezos_base.TzPervasives.Error_monad.Legacy_monad_globals
+  -open Tezos_base.TzPervasives.Error_monad_legacy
   -open Tezos_protocol_010_PtGRANAD
   -open Tezos_stdlib_unix
   -open Tezos_shell_services
@@ -35,25 +35,25 @@
 
 (library
  (name tezos_client_010_PtGRANAD_commands_registration)
- (public_name tezos-client-010-PtGRANAD.commands-registration)
+ (public_name octez-protocol-010-PtGRANAD-libs.client.commands-registration)
  (instrumentation (backend bisect_ppx))
  (libraries
-  octez-libs.tezos-base
-  tezos-clic
-  tezos-protocol-010-PtGRANAD
-  tezos-protocol-environment
-  octez-libs.tezos-shell-services
-  tezos-client-base
-  tezos-client-010-PtGRANAD
-  tezos-client-commands
-  tezos-client-010-PtGRANAD.commands
-  octez-libs.tezos-rpc
-  tezos-protocol-plugin-010-PtGRANAD)
+  octez-libs.base
+  octez-libs.clic
+  tezos-protocol-010-PtGRANAD.protocol
+  octez-proto-libs.protocol-environment
+  octez-shell-libs.shell-services
+  octez-shell-libs.client-base
+  octez-protocol-010-PtGRANAD-libs.client
+  octez-shell-libs.client-commands
+  octez-protocol-010-PtGRANAD-libs.client.commands
+  octez-libs.rpc
+  octez-protocol-010-PtGRANAD-libs.plugin)
  (library_flags (:standard -linkall))
  (flags
   (:standard)
   -open Tezos_base.TzPervasives
-  -open Tezos_base.TzPervasives.Error_monad.Legacy_monad_globals
+  -open Tezos_base.TzPervasives.Error_monad_legacy
   -open Tezos_protocol_010_PtGRANAD
   -open Tezos_shell_services
   -open Tezos_client_base

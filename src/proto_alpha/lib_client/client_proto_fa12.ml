@@ -783,8 +783,8 @@ let extract_error trace =
 
 let call_contract (cctxt : #Protocol_client_context.full) ~chain ~block
     ?confirmations ?dry_run ?verbose_signing ?branch ~source ~src_pk ~src_sk
-    ~contract ~action ~tez_amount ?fee ?gas_limit ?storage_limit ?counter
-    ~fee_parameter () =
+    ~contract ~action ~tez_amount ?fee ?gas_limit ?safety_guard ?storage_limit
+    ?counter ~fee_parameter () =
   let open Lwt_result_syntax in
   let* () = contract_has_fa12_interface cctxt ~chain ~block ~contract () in
   let entrypoint, parameters = translate_action_to_argument action in
@@ -805,6 +805,7 @@ let call_contract (cctxt : #Protocol_client_context.full) ~chain ~block
       ~entrypoint
       ?fee
       ?gas_limit
+      ?safety_guard
       ?storage_limit
       ?counter
       ~fee_parameter
@@ -942,7 +943,7 @@ let prepare_single_token_transfer cctxt ?default_fee ?default_gas_limit
 let inject_token_transfer_batch (cctxt : #Protocol_client_context.full) ~chain
     ~block ?confirmations ?dry_run ?verbose_signing ~sender ~source ~src_pk
     ~src_sk ~token_transfers ~fee_parameter ?counter ?default_fee
-    ?default_gas_limit ?default_storage_limit () =
+    ?default_gas_limit ?default_storage_limit ?safety_guard () =
   let open Lwt_result_syntax in
   let* contents =
     List.mapi_ep
@@ -971,6 +972,7 @@ let inject_token_transfer_batch (cctxt : #Protocol_client_context.full) ~chain
       ~fee:(Limit.of_option default_fee)
       ~gas_limit:(Limit.of_option default_gas_limit)
       ~storage_limit:(Limit.of_option default_storage_limit)
+      ?safety_guard
       ?counter
       ~src_pk
       ~src_sk
@@ -992,7 +994,7 @@ let is_viewable_action action =
   | _ -> tzfail (Not_a_viewable_entrypoint (action_to_entrypoint action))
 
 let run_view_action (cctxt : #Protocol_client_context.full) ~chain ~block
-    ?sender ~contract ~action ?payer ?gas ~unparsing_mode () =
+    ~sender ~contract ~action ~payer ~gas ~unparsing_mode () =
   let open Lwt_result_syntax in
   let* () = is_viewable_action action in
   let* () = contract_has_fa12_interface cctxt ~chain ~block ~contract () in
@@ -1005,13 +1007,15 @@ let run_view_action (cctxt : #Protocol_client_context.full) ~chain ~block
     ~contract
     ~input
     ~chain_id
-    ?sender
-    ?payer
-    ?gas
+    ~sender
+    ~payer
+    ~gas
     ~entrypoint
     ~unparsing_mode
     ~now:None
     ~level:None
+    ~other_contracts:None
+    ~extra_big_maps:None
 
 let () =
   Data_encoding.(

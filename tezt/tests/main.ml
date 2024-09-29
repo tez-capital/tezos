@@ -3,6 +3,7 @@
 (* Open Source License                                                       *)
 (* Copyright (c) 2021 Nomadic Labs <contact@nomadic-labs.com>                *)
 (* Copyright (c) 2020 Metastate AG <hello@metastate.dev>                     *)
+(* Copyright (c) 2024 TriliTech <contact@trili.tech>                         *)
 (*                                                                           *)
 (* Permission is hereby granted, free of charge, to any person obtaining a   *)
 (* copy of this software and associated documentation files (the "Software"),*)
@@ -58,7 +59,11 @@ let register_protocol_independent_tests () =
   P2p.register_protocol_independent () ;
   Proxy.register_protocol_independent () ;
   Rpc_tls.register_protocol_independent () ;
-  Snoop_codegen.register_protocol_independent ()
+  Scheduled_pipeline_check.register_protocol_independent () ;
+  Snoop_codegen.register_protocol_independent () ;
+  Snoop_protocol_codegen.register_protocol_independent () ;
+  Sc_rollup.register_protocol_independent () ;
+  Riscv_sandbox.register ()
 
 (* Tests related to protocol migration. *)
 let register_protocol_migration_tests () =
@@ -68,12 +73,12 @@ let register_protocol_migration_tests () =
   Protocol_table_update.register ~migrate_from ~migrate_to ;
   User_activated_upgrade.register ~migrate_from ~migrate_to ;
   (if alpha_can_stitch_from_its_predecessor then
-   Protocol.previous_protocol Alpha
-   |> Option.iter @@ fun from_protocol ->
-      Voting.register
-        ~from_protocol
-        ~to_protocol:(Known Alpha)
-        ~loser_protocols:[]) ;
+     Protocol.previous_protocol Alpha
+     |> Option.iter @@ fun from_protocol ->
+        Voting.register
+          ~from_protocol
+          ~to_protocol:(Known Alpha)
+          ~loser_protocols:[]) ;
   Voting.register
     ~from_protocol:migrate_to
     ~to_protocol:Injected_test
@@ -82,17 +87,17 @@ let register_protocol_migration_tests () =
     ~from_protocol:migrate_to
     ~to_protocol:Demo
     ~loser_protocols:[migrate_from] ;
-  Sc_rollup.register_migration ~migrate_from ~migrate_to ;
+  Sc_rollup_migration.register ~migrate_from ~migrate_to ;
   Dal.register_migration ~migrate_from ~migrate_to
 
 let register_old_protocol_migration_tests () =
   List.iter
     (fun p ->
-      match (p, Protocol.next_protocol p) with
-      | _, Some Alpha -> () (* Already in register_protocol_migration_tests *)
-      | _, None -> ()
-      | migrate_from, Some migrate_to ->
-          Sc_rollup.register_migration ~migrate_from ~migrate_to)
+      match (Protocol.previous_protocol p, p) with
+      | _, Alpha -> () (* Already in register_protocol_migration_tests *)
+      | None, _ -> ()
+      | Some migrate_from, migrate_to ->
+          Sc_rollup_migration.register ~migrate_from ~migrate_to)
     Protocol.all
 
 (* Register tests that use [Protocol.register_test] and for which we rely on
@@ -105,6 +110,7 @@ let register_old_protocol_migration_tests () =
    Then we could remove the [~protocols] argument from all register functions. *)
 let register_protocol_tests_that_use_supports_correctly () =
   let protocols = Protocol.all in
+  Adaptive_issuance.register ~protocols ;
   Bad_annot.register ~protocols ;
   Bad_indentation.register ~protocols ;
   Baker_test.register ~protocols ;
@@ -150,7 +156,9 @@ let register_protocol_tests_that_use_supports_correctly () =
   Gas_bound.register ~protocols ;
   Global_constants.register ~protocols ;
   Hash_data.register ~protocols ;
+  Http_cache_headers.register ~protocols ;
   Increase_paid_storage.register ~protocols ;
+  Injector_test.register ~protocols ;
   Large_metadata.register ~protocols ;
   Light.register ~protocols ;
   Liquidity_baking_per_block_votes.register ~protocols ;
@@ -164,15 +172,14 @@ let register_protocol_tests_that_use_supports_correctly () =
   Node_event_level.register ~protocols ;
   Nonce_seed_revelation.register ~protocols ;
   Normalize.register ~protocols ;
-  Operation_validation.register ~protocols ;
+  Operations_liveness.register ~protocols ;
   Operation_size.register ~protocols ;
   Order_in_top_level.register ~protocols ;
   P2p.register ~protocols ;
-  Precheck.register ~protocols ;
   Prevalidator.register ~protocols ;
   Protocol_limits.register ~protocols ;
   Proxy.register ~protocols ;
-  Proxy_server_test.register ~protocols ;
+  Rpc_process.register ~protocols ;
   RPC_test.register protocols ;
   Rpc_versioning_attestation.register ~protocols ;
   Reject_malformed_micheline.register ~protocols ;
@@ -181,6 +188,7 @@ let register_protocol_tests_that_use_supports_correctly () =
   Rpc_config_logging.register ~protocols ;
   Run_operation_RPC.register ~protocols ;
   Run_script.register ~protocols ;
+  Run_code.register ~protocols ;
   Runtime_script_failure.register ~protocols ;
   Sapling.register ~protocols ;
   Script_annotations.register ~protocols ;
@@ -194,6 +202,7 @@ let register_protocol_tests_that_use_supports_correctly () =
   Sc_rollup.register ~protocols ;
   Self_address_transfer.register ~protocols ;
   Signer_test.register ~protocols ;
+  Storage_maintenance.register ~protocols ;
   Storage_reconstruction.register ~protocols ;
   Storage_snapshots.register ~protocols ;
   Stresstest_command.register ~protocols ;
@@ -206,24 +215,22 @@ let register_protocol_tests_that_use_supports_correctly () =
   Tickets.register ~protocols ;
   Tzip4_view.register ~protocols ;
   Used_paid_storage_spaces.register ~protocols ;
+  Validate.register ~protocols ;
   Vdf_test.register ~protocols ;
   Views.register ~protocols ;
   Zk_rollup.register ~protocols ;
   Tx_sc_rollup.register ~protocols ;
   Dac.register ~protocols ;
-  Timelock.register ~protocols
+  Timelock.register ~protocols ;
+  Tzt_regression.register ~protocols ;
+  Dal.register ~protocols ;
+  Yes_crypto.register ~protocols
 
 (* Regression tests are not easy to maintain for multiple protocols because one needs
    to update and maintain all the expected output files. Some of them, such as
    those in [create_contract.ml] and [deposits_limit.ml], already support all protocols.
    Some do not. Those that do not are declared here. *)
-let register_protocol_specific_because_regression_tests () =
-  Dal.register ~protocols:[Alpha] ;
-  Evm_rollup.register ~protocols:[Alpha] ;
-  Sc_sequencer.register ~protocols:[Alpha] ;
-  Snoop_codegen.register ~protocols:[Alpha] ;
-  (* This can be safely removed after Nairobi is frozen *)
-  Timelock_disabled.register ~protocols:[Nairobi]
+let register_protocol_specific_because_regression_tests () = ()
 
 let () =
   register_protocol_independent_tests () ;
@@ -231,6 +238,6 @@ let () =
   register_old_protocol_migration_tests () ;
   register_protocol_tests_that_use_supports_correctly () ;
   register_protocol_specific_because_regression_tests () ;
-  Tezos_scoru_wasm_regressions.register () ;
+  Tezt_wrapper.Uses.register_meta_test () ;
   (* Test.run () should be the last statement, don't register afterwards! *)
   Test.run ()

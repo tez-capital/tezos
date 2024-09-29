@@ -1,26 +1,9 @@
 (*****************************************************************************)
 (*                                                                           *)
-(* Open Source License                                                       *)
-(* Copyright (c) 2018 Dynamic Ledger Solutions, Inc. <contact@tezos.com>     *)
-(* Copyright (c) 2018-2021 Nomadic Labs, <contact@nomadic-labs.com>          *)
-(*                                                                           *)
-(* Permission is hereby granted, free of charge, to any person obtaining a   *)
-(* copy of this software and associated documentation files (the "Software"),*)
-(* to deal in the Software without restriction, including without limitation *)
-(* the rights to use, copy, modify, merge, publish, distribute, sublicense,  *)
-(* and/or sell copies of the Software, and to permit persons to whom the     *)
-(* Software is furnished to do so, subject to the following conditions:      *)
-(*                                                                           *)
-(* The above copyright notice and this permission notice shall be included   *)
-(* in all copies or substantial portions of the Software.                    *)
-(*                                                                           *)
-(* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR*)
-(* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,  *)
-(* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL   *)
-(* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER*)
-(* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING   *)
-(* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER       *)
-(* DEALINGS IN THE SOFTWARE.                                                 *)
+(* SPDX-License-Identifier: MIT                                              *)
+(* Copyright (c) 2018 Dynamic Ledger Solutions, Inc. <contact@tezos.com>    *)
+(* Copyright (c) 2018-2024 Nomadic Labs, <contact@nomadic-labs.com>          *)
+(* Copyright (c) 2024 TriliTech <contact@trili.tech>                         *)
 (*                                                                           *)
 (*****************************************************************************)
 
@@ -74,6 +57,19 @@ type t = {
   shutdown : unit -> unit Lwt.t;
 }
 
+let get_version node =
+  let commit_info =
+    ({
+       commit_hash = Tezos_version_value.Current_git_info.commit_hash;
+       commit_date = Tezos_version_value.Current_git_info.committer_date;
+     }
+      : Tezos_version.Octez_node_version.commit_info)
+  in
+  let version = Tezos_version_value.Current_git_info.octez_version in
+  let network_version = P2p.announced_version node.p2p in
+  Tezos_version.Octez_node_version.
+    {version; commit_info = Some commit_info; network_version}
+
 let peer_metadata_cfg : _ P2p_params.peer_meta_config =
   {
     peer_meta_encoding = Peer_metadata.encoding;
@@ -110,6 +106,11 @@ let init_p2p chain_name p2p_params disable_mempool =
         P2p.create
           ~config
           ~limits
+          ~received_msg_hook:
+            Shell_metrics.Distributed_db.Messages.on_received_msg
+          ~sent_msg_hook:Shell_metrics.Distributed_db.Messages.on_sent_msg
+          ~broadcasted_msg_hook:
+            Shell_metrics.Distributed_db.Messages.on_broadcasted_msg
           peer_metadata_cfg
           conn_metadata_cfg
           message_cfg
@@ -198,8 +199,9 @@ let check_context_consistency store =
       let*! () = Node_event.(emit storage_corrupted_context_detected ()) in
       tzfail Non_recoverable_context
 
-let create ?(sandboxed = false) ?sandbox_parameters ~singleprocess ~version
-    ~commit_info
+let create ?(sandboxed = false) ?sandbox_parameters
+    ?(disable_context_pruning = false) ?history_mode ?maintenance_delay
+    ~singleprocess ~version ~commit_info
     {
       genesis;
       chain_name;
@@ -219,7 +221,7 @@ let create ?(sandboxed = false) ?sandbox_parameters ~singleprocess ~version
       enable_testchain;
       dal_config;
     } peer_validator_limits block_validator_limits prevalidator_limits
-    chain_validator_limits history_mode =
+    chain_validator_limits =
   let open Lwt_result_syntax in
   let start_prevalidator, start_testchain =
     match p2p_params with
@@ -251,28 +253,34 @@ let create ?(sandboxed = false) ?sandbox_parameters ~singleprocess ~version
           ~context_dir:context_root
           ~allow_testchains:start_testchain
           ~readonly:false
+          ~disable_context_pruning
+          ?maintenance_delay
           genesis
       in
       let main_chain_store = Store.main_chain_store store in
       let* validator_process =
-        init validator_environment (Internal main_chain_store)
+        init (Internal (validator_environment, main_chain_store))
       in
       return (validator_process, store)
     else
       let* validator_process =
         init
-          validator_environment
           (External
              {
-               data_dir;
-               readonly = false;
-               genesis;
-               context_root;
-               protocol_root;
+               parameters =
+                 {
+                   data_dir;
+                   readonly = false;
+                   genesis;
+                   context_root;
+                   protocol_root;
+                   sandbox_parameters;
+                   user_activated_upgrades;
+                   user_activated_protocol_overrides;
+                   operation_metadata_size_limit;
+                   internal_events;
+                 };
                process_path = Sys.executable_name;
-               sandbox_parameters;
-               dal_config;
-               internal_events;
              })
       in
       let commit_genesis ~chain_id =
@@ -287,6 +295,8 @@ let create ?(sandboxed = false) ?sandbox_parameters ~singleprocess ~version
           ~context_dir:context_root
           ~allow_testchains:start_testchain
           ~readonly:false
+          ~disable_context_pruning
+          ?maintenance_delay
           genesis
       in
       return (validator_process, store)
@@ -346,7 +356,12 @@ let create ?(sandboxed = false) ?sandbox_parameters ~singleprocess ~version
 
 let shutdown node = node.shutdown ()
 
-let build_rpc_directory ~version ~commit_info node =
+let http_cache_header_tools node =
+  let store = node.store in
+  let chain_store = Store.main_chain_store store in
+  Http_cache_headers.make_tools (fun () -> Some chain_store)
+
+let build_rpc_directory ~node_version node =
   let dir : unit Tezos_rpc.Directory.t ref = ref Tezos_rpc.Directory.empty in
   let merge d = dir := Tezos_rpc.Directory.merge !dir d in
   let register0 s f =
@@ -358,7 +373,6 @@ let build_rpc_directory ~version ~commit_info node =
        node.store) ;
   merge
     (Monitor_directory.build_rpc_directory
-       ~commit_info
        node.validator
        node.mainchain_validator) ;
   merge (Injection_directory.build_rpc_directory node.validator) ;
@@ -373,7 +387,8 @@ let build_rpc_directory ~version ~commit_info node =
        ~dal_config:node.dal_config
        ~mainchain_validator:node.mainchain_validator
        node.store) ;
-  merge (Version_directory.rpc_directory ~version ~commit_info node.p2p) ;
+  merge (Version_directory.rpc_directory node_version) ;
+  merge (Health_directory.build_rpc_directory ()) ;
   register0 Tezos_rpc.Service.error_service (fun () () ->
       Lwt.return_ok (Data_encoding.Json.schema Error_monad.error_encoding)) ;
   !dir

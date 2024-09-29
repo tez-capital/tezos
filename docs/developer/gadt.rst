@@ -10,9 +10,9 @@ play in the design.
 
 For an explanation of the GADT concept itself, try one of the links below:
 
-  - `Algebraic Data Types`_ (introduction to OCaml composite types)
-  - `Generalized Algebraic Data Types`_ (OCaml manual)
-  - `A simple expression evaluator`_ (example)
+- `Algebraic Data Types`_ (introduction to OCaml composite types)
+- `Generalized Algebraic Data Types`_ (OCaml manual)
+- `A simple expression evaluator`_ (example)
 
 
 Ensuring type safety of the Michelson interpreter
@@ -144,6 +144,6 @@ in :src:`src/proto_alpha/lib_protocol/script_ir_translator.ml` in function
 the same type or ``None`` if that's not the case.
 
 
-.. _Algebraic Data Types: https://ocaml.org/docs/data-types
+.. _Algebraic Data Types: https://ocaml.org/docs/basic-data-types
 .. _Generalized Algebraic Data Types: https://ocaml.org/manual/gadts.html
 .. _A simple expression evaluator: https://blog.mads-hartmann.com/ocaml/2015/01/05/gadt-ocaml.html

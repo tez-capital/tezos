@@ -30,6 +30,8 @@
    Subject:      Basic test for Tenderbake and related newly added API components
 *)
 
+let team = Tag.layer1
+
 (* ------------------------------------------------------------------------- *)
 (* Typedefs *)
 
@@ -81,7 +83,7 @@ let test_bake_two =
   Protocol.register_test
     ~__FILE__
     ~title:"Tenderbake transfer - baking 2"
-    ~tags:["baking"; "tenderbake"]
+    ~tags:[team; "baking"; "tenderbake"]
   @@ fun protocol ->
   let* _proto_hash, endpoint, client, _node = init protocol in
   let end_idx = List.length bootstrap_accounts in
@@ -112,7 +114,7 @@ let test_low_level_commands =
   Protocol.register_test
     ~__FILE__
     ~title:"Tenderbake low level commands"
-    ~tags:["propose"; "attest"; "preattest"; "tenderbake"; "low_level"]
+    ~tags:[team; "propose"; "attest"; "preattest"; "tenderbake"; "low_level"]
   @@ fun protocol ->
   let* _proto_hash, endpoint, client, _node = init protocol in
   Log.info "Doing a propose -> preattest -> attest cycle" ;
@@ -156,7 +158,7 @@ let find_account public_key_hash' =
 
 let baker_at_round0 ?level client =
   let* json =
-    RPC.Client.call client @@ RPC.get_chain_block_helper_baking_rights ?level ()
+    Client.RPC.call client @@ RPC.get_chain_block_helper_baking_rights ?level ()
   in
   match JSON.(json |=> 0 |-> "delegate" |> as_string_opt) with
   | Some delegate_id -> return (find_account delegate_id)
@@ -188,7 +190,15 @@ let test_manual_bake =
     ~__FILE__
     ~title:"Tenderbake manual bake"
     ~tags:
-      ["propose"; "attest"; "preattest"; "tenderbake"; "low_level"; "manual"]
+      [
+        team;
+        "propose";
+        "attest";
+        "preattest";
+        "tenderbake";
+        "low_level";
+        "manual";
+      ]
   @@ fun protocol ->
   let* _proto_hash, _endpoint, client, node =
     init
@@ -198,6 +208,8 @@ let test_manual_bake =
           (["delay_increment_per_round"], `String_of_int 1);
           (["consensus_threshold"], `Int 45);
           (["consensus_committee_size"], `Int 67);
+          (* because [number_of_shards] has to be at most [consensus_committee_size] *)
+          (["dal_parametric"; "number_of_shards"], `Int 32);
         ]
       protocol
   in
@@ -228,7 +240,7 @@ let test_manual_bake =
   Log.info "Deposit" ;
   let* balance = Client.get_balance_for client ~account:recipient.alias in
   let* deposit =
-    RPC.Client.call client
+    Client.RPC.call client
     @@ RPC.get_chain_block_context_delegate_frozen_deposits
          recipient.public_key_hash
   in
@@ -279,11 +291,11 @@ let test_manual_bake =
 
   Log.info "Test that %s is pending" operation_hash ;
   let* pending_ops =
-    RPC.Client.call client @@ RPC.get_chain_mempool_pending_operations ()
+    Client.RPC.call client @@ RPC.get_chain_mempool_pending_operations ()
   in
   let op_hashes =
     JSON.(
-      pending_ops |-> "applied" |> as_list
+      pending_ops |-> "validated" |> as_list
       |> List.map (fun op -> op |-> "hash" |> as_string))
   in
   Check.(list_mem string)
@@ -305,7 +317,7 @@ let test_manual_bake =
   Log.info "Test balance" ;
   let* balance = Client.get_balance_for client ~account:recipient.alias in
   let* deposit =
-    RPC.Client.call client
+    Client.RPC.call client
     @@ RPC.get_chain_block_context_delegate_frozen_deposits
          recipient.public_key_hash
   in
@@ -330,7 +342,15 @@ let test_manual_bake_null_threshold =
     ~__FILE__
     ~title:"Tenderbake manual bake null threshold"
     ~tags:
-      ["propose"; "attest"; "preattest"; "tenderbake"; "low_level"; "manual"]
+      [
+        team;
+        "propose";
+        "attest";
+        "preattest";
+        "tenderbake";
+        "low_level";
+        "manual";
+      ]
   @@ fun protocol ->
   let* _proto_hash, _endpoint, client, node =
     init
@@ -340,6 +360,8 @@ let test_manual_bake_null_threshold =
           (["delay_increment_per_round"], `String_of_int 1);
           (["consensus_threshold"], `Int 0);
           (["consensus_committee_size"], `Int 67);
+          (* because [number_of_shards] has to be at most [consensus_committee_size] *)
+          (["dal_parametric"; "number_of_shards"], `Int 32);
         ]
       protocol
   in
@@ -391,7 +413,7 @@ let test_manual_bake_null_threshold =
   Log.info "Test balance" ;
   let* balance = Client.get_balance_for client ~account:recipient.alias in
   let* deposit =
-    RPC.Client.call client
+    Client.RPC.call client
     @@ RPC.get_chain_block_context_delegate_frozen_deposits
          recipient.public_key_hash
   in
@@ -407,7 +429,15 @@ let test_repropose =
     ~__FILE__
     ~title:"Tenderbake low level repropose"
     ~tags:
-      ["propose"; "attest"; "preattest"; "tenderbake"; "low_level"; "repropose"]
+      [
+        team;
+        "propose";
+        "attest";
+        "preattest";
+        "tenderbake";
+        "low_level";
+        "repropose";
+      ]
   @@ fun protocol ->
   let* _proto_hash, endpoint, client, _node = init protocol in
   Log.info "Doing a propose -> preattest -> attest cycle" ;

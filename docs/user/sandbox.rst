@@ -71,7 +71,7 @@ For instance:
 
 We now have the possibility to send transactions to the sandboxed network.
 As the genesis block used to initialize the sandboxed network differs from the
-one used in :ref:`test networks<test-networks>`, it is not possible to activate
+one used in :ref:`test networks<test_networks>`, it is not possible to activate
 accounts obtained from the faucet. However, we can use the
 preconfigured accounts which can be listed with:
 
@@ -135,3 +135,20 @@ can use the ``DATA_DIR`` environment variable.
 
 You can even provide a custom ``identity.json`` and ``config.json`` to the
 sandboxed node by placing them in the data directory.
+
+Baking multiple blocks
+~~~~~~~~~~~~~~~~~~~~~~
+
+To bake multiple blocks in a single command the ``-n <number_of_blocks>`` option can be used like
+
+::
+
+   $ octez-client bake for --minimal-timestamp -n 1_000
+
+Once the current timestamp is caught up, blocks are produced every second or every ``minimal_block_delay`` set in the parameters file. To speed up the process the protocol can be activated in the past with
+
+::
+
+   $ octez-activate-alpha --timestamp "2024-01-01T00:00:00Z"
+
+This increases the number of blocks needed to reach the current timestamp and speeds up the blocks production.

@@ -3,15 +3,13 @@
 
 (library
  (name tezos_stdlib)
- (public_name octez-libs.tezos-stdlib)
+ (public_name octez-libs.stdlib)
  (instrumentation (backend bisect_ppx))
  (libraries
   hex
   zarith
-  zarith_stubs_js
   lwt
   aches)
- (inline_tests (flags -verbose) (modes native js))
+ (inline_tests (flags -verbose) (modes native))
  (preprocess (pps ppx_expect))
- (js_of_ocaml (javascript_files tzBytes_js.js))
  (foreign_stubs (language c) (names tzBytes_c)))

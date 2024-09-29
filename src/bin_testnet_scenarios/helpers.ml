@@ -29,7 +29,7 @@
 let download ?runner url filename =
   Log.info "Download %s" url ;
   let path = Tezt.Temp.file filename in
-  let*! _ = RPC.Curl.get_raw ?runner ~args:["--output"; path] url in
+  let*! _ = Curl.get_raw ?runner ~args:["--output"; path] url in
   Log.info "%s downloaded" url ;
   Lwt.return path
 
@@ -41,41 +41,56 @@ let rec wait_for_funded_key node client expected_amount key =
       key.public_key_hash
       Tez.(to_mutez balance)
       Tez.(to_mutez expected_amount) ;
-    let* _ = Node.wait_for_level node (Node.get_level node + 1) in
+    let* current_level = Node.get_level node in
+    let* _ = Node.wait_for_level node (current_level + 1) in
     wait_for_funded_key node client expected_amount key)
   else unit
 
-let setup_octez_node ~(testnet : Testnet.t) ?runner () =
+let setup_octez_node ~(testnet : Testnet.t) ?runner ?metrics_port () =
   let l1_node_args =
     Node.[Expected_pow 26; Synchronisation_threshold 1; Network testnet.network]
   in
-  let* node =
-    match testnet.data_dir with
-    | Some data_dir ->
-        (* Runs a node using the existing data-dir. *)
-        return (Node.create ~data_dir l1_node_args)
-    | None ->
-        (* By default, Tezt set the difficulty to generate the identity file
-           of the Octez node to 0 (`--expected-pow 0`). The default value
-           used in network like mainnet, Mondaynet etc. is 26 (see
-           `lib_node_config/config_file.ml`). *)
-        let node = Node.create ?runner l1_node_args in
-        let* () = Node.config_init node [] in
-        let* () =
-          match testnet.snapshot with
-          | Some snapshot ->
-              Log.info "Import snapshot" ;
-              let* snapshot = download ?runner snapshot "snapshot" in
-              let* () = Node.snapshot_import node snapshot in
-              Log.info "Snapshot imported" ;
-              unit
-          | None -> unit
-        in
-        return node
+  (* By default, Tezt sets the difficulty to generate the identity
+     file of the Octez node to 0 (`--expected-pow 0`). The default
+     value used in networks like mainnet, Weeklynet etc. is 26 (see
+     `lib_node_config/config_file.ml`). *)
+  let node =
+    Node.create ?runner ?data_dir:testnet.data_dir ?metrics_port l1_node_args
+  in
+  let* () =
+    (* init config or update existing one *)
+    let* cmd =
+      match testnet.data_dir with
+      | Some data_dir ->
+          (* Runs a node using the existing data-dir. *)
+          let* file_exists = Lwt_unix.file_exists (data_dir // "config.json") in
+          return
+          @@
+          if file_exists then
+            (* update the config to ensure it's using [l1_node_args],
+               is a noop when config was generated in a previous
+               run. *)
+            Node.config_update
+          else Node.config_init
+      | None -> return Node.config_init
+    in
+    cmd node []
+  in
+  let* () =
+    match testnet.snapshot with
+    | Some snapshot ->
+        Log.info "Import snapshot" ;
+        let* snapshot = download ?runner snapshot "snapshot" in
+        let* () = Node.snapshot_import node snapshot in
+        Log.info "Snapshot imported" ;
+        unit
+    | None -> unit
   in
   let* () = Node.run node [] in
   let* () = Node.wait_for_ready node in
-  let client = Client.create ~endpoint:(Node node) () in
+  let client =
+    Client.create ?base_dir:testnet.client_dir ~endpoint:(Node node) ()
+  in
   Log.info "Wait for node to be bootstrapped" ;
   let* () = Client.bootstrapped client in
   Log.info "Node bootstrapped" ;

@@ -91,9 +91,8 @@ let rec raw_context_size = function
 let rec raw_context_to_tree (raw : Proof.raw_context) : Local.tree option Lwt.t
     =
   match raw with
-  | Key (bytes : Bytes.t) ->
-      Lwt.return (Some (Local.Tree.of_raw (`Value bytes)))
-  | Cut -> Lwt.return None
+  | Key (bytes : Bytes.t) -> Lwt.return_some (Local.Tree.of_raw (`Value bytes))
+  | Cut -> Lwt.return_none
   | Dir map ->
       let open Lwt_syntax in
       let add_to_tree tree (string, raw_context) =
@@ -132,7 +131,6 @@ type rpc_context_args = {
   printer : Tezos_client_base.Client_context.printer option;
   proxy_builder : proxy_builder;
   rpc_context : Tezos_rpc.Context.generic;
-  mode : Proxy.mode;
   chain : Tezos_shell_services.Block_services.chain;
   block : Tezos_shell_services.Block_services.block;
 }
@@ -149,7 +147,6 @@ let make_delegate (ctx : rpc_context_args)
       let pgi : Proxy.proxy_getter_input =
         {
           rpc_context = (ctx.rpc_context :> Tezos_rpc.Context.simple);
-          mode = ctx.mode;
           chain = ctx.chain;
           block = ctx.block;
         }
@@ -271,7 +268,7 @@ module Make (C : Proxy.CORE) (X : Proxy_proto.PROTO_RPC) : M = struct
           (* If the value is not going to be used, don't request a parent *)
           (requested_key, false)
       | Get -> (
-          match X.split_key pgi.mode requested_key with
+          match X.split_key requested_key with
           | None ->
               (* There's no splitting for this key *)
               (requested_key, false)

@@ -25,6 +25,7 @@
 
 include Tezos_stdlib
 module Error_monad = Tezos_error_monad.Error_monad
+module Error_monad_legacy = Tezos_error_monad_legacy.Error_monad
 include Tezos_micheline
 module Data_encoding = Data_encoding
 include Tezos_error_monad.TzLwtreslib
@@ -70,6 +71,9 @@ module Bytes = struct
   include Tezos_stdlib.TzBytes
 end
 
+module Network_version = Tezos_version.Network_version
+module Distributed_db_version = Tezos_version.Distributed_db_version
+module P2p_version = Tezos_version.P2p_version
 module Time = Time
 module Fitness = Fitness
 module User_activated = User_activated
@@ -86,10 +90,8 @@ module P2p_peer = P2p_peer
 module P2p_point = P2p_point
 module P2p_connection = P2p_connection
 module P2p_stat = P2p_stat
-module P2p_version = P2p_version
 module P2p_rejection = P2p_rejection
-module Distributed_db_version = Distributed_db_version
-module Network_version = Network_version
+module P2p_params = P2p_params
 include Tezos_crypto.Hashed
 module Signature = Tezos_crypto.Signature
 include Utils.Infix
@@ -119,3 +121,18 @@ module Empty = struct
 end
 
 module Skip_list = Skip_list
+module Profiler = Profiler
+
+module type PRINTABLE = sig
+  type t
+
+  val pp : Format.formatter -> t -> unit
+end
+
+module type COMPARABLE = Compare.S
+
+module type ENCODABLE = sig
+  type t
+
+  val encoding : t Data_encoding.t
+end

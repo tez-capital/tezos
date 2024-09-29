@@ -63,15 +63,6 @@ For more details on the node invocation and configuration, see :doc:`../user/nod
 
 .. include:: ../api/octez-node.txt
 
-.. _proxy_server_manual:
-
-Proxy server manual
-===================
-
-The command line of the :doc:`Octez proxy server <../user/proxy-server>` is documented in Unix ``man`` format, as shown below. You can also obtain this manual by running ``octez-proxy-server --help``.
-
-.. include:: ../api/octez-proxy-server.txt
-
 .. _dac_node_manual:
 
 DAC node manual (Experimental)
@@ -86,6 +77,17 @@ DAC client manual (Experimental)
 .. raw:: html
         :file: ../api/octez-dac-client.html
 
+.. _dal_node_manual:
+
+DAL node manual (Experimental)
+==============================
+
+The command line of the Octez DAL node is documented in Unix ``man`` format, as shown below. You can also obtain this manual by running ``octez-dal-node --help``.
+
+The manual briefly shows the available DAL node commands.
+Each command accepts its own set of options and arguments, that you can discover by running ``octez-dal-node <command> --help``.
+
+.. include:: ../api/octez-dal-node.txt
 
 .. _smart_rollup_node_manual:
 

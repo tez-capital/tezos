@@ -4,6 +4,7 @@
 (* Copyright (c) 2023 TriliTech <contact@trili.tech>                         *)
 (* Copyright (c) 2023 Nomadic Labs, <contact@nomadic-labs.com>               *)
 (* Copyright (c) 2023 Functori, <contact@functori.com>                       *)
+(* Copyright (c) 2023 Marigold <contact@marigold.dev>                        *)
 (*                                                                           *)
 (* Permission is hereby granted, free of charge, to any person obtaining a   *)
 (* copy of this software and associated documentation files (the "Software"),*)
@@ -37,6 +38,11 @@ val head_processing : Block_hash.t -> int32 -> unit Lwt.t
     [level] in [process_time] seconds. *)
 val new_head_processed : Block_hash.t -> int32 -> Ptime.Span.t -> unit Lwt.t
 
+(** [new_head_degraded hash level] emits an error event that indicates the
+    rollup node is running in degraded modes and sees an L1 block [hash] and at
+    the given [level]. *)
+val new_head_degraded : Block_hash.t -> int32 -> unit Lwt.t
+
 (** [processing_heads_iteration heads] emits the event that the [heads] are
     going to be processed. *)
 val processing_heads_iteration : Layer1.head list -> unit Lwt.t
@@ -62,9 +68,20 @@ val migration :
   Protocol_hash.t * int ->
   unit Lwt.t
 
+val switched_protocol :
+  Protocol_hash.t -> int -> Rollup_constants.protocol_constants -> unit Lwt.t
+
 (** Emit a fatal error for the daemon. *)
 val error : tztrace -> unit Lwt.t
 
 (** Emit an event for when the node enters the degraded mode to only play
     refutations. *)
 val degraded_mode : unit -> unit Lwt.t
+
+val refutation_loop_retry : float -> unit Lwt.t
+
+val main_loop_retry : float -> unit Lwt.t
+
+(** Emit an event when the node exits after recovering the operator's
+    stakes. *)
+val exit_bailout_mode : unit -> unit Lwt.t

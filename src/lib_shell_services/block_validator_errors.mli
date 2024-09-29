@@ -58,9 +58,6 @@ type validation_process_error =
   | Missing_handshake
   | Inconsistent_handshake of string
   | Protocol_dynlink_failure of string
-  | Socket_path_too_long of string
-  | Socket_path_wrong_permission of string
-  | Cannot_run_external_validator of string
 
 type error +=
   | Invalid_block of {block : Block_hash.t; error : block_error}
@@ -75,6 +72,6 @@ type error +=
   | System_error of {errno : string; fn : string; msg : string}
   | Missing_test_protocol of Protocol_hash.t
   | Validation_process_failed of validation_process_error
-  | Cannot_validate_while_shutting_down
+  | Cannot_process_request_while_shutting_down
 
 val invalid_block : Block_hash.t -> block_error -> error

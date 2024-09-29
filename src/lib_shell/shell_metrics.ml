@@ -23,7 +23,7 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-let namespace = Tezos_version.Node_version.namespace
+let namespace = Tezos_version.Octez_node_version.namespace
 
 module Worker = struct
   open Prometheus
@@ -244,8 +244,10 @@ end
 module Distributed_db = struct
   type t = {table_length : Prometheus.Gauge.t}
 
+  let subsystem = "distributed_db"
+
   let init =
-    let subsystem = String.concat "_" ["distributed_db"; "requester"] in
+    let subsystem = String.concat "_" [subsystem; "requester"] in
     let labels = ["requester_kind"; "entry_type"] in
     let table_length =
       let help = "Number of entries (to grab) from the network present" in
@@ -261,6 +263,167 @@ module Distributed_db = struct
 
   let update metrics ~length =
     Prometheus.Gauge.set metrics.table_length (float_of_int length)
+
+  module Messages = struct
+    type t = {sent : Prometheus.Counter.t; received : Prometheus.Counter.t}
+
+    type t_broadcasted = {
+      sent : Prometheus.Counter.t;
+      received : Prometheus.Counter.t;
+      broadcasted : Prometheus.Counter.t;
+    }
+
+    let subsystem = String.concat "_" [subsystem; "message"]
+
+    let msg_action_counter ~name =
+      Prometheus.Counter.v_label
+        ~help:("Number of " ^ name ^ " messages")
+        ~namespace
+        ~subsystem
+        ~label_name:"action"
+        (String.concat "_" [name; "messages"])
+
+    let sent_label, received_label, broadcasted_label =
+      ("sent", "received", "broadcasted")
+
+    let sent_received_counter ~name =
+      let metric_of_action = msg_action_counter ~name in
+      {
+        sent = metric_of_action sent_label;
+        received = metric_of_action received_label;
+      }
+
+    let sent_received_broadcasted_counter ~name =
+      let metric_of_action = msg_action_counter ~name in
+      {
+        sent = metric_of_action sent_label;
+        received = metric_of_action received_label;
+        broadcasted = metric_of_action broadcasted_label;
+      }
+
+    let get_current_branch = sent_received_counter ~name:"get_current_branch"
+
+    let current_branch = sent_received_counter ~name:"current_branch"
+
+    let deactivate = sent_received_counter ~name:"deactivate"
+
+    let get_current_head =
+      sent_received_broadcasted_counter ~name:"get_current_head"
+
+    let current_head = sent_received_broadcasted_counter ~name:"current_head"
+
+    let get_block_headers = sent_received_counter ~name:"get_block_headers"
+
+    let block_header = sent_received_counter ~name:"block_header"
+
+    let get_operations = sent_received_counter ~name:"get_operations"
+
+    let operation = sent_received_counter ~name:"operation"
+
+    let get_protocols = sent_received_counter ~name:"get_protocols"
+
+    let protocol = sent_received_counter ~name:"protocol"
+
+    let get_operations_for_blocks =
+      sent_received_counter ~name:"get_operations_for_blocks"
+
+    let operations_for_block =
+      sent_received_counter ~name:"operations_for_block"
+
+    let get_checkpoint = sent_received_counter ~name:"get_checkpoint"
+
+    let checkpoint = sent_received_counter ~name:"checkpoint"
+
+    let get_protocol_branch = sent_received_counter ~name:"get_protocol_branch"
+
+    let protocol_branch = sent_received_counter ~name:"protocol_branch"
+
+    let get_predecessor_header =
+      sent_received_counter ~name:"get_predecessor_header"
+
+    let predecessor_header = sent_received_counter ~name:"predecessor_header"
+
+    let inc_one action_sr action_srb =
+      Distributed_db_message.(
+        function
+        | Get_current_branch _ ->
+            Prometheus.Counter.inc_one (action_sr get_current_branch)
+        | Current_branch _ ->
+            Prometheus.Counter.inc_one (action_sr current_branch)
+        | Deactivate _ -> Prometheus.Counter.inc_one (action_sr deactivate)
+        | Get_current_head _ ->
+            Prometheus.Counter.inc_one (action_srb get_current_head)
+        | Current_head _ -> Prometheus.Counter.inc_one (action_srb current_head)
+        | Get_block_headers _ ->
+            Prometheus.Counter.inc_one (action_sr get_block_headers)
+        | Block_header _ -> Prometheus.Counter.inc_one (action_sr block_header)
+        | Get_operations _ ->
+            Prometheus.Counter.inc_one (action_sr get_operations)
+        | Operation _ -> Prometheus.Counter.inc_one (action_sr operation)
+        | Get_protocols _ ->
+            Prometheus.Counter.inc_one (action_sr get_protocols)
+        | Protocol _ -> Prometheus.Counter.inc_one (action_sr protocol)
+        | Get_operations_for_blocks _ ->
+            Prometheus.Counter.inc_one (action_sr get_operations_for_blocks)
+        | Operations_for_block _ ->
+            Prometheus.Counter.inc_one (action_sr operations_for_block)
+        | Get_checkpoint _ ->
+            Prometheus.Counter.inc_one (action_sr get_checkpoint)
+        | Checkpoint _ -> Prometheus.Counter.inc_one (action_sr checkpoint)
+        | Get_protocol_branch _ ->
+            Prometheus.Counter.inc_one (action_sr get_protocol_branch)
+        | Protocol_branch _ ->
+            Prometheus.Counter.inc_one (action_sr protocol_branch)
+        | Get_predecessor_header _ ->
+            Prometheus.Counter.inc_one (action_sr get_predecessor_header)
+        | Predecessor_header _ ->
+            Prometheus.Counter.inc_one (action_sr predecessor_header))
+
+    let on_sent_msg _conn = inc_one (fun x -> x.sent) (fun x -> x.sent)
+
+    let on_received_msg _conn =
+      inc_one (fun x -> x.received) (fun x -> x.received)
+
+    let on_broadcasted_msg _conns ?except:_ ?alt msg =
+      let same_msg_type x y =
+        Distributed_db_message.(
+          match (x, y) with
+          | Get_current_branch _, Get_current_branch _ -> true
+          | Current_branch _, Current_branch _ -> true
+          | Deactivate _, Deactivate _ -> true
+          | Get_current_head _, Get_current_head _ -> true
+          | Current_head _, Current_head _ -> true
+          | Get_block_headers _, Get_block_headers _ -> true
+          | Block_header _, Block_header _ -> true
+          | Get_operations _, Get_operations _ -> true
+          | Operation _, Operation _ -> true
+          | Get_protocols _, Get_protocols _ -> true
+          | Protocol _, Protocol _ -> true
+          | Get_operations_for_blocks _, Get_operations_for_blocks _ -> true
+          | Operations_for_block _, Operations_for_block _ -> true
+          | Get_checkpoint _, Get_checkpoint _ -> true
+          | Checkpoint _, Checkpoint _ -> true
+          | Get_protocol_branch _, Get_protocol_branch _ -> true
+          | Protocol_branch _, Protocol_branch _ -> true
+          | Get_predecessor_header _, Get_predecessor_header _ -> true
+          | Predecessor_header _, Predecessor_header _ -> true
+          | _, _ -> false)
+      in
+      let inc_one_broadcasted =
+        Distributed_db_message.(
+          function
+          | Get_current_head _ ->
+              Prometheus.Counter.inc_one get_current_head.broadcasted
+          | Current_head _ ->
+              Prometheus.Counter.inc_one current_head.broadcasted
+          | _ -> assert false)
+      in
+      Option.iter
+        (fun (_, then_msg) ->
+          if not (same_msg_type msg then_msg) then inc_one_broadcasted then_msg)
+        alt ;
+      inc_one_broadcasted msg
+  end
 end
 
 module Block_validator = struct
@@ -277,13 +440,14 @@ module Block_validator = struct
 
   type t = {
     already_commited_blocks_count : Counter.t;
-    outdated_blocks_count : Counter.t;
+    already_known_invalid_blocks_count : Counter.t;
     validated_blocks_count : Counter.t;
     validation_errors_count : Counter.t;
+    commit_block_failed_count : Counter.t;
     preapplied_blocks_count : Counter.t;
     preapplication_errors_count : Counter.t;
-    validation_errors_after_precheck_count : Counter.t;
-    precheck_failed_count : Counter.t;
+    application_errors_after_validation_count : Counter.t;
+    validation_failed_count : Counter.t;
     worker_timestamps : Worker.timestamps;
     worker_counters : Worker.counters;
   }
@@ -294,12 +458,11 @@ module Block_validator = struct
       let help = "Number of requests to validate a block already handled" in
       Counter.v ~help ~namespace ?subsystem "already_commited_blocks_count"
     in
-    let outdated_blocks_count =
+    let already_known_invalid_blocks_count =
       let help =
-        "Number of requests to validate a block older than the node's \
-         checkpoint"
+        "Number of requests to validate a block already known as invalid"
       in
-      Counter.v ~help ~namespace ?subsystem "outdated_blocks_count"
+      Counter.v ~help ~namespace ?subsystem "already_known_invalid_blocks_count"
     in
     let validated_blocks_count =
       let help = "Number of requests to validate a valid block" in
@@ -309,6 +472,10 @@ module Block_validator = struct
       let help = "Number of requests to validate an invalid block" in
       Counter.v ~help ~namespace ?subsystem "validation_errors_count"
     in
+    let commit_block_failed_count =
+      let help = "Number of requests that failed to commit a block" in
+      Counter.v ~help ~namespace ?subsystem "commit_block_failed_count"
+    in
     let preapplied_blocks_count =
       let help = "Number of successful application simulations of blocks" in
       Counter.v ~help ~namespace ?subsystem "preapplied_blocks_count"
@@ -317,22 +484,22 @@ module Block_validator = struct
       let help = "Number of refused application simulations of blocks" in
       Counter.v ~help ~namespace ?subsystem "preapplication_errors_count"
     in
-    let validation_errors_after_precheck_count =
+    let application_errors_after_validation_count =
       let help =
-        "Number of requests to validate an invalid but precheckable block"
+        "Number of requests to validate an inapplicable but validated block"
       in
       Counter.v
         ~help
         ~namespace
         ?subsystem
-        "validation_errors_after_precheck_count"
+        "application_errors_after_validation_count"
     in
-    let precheck_failed_count =
+    let validation_failed_count =
       let help =
-        "Number of block validation requests where the prechecking of a block \
+        "Number of block validation requests where the validation of a block \
          failed"
       in
-      Counter.v ~help ~namespace ?subsystem "precheck_failed_count"
+      Counter.v ~help ~namespace ?subsystem "validation_failed_count"
     in
     let worker_timestamps =
       Worker.declare_timestamps ~label_names:[] ~namespace ?subsystem () []
@@ -369,13 +536,14 @@ module Block_validator = struct
     operations_per_pass_metrics () ;
     {
       already_commited_blocks_count;
-      outdated_blocks_count;
+      already_known_invalid_blocks_count;
       validated_blocks_count;
       validation_errors_count;
+      commit_block_failed_count;
       preapplied_blocks_count;
       preapplication_errors_count;
-      validation_errors_after_precheck_count;
-      precheck_failed_count;
+      application_errors_after_validation_count;
+      validation_failed_count;
       worker_timestamps;
       worker_counters;
     }
@@ -544,7 +712,8 @@ module Version = struct
     ]
 
   let init ~version
-      ~commit_info:({commit_hash; commit_date} : Node_version.commit_info) net =
+      ~commit_info:({commit_hash; commit_date} : Octez_node_version.commit_info)
+      net =
     let _ =
       Prometheus.Gauge.labels metric
       @@ [version] @ network_version net @ [commit_hash; commit_date]

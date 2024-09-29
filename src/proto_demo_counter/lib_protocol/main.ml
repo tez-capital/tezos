@@ -42,32 +42,20 @@ let block_header_data_encoding = Header.encoding
 
 type block_header_metadata = State.t
 
-let block_header_metadata_encoding_with_legacy_attestation_name =
-  State.encoding
-
 let block_header_metadata_encoding = State.encoding
 
 type operation_data = Proto_operation.t
 
 let operation_data_encoding = Proto_operation.encoding
 
-let operation_data_encoding_with_legacy_attestation_name =
-  operation_data_encoding
-
 type operation_receipt = Receipt.t
 
 let operation_receipt_encoding = Receipt.encoding
-
-let operation_receipt_encoding_with_legacy_attestation_name =
-  operation_receipt_encoding
 
 let operation_data_and_receipt_encoding =
   (* we could merge data and receipt encoding for a lighter json *)
   Data_encoding.(
     obj2 (req "data" Proto_operation.encoding) (req "receipt" Receipt.encoding))
-
-let operation_data_and_receipt_encoding_with_legacy_attestation_name =
-  operation_data_and_receipt_encoding
 
 type operation = {
   shell : Operation.shell_header;
@@ -172,21 +160,23 @@ let begin_validation = begin_validation_or_application `Validation
 let begin_application = begin_validation_or_application `Application
 
 let apply_operation_aux application_state operation =
+  let open Lwt_result_syntax in
   let {context; fitness} = application_state in
-  State.get_state context >>= fun state ->
+  let*! state = State.get_state context in
   match Apply.apply state operation.protocol_data with
   | None -> Error_monad.tzfail Error.Invalid_operation
   | Some state ->
-      State.update_state context state >>= fun context ->
-      return {context; fitness}
+    let*! context = State.update_state context state in
+    return {context; fitness}
 
 let validate_operation ?check_signature:_ validation_state _oph operation =
   Logging.log Notice "validate_operation" ;
   apply_operation_aux validation_state operation
 
 let apply_operation application_state _oph operation =
+  let open Lwt_result_syntax in
   Logging.log Notice "apply_operation" ;
-  apply_operation_aux application_state operation >>=? fun application_state ->
+  let* application_state = apply_operation_aux application_state operation in
   let receipt = Receipt.create "operation applied successfully" in
   return (application_state, receipt)
 
@@ -203,18 +193,20 @@ let finalize_validation validation_state =
   return_unit
 
 let finalize_application application_state _shell_header =
+  let open Lwt_result_syntax in
   log_finalize `Application application_state ;
   let fitness = application_state.fitness in
   let message = Some (Format.asprintf "fitness <- %a" Fitness.pp fitness) in
   let context = application_state.context in
-  State.get_state context >>= fun state ->
+  let*! state = State.get_state context in
   return
     ( {
         Updater.message;
         context;
         fitness;
         max_operations_ttl = 0;
-        last_allowed_fork_level = 0l;
+        last_finalized_block_level = 0l;
+        last_preserved_block_level = 0l;
       },
       state )
 
@@ -226,9 +218,11 @@ let decode_json json =
     return proto_params
 
 let get_init_state context : State.t tzresult Lwt.t =
+  let open Lwt_result_syntax in
   let protocol_params_key = ["protocol_parameters"] in
-  Context.find context protocol_params_key
-  >>= (function
+  let*! params_bytes = Context.find context protocol_params_key in
+  let* Proto_params.{init_a; init_b} =
+    match params_bytes with
       | None ->
         return Proto_params.default
       | Some bytes -> (
@@ -236,30 +230,29 @@ let get_init_state context : State.t tzresult Lwt.t =
           | None ->
             tzfail (Error.Failed_to_parse_parameter bytes)
           | Some json ->
-            decode_json json ))
-  >>=? function
-  | Proto_params.{init_a; init_b} -> (
-      match State.create init_a init_b with
-      | None ->
-        tzfail Error.Invalid_protocol_parameters
-      | Some state ->
-        return state )
+            decode_json json )
+  in
+  match State.create init_a init_b with
+  | None ->
+    tzfail Error.Invalid_protocol_parameters
+  | Some state ->
+    return state
 
 let init _chain_id context block_header =
+  let open Lwt_result_syntax in
   let open Block_header in
   let fitness = block_header.fitness in
   Logging.log Notice "init: fitness = %a%!" Fitness.pp fitness ;
-  get_init_state context
-  >>=? fun init_state ->
-  State.update_state context init_state
-  >>= fun init_context ->
+  let* init_state = get_init_state context in
+  let*! init_context = State.update_state context init_state in
   return
     {
       Updater.message = None;
       context = init_context;
       fitness;
       max_operations_ttl = 0;
-      last_allowed_fork_level = block_header.level;
+      last_preserved_block_level = block_header.level;
+      last_finalized_block_level = Compare.Int32.max 0l Int32.(sub block_header.level 2l) ;
     }
 
 let compare_operations _ _ = 0

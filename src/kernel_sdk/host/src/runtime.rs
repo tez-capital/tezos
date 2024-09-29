@@ -8,10 +8,13 @@
 //!
 //! Includes blanket implementation for all types implementing [SmartRollupCore].
 
+pub mod unwindable;
+
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 use tezos_smart_rollup_core::{SmartRollupCore, PREIMAGE_HASH_SIZE};
 
+use crate::dal_parameters::RollupDalParameters;
 #[cfg(feature = "alloc")]
 use crate::input::Message;
 use crate::metadata::RollupMetadata;
@@ -19,6 +22,7 @@ use crate::metadata::RollupMetadata;
 use crate::path::{Path, RefPath};
 #[cfg(not(feature = "alloc"))]
 use crate::path::{Path, RefPath};
+use crate::DAL_PARAMETERS_SIZE;
 use crate::{Error, METADATA_SIZE};
 #[cfg(feature = "alloc")]
 use tezos_smart_rollup_core::smart_rollup_core::ReadInputMessageInfo;
@@ -187,7 +191,7 @@ pub trait Runtime {
     ) -> Result<usize, RuntimeError>;
 
     /// Reveal a DAL page.
-    #[cfg(all(feature = "alloc", feature = "proto-alpha"))]
+    #[cfg(feature = "alloc")]
     fn reveal_dal_page(
         &self,
         published_level: i32,
@@ -195,6 +199,9 @@ pub trait Runtime {
         page_index: i16,
         destination: &mut [u8],
     ) -> Result<usize, RuntimeError>;
+
+    /// Reveal the DAL parameters.
+    fn reveal_dal_parameters(&self) -> RollupDalParameters;
 
     /// Return the size of value stored at `path`
     fn store_value_size(&self, path: &impl Path) -> Result<usize, RuntimeError>;
@@ -590,7 +597,7 @@ where
         RollupMetadata::from(destination)
     }
 
-    #[cfg(all(feature = "alloc", feature = "proto-alpha"))]
+    #[cfg(feature = "alloc")]
     fn reveal_dal_page(
         &self,
         published_level: i32,
@@ -620,6 +627,39 @@ where
         match Error::wrap(res) {
             Ok(size) => Ok(size),
             Err(e) => Err(RuntimeError::HostErr(e)),
+        }
+    }
+
+    fn reveal_dal_parameters(&self) -> RollupDalParameters {
+        let mut destination = [0u8; DAL_PARAMETERS_SIZE];
+        // This will match the encoding declared for revealing DAL parameters in the Tezos protocol.
+        let payload: &[u8] = &[3u8]; // tag
+
+        let bytes_read = unsafe {
+            SmartRollupCore::reveal(
+                self,
+                payload.as_ptr(),
+                payload.len(),
+                destination.as_mut_ptr(),
+                destination.len(),
+            )
+        };
+
+        debug_assert!(bytes_read == DAL_PARAMETERS_SIZE as i32, "SDK_ERROR: Revealing DAL parameters should always succeed. \
+                                             If you see this message, please report it to the \
+                                             SDK developers at https://gitlab.com/tezos/tezos");
+
+        match RollupDalParameters::try_from(destination) {
+            Ok(dal_parameters) => dal_parameters,
+            Err(_) => {
+                debug_assert!(
+                    false,
+                    "SDK_ERROR: Decoding DAL parameters should always succeed. \
+                     If you see this message, please report it to the \
+                     SDK developers at https://gitlab.com/tezos/tezos"
+                );
+                unreachable!()
+            }
         }
     }
 
@@ -712,6 +752,7 @@ fn check_path_exists<T: Path>(
 #[cfg(test)]
 mod tests {
     use super::{Runtime, RuntimeError, PREIMAGE_HASH_SIZE};
+    use crate::{dal_parameters::RollupDalParameters, DAL_PARAMETERS_SIZE};
     use crate::{
         input::Message,
         metadata::RollupMetadata,
@@ -804,7 +845,7 @@ mod tests {
         let expected = Message::new(
             level,
             id,
-            Box::new([byte; MAX_INPUT_MESSAGE_SIZE / FRACTION]).to_vec(),
+            [byte; MAX_INPUT_MESSAGE_SIZE / FRACTION].to_vec(),
         );
 
         assert_eq!(Ok(Some(expected)), outcome);
@@ -1298,6 +1339,36 @@ mod tests {
 
         // Assert
         assert_eq!(expected_metadata, result);
+    }
+
+    #[test]
+    fn reveal_dal_parameters_ok() {
+        // Arrange
+        let expected_dal_parameters = RollupDalParameters {
+            number_of_slots: 1122,
+            attestation_lag: 3344,
+            slot_size: 5566,
+            page_size: 7788,
+        };
+        let mut mock = MockSmartRollupCore::new();
+        let dal_parameters_bytes = [
+            0, 0, 0, 0, 0, 0, 4, 98, 0, 0, 0, 0, 0, 0, 13, 16, 0, 0, 0, 0, 0, 0, 21, 190,
+            0, 0, 0, 0, 0, 0, 30, 108,
+        ];
+        mock.expect_reveal()
+            .return_once(move |_, _, destination_address, _| {
+                let buffer = unsafe {
+                    from_raw_parts_mut(destination_address, DAL_PARAMETERS_SIZE)
+                };
+                buffer.copy_from_slice(&dal_parameters_bytes.clone());
+                DAL_PARAMETERS_SIZE as i32
+            });
+
+        // Act
+        let result = mock.reveal_dal_parameters();
+
+        // Assert
+        assert_eq!(expected_dal_parameters, result);
     }
 
     mod test_helpers {

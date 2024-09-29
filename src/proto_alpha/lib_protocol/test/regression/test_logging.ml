@@ -140,7 +140,7 @@ let pp_trace fmt = function
 
 let logger () :
     (unit -> trace_element list tzresult Lwt.t) * Script_typed_ir.logger =
-  let open Lwt_result_syntax in
+  let open Lwt_result_wrap_syntax in
   let open Script_typed_ir in
   let log : log_element list ref = ref [] in
   let logger =
@@ -162,14 +162,12 @@ let logger () :
       end)
   in
   let assemble_log () =
-    let open Environment.Error_monad in
     let+ l =
       List.map_es
         (function
           | With_stack (ctxt, instr, loc, stack, stack_ty, indent) ->
-              let+ stack =
-                Lwt.map Environment.wrap_tzresult
-                @@ Traced_interpreter.unparse_stack ctxt (stack, stack_ty)
+              let+@ stack =
+                Traced_interpreter.unparse_stack ctxt (stack, stack_ty)
               in
               TInstr (loc, Gas.level ctxt, instr, stack, indent)
           | Ctrl cont -> return @@ TCtrl cont)
@@ -209,7 +207,11 @@ let run_script transaction () =
   let* parameter, ctxt =
     match transaction with
     | With_lib {lib = {filename; storage}; parameter; _} ->
-        let* block, baker, _contract, _src2 = Contract_helpers.init () in
+        let* block, baker, _contract, _src2 =
+          Contract_helpers.init
+            ~hard_gas_limit_per_block:(Gas.Arith.integral_of_int_exn 10_000_000)
+            ()
+        in
         let sender = Contract.Implicit baker in
         let* src_addr, _script, block =
           Contract_helpers.originate_contract_from_string_hash
@@ -256,7 +258,7 @@ let fail_on_error f () =
   let open Lwt_syntax in
   let* result = f () in
   match result with
-  | Ok () -> return ()
+  | Ok () -> return_unit
   | Error e -> Test.fail "%a" Error_monad.pp_print_trace e
 
 (* Make sure that after a snapshot the snapshotted version of the test
@@ -380,11 +382,11 @@ let () =
         ~storage:"{}"
         "spawn_identities";
       transaction
-        ~parameter:"Pair \"KT1Ln1MPvHDJ1phLL8dNL4jrKF6Q1yQCBG1v\" 17 3"
+        ~parameter:"Ticket \"KT1Ln1MPvHDJ1phLL8dNL4jrKF6Q1yQCBG1v\" nat 17 3"
         ~storage:"None"
         "ticket_join";
       transaction
-        ~parameter:"Pair \"KT1Ln1MPvHDJ1phLL8dNL4jrKF6Q1yQCBG1v\" 17 3"
+        ~parameter:"Ticket \"KT1Ln1MPvHDJ1phLL8dNL4jrKF6Q1yQCBG1v\" nat 17 3"
         ~storage:"Unit"
         "ticket_split";
       transaction ~parameter:"5" ~storage:"3" "view_toplevel_lib";

@@ -103,13 +103,10 @@ let prevalidator_limits_encoding =
   let open Data_encoding in
   conv
     (fun {operation_timeout; max_refused_operations; operations_batch_size} ->
-      (operation_timeout, max_refused_operations, operations_batch_size, false))
-    (fun ( operation_timeout,
-           max_refused_operations,
-           operations_batch_size,
-           _disable_precheck ) ->
+      (operation_timeout, max_refused_operations, operations_batch_size))
+    (fun (operation_timeout, max_refused_operations, operations_batch_size) ->
       {operation_timeout; max_refused_operations; operations_batch_size})
-    (obj4
+    (obj3
        (dft
           "operations_request_timeout"
           timeout_encoding
@@ -121,10 +118,7 @@ let prevalidator_limits_encoding =
        (dft
           "operations_batch_size"
           int31
-          default_prevalidator_limits.operations_batch_size)
-       (dft "disable_precheck" bool false))
-(* TODO: https://gitlab.com/tezos/tezos/-/issues/5767
-   Remove "disable_precheck" from this encoding in Octez V19. *)
+          default_prevalidator_limits.operations_batch_size))
 
 type peer_validator_limits = {
   new_head_request_timeout : Time.System.Span.t;
@@ -211,7 +205,7 @@ let synchronisation_heuristic_encoding default_latency default_threshold =
 type chain_validator_limits = {synchronisation : synchronisation_limits}
 
 let default_chain_validator_limits =
-  {synchronisation = {latency = 150; threshold = 4}}
+  {synchronisation = {latency = 50; threshold = 4}}
 
 let chain_validator_limits_encoding =
   let open Data_encoding in
@@ -226,7 +220,7 @@ let chain_validator_limits_encoding =
        [
          case
            ~title:"synchronisation_heuristic_encoding"
-           Json_only
+           (Tag 0)
            (synchronisation_heuristic_encoding
               default_chain_validator_limits.synchronisation.latency
               default_chain_validator_limits.synchronisation.threshold)
@@ -234,7 +228,7 @@ let chain_validator_limits_encoding =
            (fun x -> x);
          case
            ~title:"legacy_bootstrap_threshold_encoding"
-           Json_only
+           (Tag 1)
            (obj1
               (dft
                  "bootstrap_threshold"
@@ -251,12 +245,18 @@ let chain_validator_limits_encoding =
              });
        ])
 
+let default_disable_context_pruning = false
+
+let default_storage_maintenance_delay = Storage_maintenance.Auto
+
 type limits = {
   block_validator_limits : block_validator_limits;
   prevalidator_limits : prevalidator_limits;
   peer_validator_limits : peer_validator_limits;
   chain_validator_limits : chain_validator_limits;
   history_mode : History_mode.t option;
+  disable_context_pruning : bool option;
+  storage_maintenance_delay : Storage_maintenance.delay option;
 }
 
 let default_limits =
@@ -266,6 +266,8 @@ let default_limits =
     peer_validator_limits = default_peer_validator_limits;
     chain_validator_limits = default_chain_validator_limits;
     history_mode = None;
+    disable_context_pruning = Some false;
+    storage_maintenance_delay = Some Auto;
   }
 
 let limits_encoding =
@@ -277,25 +279,33 @@ let limits_encoding =
            prevalidator_limits;
            chain_validator_limits;
            history_mode;
+           disable_context_pruning;
+           storage_maintenance_delay;
          } ->
       ( peer_validator_limits,
         block_validator_limits,
         prevalidator_limits,
         chain_validator_limits,
-        history_mode ))
+        history_mode,
+        disable_context_pruning,
+        storage_maintenance_delay ))
     (fun ( peer_validator_limits,
            block_validator_limits,
            prevalidator_limits,
            chain_validator_limits,
-           history_mode ) ->
+           history_mode,
+           disable_context_pruning,
+           storage_maintenance_delay ) ->
       {
         peer_validator_limits;
         block_validator_limits;
         prevalidator_limits;
         chain_validator_limits;
         history_mode;
+        disable_context_pruning;
+        storage_maintenance_delay;
       })
-    (obj5
+    (obj7
        (dft
           "peer_validator"
           peer_validator_limits_encoding
@@ -312,4 +322,6 @@ let limits_encoding =
           "chain_validator"
           chain_validator_limits_encoding
           default_chain_validator_limits)
-       (opt "history_mode" History_mode.encoding))
+       (opt "history_mode" History_mode.encoding)
+       (opt "disable_context_pruning" bool)
+       (opt "storage_maintenance_delay" Storage_maintenance.delay_encoding))

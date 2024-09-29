@@ -29,8 +29,12 @@
     the refutation game players. (See {!Refutation_player}).
 *)
 
-(** Initiatilize the refuation coordinator. *)
+(** Initiatilize the refuation coordinator, if the rollup node mode
+    supports it. *)
 val init : Node_context.rw -> unit tzresult Lwt.t
+
+(** Whether the refutation coordinator is run in the given mode. *)
+val start_in_mode : Configuration.mode -> bool
 
 (** [process head] processes a new l1 head. This means that the coordinator
     will:
@@ -46,3 +50,6 @@ val process : Layer1.head -> unit tzresult Lwt.t
 
 (** Shutdown the refutation coordinator. *)
 val shutdown : unit -> unit Lwt.t
+
+(** Returns the status of the publisher worker. *)
+val worker_status : unit -> [`Running | `Not_running | `Crashed of error]

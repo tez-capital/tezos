@@ -28,8 +28,53 @@
 *)
 val shards_store_lru_size : int
 
+val slots_store_lru_size : int
+
+val status_store_lru_size : int
+
 (** [committee_cache_size] is the size of the DAL committee cache. *)
 val committee_cache_size : int
 
-(** [shards_proofs_cache_size] is the size of the cache for shards proofs per slot. *)
-val shards_proofs_cache_size : int
+(** [cache_size] is the size (in number of slots) of the cache of
+    not-yet-published slots, shards, and shard proofs. *)
+val cache_size : int
+
+(** [slot_id_cache_size] is the size (in number of levels) of the cache to
+    associate commitments with slot ids at a given level. *)
+val slot_id_cache_size : int
+
+(** The frequency at which we sample the time spent in shards crypto
+    verification. *)
+val shards_verification_sampling_frequency : int
+
+(** When receiving shards from the network, the DAL node does not
+    perform the amplification as soon as it has enough shards to do
+    the reconstruction but waits a bit in case the missing shards are
+    received from the network. The duration of the delay is picked at
+    random between [amplification_random_delay_min] and
+    [amplification_random_delay_max]. *)
+
+val amplification_random_delay_min : float
+
+val amplification_random_delay_max : float
+
+(* During amplification, if the forked process takes more time than
+   this timeout to send the proved shards, then amplification attempt
+   is aborted to avoid keeping a pending promise forever. *)
+val amplification_timeout : float
+
+(** Initial reconnection delay to L1 node from the DAL crawler in seconds. *)
+val initial_l1_crawler_reconnection_delay : float
+
+(** Controls the size of the blocks cache in the L1 crawler. *)
+val crawler_l1_blocks_cache_size : int
+
+(** Number of blocks processing retries in the L1 crawler in case a disconnection
+   error is encountered while retrieving data from L1 outside the
+   {!Layer1.iter_heads} callback. *)
+val crawler_retries_on_disconnection : int
+
+(** Sleep delay before retrying processing a block in the L1 crawler in case a
+   disconnection error is encountered while retrieving data from L1 outside the
+   {!Layer1.iter_heads} callback. *)
+val crawler_re_processing_delay : float

@@ -40,6 +40,8 @@ val counter_arg : (Manager_counter.t option, full) Tezos_clic.arg
 
 val gas_limit_arg : (Gas.Arith.integral option, full) Tezos_clic.arg
 
+val safety_guard_arg : (Gas.Arith.integral option, full) Tezos_clic.arg
+
 val default_gas_limit_arg : (Gas.Arith.integral option, full) Tezos_clic.arg
 
 val run_gas_limit_arg : (Gas.Arith.integral option, full) Tezos_clic.arg
@@ -120,6 +122,15 @@ val non_negative_parameter :
   unit -> (int, #Client_context.io) Tezos_clic.parameter
 
 val non_negative_param :
+  name:string ->
+  desc:string ->
+  ('a, (#Client_context.io as 'b)) Tezos_clic.params ->
+  (int -> 'a, 'b) Tezos_clic.params
+
+val positive_int_parameter :
+  unit -> (int, #Client_context.io) Tezos_clic.parameter
+
+val positive_int_param :
   name:string ->
   desc:string ->
   ('a, (#Client_context.io as 'b)) Tezos_clic.params ->
@@ -229,6 +240,12 @@ val limit_of_staking_over_baking_millionth_arg :
 val edge_of_baking_over_staking_billionth_arg :
   (int option, full) Tezos_clic.arg
 
+val other_contracts_arg :
+  (RPC.Scripts.S.other_contract_description list option, full) Tezos_clic.arg
+
+val extra_big_maps_arg :
+  (RPC.Scripts.S.extra_big_map_description list option, full) Tezos_clic.arg
+
 module Sc_rollup_params : sig
   val rollup_kind_parameter : (Sc_rollup.Kind.t, full) Tezos_clic.parameter
 
@@ -248,7 +265,11 @@ module Sc_rollup_params : sig
 
   val number_of_ticks_parameter :
     (Sc_rollup.Number_of_ticks.t, full) Tezos_clic.parameter
+
+  val whitelist : (Sc_rollup.Whitelist.t, full) Tezos_clic.parameter
 end
+
+val whitelist_arg : (Sc_rollup.Whitelist.t option, full) Tezos_clic.arg
 
 module Zk_rollup_params : sig
   val address_parameter : (Zk_rollup.t, full) Tezos_clic.parameter

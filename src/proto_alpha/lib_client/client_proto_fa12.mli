@@ -105,6 +105,7 @@ val call_contract :
   tez_amount:Tez.t ->
   ?fee:Tez.t ->
   ?gas_limit:Gas.Arith.integral ->
+  ?safety_guard:Gas.Arith.integral ->
   ?storage_limit:Z.t ->
   ?counter:Manager_counter.t ->
   fee_parameter:Injection.fee_parameter ->
@@ -144,6 +145,7 @@ val inject_token_transfer_batch :
   ?default_fee:Tez.t ->
   ?default_gas_limit:Gas.Arith.integral ->
   ?default_storage_limit:Z.t ->
+  ?safety_guard:Gas.Arith.integral ->
   unit ->
   unit tzresult Lwt.t
 
@@ -152,11 +154,11 @@ val run_view_action :
   full ->
   chain:Shell_services.chain ->
   block:Shell_services.block ->
-  ?sender:Contract.t ->
+  sender:Contract.t option ->
   contract:Contract_hash.t ->
   action:action ->
-  ?payer:Signature.public_key_hash ->
-  ?gas:Gas.Arith.integral ->
+  payer:Signature.public_key_hash option ->
+  gas:Gas.Arith.integral option ->
   unparsing_mode:Script_ir_unparser.unparsing_mode ->
   unit ->
   Script.expr tzresult Lwt.t

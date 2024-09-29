@@ -514,7 +514,8 @@ module Benchmark (L : LIB) = struct
           let x_g = of_pair generator |> fst in
           let* diff = Num.add x_pk ~qr:S.mone x_g in
           Num.assert_nonzero diff
-          >* (* Building signature message *)
+          >*
+          (* Building signature message *)
           let* compressed =
             monadic_compress
               [
@@ -607,8 +608,8 @@ let benchmark () =
   let circuit =
     Time.time "PlonK convertion" @@ fun () -> Plonk.Circuit.to_plonk cs
   in
-  let circuit_map = Plonk.SMap.singleton "" (circuit, nb_proofs) in
-  let inputs = Plonk.SMap.singleton "" witness_list in
+  let circuit_map = Kzg.SMap.singleton "" (circuit, nb_proofs) in
+  let inputs = Kzg.SMap.singleton "" witness_list in
   let pp_prv, pp_vrf =
     Time.time "Setup" @@ fun () ->
     Main.setup ~zero_knowledge:false circuit_map ~srs:Helpers.srs

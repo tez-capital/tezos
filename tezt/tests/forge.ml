@@ -33,15 +33,20 @@
                to see the commands that are run.
 *)
 
+let team = Tag.layer1
+
 let forge =
-  Protocol.register_test ~__FILE__ ~title:"forge" ~tags:["forge"; "transfer"]
+  Protocol.register_test
+    ~__FILE__
+    ~title:"forge"
+    ~tags:[team; "forge"; "transfer"]
   @@ fun protocol ->
   let* _node, client = Client.init_with_protocol `Client ~protocol () in
   let* (`OpHash _str) =
     Operation.Manager.(inject [make @@ transfer ()] client)
   in
   let* () = Client.bake_for_and_wait client in
-  let* _ = RPC.Client.call client @@ RPC.get_chain_block_operations () in
+  let* _ = Client.RPC.call client @@ RPC.get_chain_block_operations () in
   unit
 
 let register ~protocols = forge protocols

@@ -29,6 +29,12 @@ let force_switch : (bool, Client_context.full) Tezos_clic.arg =
     ~doc:"Overwrites the configuration file when it exists."
     ()
 
+let import_force_switch : (bool, Client_context.full) Tezos_clic.arg =
+  Tezos_clic.switch
+    ~long:"force"
+    ~doc:"Import into an already populated data dir."
+    ()
+
 let sc_rollup_address_param x =
   Smart_rollup_alias.Address.param
     ~name:"smart-rollup-address"
@@ -44,51 +50,40 @@ let sc_rollup_address_arg : (_, Client_context.full) Tezos_clic.arg =
 
 (* Rollup node only arguments *)
 
-let sc_rollup_node_operator_param next =
+let operator_param next =
   let open Lwt_result_syntax in
-  let format_purpose_list purposes =
-    let pp_purpose fmt purpose =
-      Format.pp_print_string fmt (Configuration.string_of_purpose purpose)
-    in
+  let desc =
     Format.asprintf
       "Public key hash, or alias, of a smart rollup node operator. An operator \
        can be specialized to a particular purpose by prefixing its key or \
-       alias by said purpose, e.g. operating:alias_of_my_operator. The \
+       alias by said purpose, e.g. operating:<alias_of_my_operator>. The \
        possible purposes are: @[<h>%a@]."
-      (Format.pp_print_list pp_purpose)
-      purposes
+      (Format.pp_print_list
+         ~pp_sep:(fun fmt () -> Format.pp_print_string fmt ", ")
+         Purpose.pp_ex_purpose)
+      Purpose.all
+  in
+  let parse_default cctxt s =
+    let* key = Client_keys.Public_key_hash.parse_source_string cctxt s in
+    return (`Default key)
+  in
+  let parse_purpose purpose cctxt s =
+    let* key = Client_keys.Public_key_hash.parse_source_string cctxt s in
+    return (`Purpose (purpose, key))
+  in
+  let all_purpose_case cctxt =
+    List.map
+      (fun purpose ->
+        (Purpose.to_string_ex_purpose purpose, parse_purpose purpose cctxt))
+      Purpose.all
   in
   Tezos_clic.param
     ~name:"operator"
-    ~desc:(format_purpose_list Configuration.purposes)
-    ( Tezos_clic.parameter @@ fun cctxt s ->
-      let parse_pkh s =
-        let from_alias s = Client_keys.Public_key_hash.find cctxt s in
-        let from_key s =
-          match Signature.Public_key_hash.of_b58check_opt s with
-          | None ->
-              failwith "Could not read public key hash for rollup node operator"
-          | Some pkh -> return pkh
-        in
-        Client_aliases.parse_alternatives
-          [("alias", from_alias); ("key", from_key)]
-          s
-      in
-      match String.split ~limit:1 ':' s with
-      | [_] ->
-          let+ pkh = parse_pkh s in
-          `Default pkh
-      | [purpose; operator_s] -> (
-          match Configuration.purpose_of_string purpose with
-          | Some purpose ->
-              let+ pkh = parse_pkh operator_s in
-              `Purpose (purpose, pkh)
-          | None ->
-              let+ pkh = parse_pkh s in
-              `Default pkh)
-      | _ ->
-          (* cannot happen due to String.split's implementation. *)
-          assert false )
+    ~desc
+    (Tezos_clic.parameter (fun (cctxt : #Client_context.full) s ->
+         Client_aliases.parse_alternatives
+           (("default", parse_default cctxt) :: all_purpose_case cctxt)
+           s))
     next
 
 let possible_modes = List.map Configuration.string_of_mode Configuration.modes
@@ -134,6 +129,18 @@ let dal_node_endpoint_arg =
     (Tezos_clic.parameter (fun (_cctxt : Client_context.full) s ->
          Lwt.return_ok (Uri.of_string s)))
 
+let pre_images_endpoint_arg =
+  Tezos_clic.arg
+    ~long:"pre-images-endpoint"
+    ~placeholder:"url"
+    ~doc:
+      (Format.sprintf
+         "The address of a service which provides pre-images for the rollup. \
+          Missing pre-images will be downloaded remotely if they are not \
+          already present on disk.")
+    (Tezos_clic.parameter (fun (_cctxt : Client_context.full) s ->
+         Lwt.return_ok (Uri.of_string s)))
+
 let loser_mode_arg =
   Tezos_clic.arg
     ~long:"loser-mode"
@@ -149,6 +156,13 @@ let string_parameter =
   Tezos_clic.parameter (fun (_cctxt : Client_context.full) x ->
       Lwt_result.return x)
 
+let hex_parameter =
+  Tezos_clic.parameter (fun (cctxt : Client_context.full) h ->
+      let open Lwt_result_syntax in
+      match Hex.to_string (`Hex h) with
+      | None -> cctxt#error "Parameter is not a valid hex-encoded string"
+      | Some b -> return b)
+
 let int_parameter =
   Tezos_clic.parameter (fun (cctxt : Client_context.full) p ->
       try Lwt_result.return (int_of_string p)
@@ -161,6 +175,11 @@ let z_parameter =
         let v = Z.of_string s in
         return v
       with _ -> cctxt#error "Invalid number, must be a non negative number.")
+
+let int32_parameter =
+  Tezos_clic.parameter (fun (cctxt : Client_context.full) p ->
+      try Lwt_result.return (Int32.of_string p)
+      with _ -> cctxt#error "Cannot read int")
 
 module Binary_dependent_args (P : sig
   val binary_name : string
@@ -188,6 +207,15 @@ struct
       ~doc:(Format.sprintf "The address of the %s metrics server." binary_name)
       string_parameter
 
+  let enable_performance_metrics_arg :
+      (bool, Client_context.full) Tezos_clic.arg =
+    Tezos_clic.switch
+      ~long:"enable-performance-metrics"
+      ~doc:
+        "Enable performance metrics when the metrics server is started \
+         (requires lsof, disabled by default)."
+      ()
+
   let dac_observer_endpoint_arg =
     Tezos_clic.arg
       ~long:"dac-observer"
@@ -211,6 +239,23 @@ struct
            binary_name
            default)
       int_parameter
+
+  let acl_override_arg : ([`Allow_all | `Secure] option, _) Tezos_clic.arg =
+    Tezos_clic.arg
+      ~long:"acl-override"
+      ~placeholder:"kind"
+      ~doc:
+        "Specify a different ACL for the rpc server to override the default \
+         one. Possible values are 'secure' and 'allow-all'"
+      (Tezos_clic.parameter (fun (_cctxt : Client_context.full) ->
+           let open Lwt_result_syntax in
+           function
+           | "secure" -> return `Secure
+           | "allow-all" | "allow_all" -> return `Allow_all
+           | _ ->
+               failwith
+                 "Bad value for acl-override, possible values are 'secure' and \
+                  'allow-all'"))
 
   let data_dir_arg =
     let default = Configuration.default_data_dir in
@@ -320,6 +365,36 @@ let injection_ttl_arg =
          if p < 1 then Stdlib.failwith "injection-ttl should be > 1" ;
          p)
 
+let positive_int_parameter =
+  Tezos_clic.parameter (fun (cctxt : Client_context.full) p ->
+      match int_of_string_opt p with
+      | Some i when i > 0 -> Lwt_result.return i
+      | None | Some _ ->
+          cctxt#error "Expected a valid positive integer, provided %s instead" p)
+
+let positive_int32_parameter =
+  Tezos_clic.parameter (fun (cctxt : Client_context.full) p ->
+      match Int32.of_string_opt p with
+      | Some i when Compare.Int32.(i > 0l) -> Lwt_result.return i
+      | None | Some _ ->
+          cctxt#error "Expected a valid positive integer, provided %s instead" p)
+
+let index_buffer_size_arg =
+  Tezos_clic.arg
+    ~long:"index-buffer-size"
+    ~placeholder:"<nb_entries>"
+    ~doc:
+      "The maximum cache size in memory before it is flushed to disk, used for \
+       indexes of the store."
+    positive_int_parameter
+
+let irmin_cache_size_arg =
+  Tezos_clic.arg
+    ~long:"irmin-cache-size"
+    ~placeholder:"<nb_entries>"
+    ~doc:"Size of Irmin cache in number of entries"
+    positive_int_parameter
+
 let log_kernel_debug_arg : (bool, Client_context.full) Tezos_clic.arg =
   Tezos_clic.switch
     ~long:"log-kernel-debug"
@@ -332,3 +407,155 @@ let log_kernel_debug_file_arg =
     ~placeholder:"file"
     ~doc:""
     string_parameter
+
+let no_degraded_arg : (bool, Client_context.full) Tezos_clic.arg =
+  Tezos_clic.switch
+    ~long:"no-degraded"
+    ~doc:
+      "Prevent the rollup node from entering degraded mode on error. The \
+       rollup node will instead stop."
+    ()
+
+let gc_frequency_arg =
+  Tezos_clic.arg
+    ~long:"gc-frequency"
+    ~placeholder:"blocks"
+    ~doc:
+      "The number of blocks between each launch of the garbage collection. \
+       Default is protocol constant challenge_window_in_blocks / 5."
+    positive_int32_parameter
+
+let history_mode_parameter =
+  Tezos_clic.parameter
+    ~autocomplete:(fun (_cctxt : Client_context.full) ->
+      Lwt_result.return ["archive"; "full"])
+    (fun _ m -> Lwt_result.return (Configuration.history_mode_of_string m))
+
+let history_mode_arg =
+  Tezos_clic.arg
+    ~long:"history-mode"
+    ~placeholder:"history_mode"
+    ~doc:
+      (Format.sprintf
+         "The history mode for the rollup node (archive, full) (default is %s)"
+         Configuration.(string_of_history_mode default_history_mode))
+    history_mode_parameter
+
+let wasm_dump_file_param next =
+  Tezos_clic.param
+    ~name:"dump.<json|yaml>"
+    ~desc:"YAML or JSON file containing the dumped durable storage"
+    string_parameter
+    next
+
+let snapshot_dir_arg =
+  Tezos_clic.arg
+    ~long:"dest"
+    ~placeholder:"path"
+    ~doc:
+      "Directory in which to export the snapshot (defaults to current \
+       directory)"
+    string_parameter
+
+let snapshot_file_param next =
+  Tezos_clic.param
+    ~name:"snapshot_file"
+    ~desc:"Snapshot archive file"
+    string_parameter
+    next
+
+let no_checks_arg : (bool, Client_context.full) Tezos_clic.arg =
+  Tezos_clic.switch
+    ~long:"no-check"
+    ~doc:"Don't check integrity of the snapshot."
+    ()
+
+let compress_on_the_fly_arg : (bool, Client_context.full) Tezos_clic.arg =
+  Tezos_clic.switch
+    ~long:"compress-on-the-fly"
+    ~doc:
+      "Produce a compressed snapshot on the fly. The rollup node will use less \
+       disk space to produce the snapshot but will lock the rollup node (if \
+       running) for a longer time. Without this option, producing a snaphsot \
+       requires the available disk space to be around the size of the data \
+       dir."
+    ()
+
+let uncompressed : (bool, Client_context.full) Tezos_clic.arg =
+  Tezos_clic.switch
+    ~long:"uncompressed"
+    ~doc:"Produce an uncompressed snapshot."
+    ()
+
+let compact : (bool, Client_context.full) Tezos_clic.arg =
+  Tezos_clic.switch
+    ~long:"compact"
+    ~doc:"Produce a compact snapshot with a single commit for the context."
+    ()
+
+let rollup_node_endpoint_arg =
+  Tezos_clic.arg
+    ~long:"rollup-node-endpoint"
+    ~placeholder:"uri"
+    ~doc:(Format.sprintf "The address of the running rollup node.")
+    (Tezos_clic.parameter (fun (_cctxt : Client_context.full) s ->
+         Lwt.return_ok (Uri.of_string s)))
+
+let string_list =
+  Tezos_clic.parameter (fun (_cctxt : Client_context.full) s ->
+      let list = String.split ',' s in
+      Lwt_result.return list)
+
+let cors_allowed_headers_arg =
+  Tezos_clic.arg
+    ~long:"cors-headers"
+    ~placeholder:"ALLOWED_HEADERS"
+    ~doc:"List of accepted cors headers."
+    string_list
+
+let cors_allowed_origins_arg =
+  Tezos_clic.arg
+    ~long:"cors-origins"
+    ~placeholder:"ALLOWED_ORIGINS"
+    ~doc:"List of accepted cors origins."
+    string_list
+
+let protocol_hash_parameter =
+  Tezos_clic.parameter (fun (_cctxt : Client_context.full) p ->
+      Lwt.return (Protocol_hash.of_b58check p))
+
+let protocol_hash_arg =
+  Tezos_clic.arg
+    ~long:"protocol"
+    ~short:'P'
+    ~placeholder:"Proto"
+    ~doc:
+      "Protocol hash in base58-check. If not provided, the export will be for \
+       the last registered protocol in the rollup node which may be different \
+       between different versions of the node."
+    protocol_hash_parameter
+
+let protocol_hash_param next =
+  Tezos_clic.param
+    ~name:"protocol"
+    ~desc:"Protocol hash"
+    protocol_hash_parameter
+    next
+
+let apply_unsafe_patches_switch : (bool, Client_context.full) Tezos_clic.arg =
+  Tezos_clic.switch
+    ~long:"apply-unsafe-patches"
+    ~doc:
+      "Apply unsafe PVM patches in the configuration or hardcoded by the node."
+    ()
+
+let bail_on_disagree_switch : (bool, Client_context.full) Tezos_clic.arg =
+  Tezos_clic.switch
+    ~long:"bail-on-disagree"
+    ~doc:
+      "Make an observer rollup node bail when it sees a commitment it disagree \
+       with on L1."
+    ()
+
+let level_param next =
+  Tezos_clic.param ~name:"level" ~desc:"Level" positive_int32_parameter next

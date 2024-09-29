@@ -3,6 +3,7 @@
 (* Open Source License                                                       *)
 (* Copyright (c) 2018 Dynamic Ledger Solutions, Inc. <contact@tezos.com>     *)
 (* Copyright (c) 2019-2021 Nomadic Labs, <contact@nomadic-labs.com>          *)
+(* Copyright (c) 2024 TriliTech <contact@trili.tech>                         *)
 (*                                                                           *)
 (* Permission is hereby granted, free of charge, to any person obtaining a   *)
 (* copy of this software and associated documentation files (the "Software"),*)
@@ -53,6 +54,8 @@ type t = {
   discovery_addr : string option;
   rpc_listen_addrs : string list;
       (** a list of addresses to listen to RPC requests on *)
+  external_rpc_listen_addrs : string list;
+      (** a list of addresses to listen to RPC requests on *)
   private_mode : bool;
       (** enables the private mode, see
           https://tezos.gitlab.io/user/node-configuration.html#private-node *)
@@ -65,7 +68,6 @@ type t = {
           swap of connections with its neighbors nor answer to a swap request.
           This flag is intended to be used for testing and debugging. *)
   disable_mempool : bool;
-  disable_mempool_precheck : bool;  (** DEPRECATED. No longer does anything. *)
   enable_testchain : bool;
   cors_origins : string list;
   cors_headers : string list;
@@ -80,10 +82,16 @@ type t = {
       (** a list of RPC listening addresses for which a full
           access should be granted *)
   media_type : Media_type.Command_line.t;
+  max_active_rpc_connections : RPC_server.Max_active_rpc_connections.t;
   metrics_addr : string list;
   operation_metadata_size_limit :
     Shell_limits.operation_metadata_size_limit option;
       (** maximum operation metadata size allowed to be stored on disk *)
+  enable_http_cache_headers : bool option;
+      (** Adds Cache-control header directives to RPC responses for queries
+          that are relative to the head block. *)
+  disable_context_pruning : bool option;
+  storage_maintenance_delay : Storage_maintenance.delay option;
 }
 
 val process_command : unit tzresult Lwt.t -> unit Cmdliner.Term.ret

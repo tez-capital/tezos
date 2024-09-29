@@ -190,7 +190,12 @@ let delete_file file =
   @@ protect
   @@ fun () ->
   let open Lwt_result_syntax in
-  let*! () = Lwt_unix.unlink file in
+  let*! () =
+    Lwt.catch
+      (fun () -> Lwt_unix.unlink file)
+      (function
+        | Unix.(Unix_error (ENOENT, _, _)) -> Lwt.return_unit | e -> raise e)
+  in
   return_unit
 
 module Make_table (H : H) = struct
@@ -246,7 +251,7 @@ module Make_table (H : H) = struct
           (fun () ->
             let+ f = Lwt_unix.readdir d in
             Some f)
-          (function End_of_file -> return_none | e -> raise e)
+          (function End_of_file -> return_none | e -> Lwt.reraise e)
       in
       match filename with
       | None -> return_unit
@@ -276,14 +281,18 @@ module Make_table (H : H) = struct
     t
 end
 
-module Make_queue (N : sig
-  val name : string
-end)
-(K : Tezos_crypto.Intfs.HASH) (V : sig
-  type t
+module Make_queue
+    (N : sig
+      val name : string
+    end)
+    (K : Tezos_crypto.Intfs.HASH)
+    (V : sig
+      type t
 
-  val encoding : t Data_encoding.t
-end) =
+      val encoding : t Data_encoding.t
+
+      val persist : t -> bool
+    end) =
 struct
   module Q = Hash_queue.Make (K) (V)
 
@@ -328,9 +337,37 @@ struct
   let replace q k v =
     let open Lwt_result_syntax in
     Q.replace q.queue k v ;
-    let* () = write_value (filedata q k) V.encoding v
+    if V.persist v then
+      let* () = write_value (filedata q k) V.encoding v
+      and* () =
+        write_value (filemetadata q k) metadata_encoding (create_metadata ())
+      in
+      return_unit
+    else return_unit
+
+  let clear q =
+    let open Lwt_syntax in
+    Q.clear q.queue ;
+    (* Remove the persistent elements from the disk. *)
+    let elts = Lwt_unix.files_of_directory q.path in
+    let metadata_elts = Lwt_unix.files_of_directory q.metadata_path in
+    let unlink file =
+      Lwt.catch
+        (fun () ->
+          if Sys.is_directory file then return_unit else Lwt_unix.unlink file)
+        (fun e ->
+          Format.ksprintf
+            Stdlib.failwith
+            "Error in unlink %s: %s"
+            file
+            (Printexc.to_string e))
+    in
+    let* () =
+      Lwt_stream.iter_s (fun f -> unlink (Filename.concat q.path f)) elts
     and* () =
-      write_value (filemetadata q k) metadata_encoding (create_metadata ())
+      Lwt_stream.iter_s
+        (fun m -> unlink (Filename.concat q.metadata_path m))
+        metadata_elts
     in
     return_unit
 
@@ -339,6 +376,8 @@ struct
   let length q = Q.length q.queue
 
   let find_opt q k = Q.find_opt q.queue k
+
+  let elements q = Q.elements q.queue
 
   let load_from_disk ~warn_unreadable ~capacity ~data_dir ~filter =
     let open Lwt_result_syntax in
@@ -351,7 +390,7 @@ struct
           (fun () ->
             let+ f = Lwt_unix.readdir d in
             Some f)
-          (function End_of_file -> return_none | e -> raise e)
+          (function End_of_file -> return_none | e -> Lwt.reraise e)
       in
       match filename with
       | None -> return acc

@@ -28,13 +28,11 @@
 let default_reward = Q.one
 
 (* Default bonus value *)
-let default_bonus = 0L
+let default_bonus = Issuance_bonus_repr.zero
 
-(* Order of magnitude of the total supply in mutez
-   Approximately 2^50 *)
-let bonus_unit = 1_000_000_000_000_000L
-
-let ratio_to_bonus q = Q.(q * of_int64 bonus_unit |> to_int64)
+(* Note: the reward and the bonus values are computed as rationals ([Q.t]) but
+   are stored as fixed-point values (see {!Issuance_bonus_repr}) so that the
+   stored representation does not grow unboundedly. *)
 
 type error += Undetermined_issuance_coeff_for_cycle of Cycle_repr.t
 
@@ -42,8 +40,8 @@ let () =
   let open Data_encoding in
   let undetermined_issuance_coeff_for_cycle_description =
     "Issuance coefficient is only determined for the current cycle and the \
-     next [preserved_cycles] cycles to come. Requested cycle is not in this \
-     window."
+     next [consensus_rights_delay] cycles to come. Requested cycle is not in \
+     this window."
   in
   register_error_kind
     `Permanent
@@ -62,14 +60,22 @@ let () =
       | Undetermined_issuance_coeff_for_cycle cycle -> Some cycle | _ -> None)
     (fun cycle -> Undetermined_issuance_coeff_for_cycle cycle)
 
+let launch_cycle ctxt = Storage.Adaptive_issuance.Activation.get ctxt
+
+(* Doesn't fail when [i < 0]. In practice, this will always be called
+   with a non-negative [i] anyway, but if we ever have negative
+   constants somehow, it's better to treat e.g. a negative delay or
+   transition period as null than outright fail. *)
+let safe_cycle_add c i = if Compare.Int.(i >= 0) then Cycle_repr.add c i else c
+
 let check_determined_cycle ctxt cycle =
   let ai_enable = Constants_storage.adaptive_issuance_enable ctxt in
   if ai_enable then
     let ctxt_cycle = (Raw_context.current_level ctxt).cycle in
-    let preserved_cycles = Constants_storage.preserved_cycles ctxt in
+    let cycles_delay = Constants_storage.issuance_modification_delay ctxt in
     fail_unless
       Cycle_repr.(
-        ctxt_cycle <= cycle && cycle <= add ctxt_cycle preserved_cycles)
+        ctxt_cycle <= cycle && cycle <= safe_cycle_add ctxt_cycle cycles_delay)
       (Undetermined_issuance_coeff_for_cycle cycle)
   else return_unit
 
@@ -103,24 +109,111 @@ let load_reward_coeff ctxt ~cycle =
   in
   return ctxt
 
-let compute_reward_coeff_ratio =
-  let q_1600 = Q.of_int 1600 in
-  fun ~stake_ratio ~bonus ~issuance_ratio_max ~issuance_ratio_min ->
-    let q_bonus = Q.(div (of_int64 bonus) (of_int64 bonus_unit)) in
-    let inv_f = Q.(mul (mul stake_ratio stake_ratio) q_1600) in
-    let f = Q.inv inv_f (* f = 1/1600 * (1/x)^2 = yearly issuance rate *) in
-    let f = Q.add f q_bonus in
-    (* f is truncated so that 0.05% <= f <= 5% *)
-    let f = Q.(min f issuance_ratio_max) in
-    let f = Q.(max f issuance_ratio_min) in
-    f
+let truncate_reward_coeff ~issuance_ratio_min ~issuance_ratio_max f =
+  let f = Q.min f issuance_ratio_max in
+  let f = Q.max f issuance_ratio_min in
+  f
 
-let compute_bonus ~seconds_per_cycle ~total_supply ~total_frozen_stake
-    ~previous_bonus ~reward_params =
+let compute_extremum ~launch_cycle ~new_cycle ~initial_period ~transition_period
+    ~initial ~final =
+  match launch_cycle with
+  | None ->
+      (* This case shouldn't happen, but if it does this value is the most sensible *)
+      initial
+  | Some launch_cycle ->
+      let transition_period = transition_period + 1 in
+      let t1 = safe_cycle_add launch_cycle initial_period in
+      let t2 = safe_cycle_add t1 transition_period in
+      if Cycle_repr.(new_cycle <= t1) then initial
+      else if
+        Compare.Int.(transition_period <= 0) || Cycle_repr.(new_cycle >= t2)
+      then final
+      else
+        let t = Cycle_repr.diff new_cycle t1 |> Q.of_int32 in
+        Q.(((final - initial) * t / of_int transition_period) + initial)
+
+let compute_min
+    ~(reward_params : Constants_parametric_repr.adaptive_rewards_params) =
   let Constants_parametric_repr.
         {
-          issuance_ratio_min;
-          issuance_ratio_max;
+          initial_period;
+          transition_period;
+          issuance_ratio_initial_min;
+          issuance_ratio_final_min;
+          _;
+        } =
+    reward_params
+  in
+  compute_extremum
+    ~initial_period
+    ~transition_period
+    ~initial:issuance_ratio_initial_min
+    ~final:issuance_ratio_final_min
+
+let dyn_max ~stake_ratio =
+  let r =
+    if Compare.Q.(stake_ratio <= Q.(5 // 100)) then Q.(10 // 100)
+    else if Compare.Q.(stake_ratio >= Q.(50 // 100)) then Q.(1 // 100)
+    else
+      (* (1 + 9 * ((50 - 100 * x) / 42 ) ^ 2 ) / 100 *)
+      let q9 = Q.of_int 9 in
+      let q50 = Q.of_int 50 in
+      let q100 = Q.of_int 100 in
+      let q42 = Q.of_int 42 in
+      let x = stake_ratio in
+      let to_square = Q.((q50 - (q100 * x)) / q42) in
+      Q.((one + (q9 * to_square * to_square)) / q100)
+  in
+  if Compare.Q.(r <= Q.(1 // 100)) then Q.(1 // 100)
+  else if Compare.Q.(r >= Q.(10 // 100)) then Q.(10 // 100)
+  else r
+
+let compute_max ~issuance_ratio_min
+    ~(reward_params : Constants_parametric_repr.adaptive_rewards_params)
+    ~launch_cycle ~new_cycle ~stake_ratio =
+  let Constants_parametric_repr.
+        {
+          initial_period;
+          transition_period;
+          issuance_ratio_initial_max;
+          issuance_ratio_final_max;
+          _;
+        } =
+    reward_params
+  in
+  let max_max =
+    compute_extremum
+      ~initial_period
+      ~transition_period
+      ~initial:issuance_ratio_initial_max
+      ~final:issuance_ratio_final_max
+      ~launch_cycle
+      ~new_cycle
+  in
+  let dyn_max = dyn_max ~stake_ratio in
+  let true_max = Compare.Q.min max_max dyn_max in
+  (* If max < min, we set the max to the min *)
+  Compare.Q.max true_max issuance_ratio_min
+
+let compute_reward_coeff_ratio_without_bonus =
+  let q_1600 = Q.of_int 1600 in
+  fun ~stake_ratio ~issuance_ratio_max ~issuance_ratio_min ->
+    let inv_f = Q.(mul (mul stake_ratio stake_ratio) q_1600) in
+    let f = Q.inv inv_f (* f = 1/1600 * (1/x)^2 = yearly issuance rate *) in
+    (* f is truncated so that 0.05% <= f <= 5% *)
+    truncate_reward_coeff ~issuance_ratio_min ~issuance_ratio_max f
+
+let compute_bonus ~issuance_ratio_max ~seconds_per_cycle ~stake_ratio
+    ~base_reward_coeff_ratio ~(previous_bonus : Issuance_bonus_repr.t)
+    ~reward_params =
+  let Constants_parametric_repr.
+        {
+          issuance_ratio_final_min = _;
+          issuance_ratio_final_max = _;
+          issuance_ratio_initial_min = _;
+          issuance_ratio_initial_max = _;
+          initial_period = _;
+          transition_period = _;
           max_bonus;
           growth_rate;
           center_dz;
@@ -128,76 +221,48 @@ let compute_bonus ~seconds_per_cycle ~total_supply ~total_frozen_stake
         } =
     reward_params
   in
-  let q_total_supply = Tez_repr.to_mutez total_supply |> Q.of_int64 in
-  let q_total_frozen_stake =
-    Tez_repr.to_mutez total_frozen_stake |> Q.of_int64
-  in
-  let stake_ratio =
-    Q.div q_total_frozen_stake q_total_supply (* = portion of frozen stake *)
-  in
-  let base_reward_coeff_ratio =
-    compute_reward_coeff_ratio
-      ~stake_ratio
-      ~bonus:0L
-      ~issuance_ratio_max
-      ~issuance_ratio_min
-  in
   let base_reward_coeff_dist_to_max =
-    ratio_to_bonus Q.(issuance_ratio_max - base_reward_coeff_ratio)
+    Q.(issuance_ratio_max - base_reward_coeff_ratio)
   in
   (* The bonus reward is truncated between [0] and [max_bonus] *)
   (* It is done in a way that the bonus does not increase if the coeff
      would already be above the [reward_pct_max] *)
-  let max_bonus = Compare.Int64.min base_reward_coeff_dist_to_max max_bonus in
+  let max_new_bonus =
+    Compare.Q.min base_reward_coeff_dist_to_max (max_bonus :> Q.t)
+  in
   (* [dist] is the distance from [stake_ratio] to [48%,52%] *)
   let unsigned_dist =
     Q.(max zero (abs (stake_ratio - center_dz) - radius_dz))
   in
-  let dist_q =
+  let q_dist =
     if Compare.Q.(stake_ratio >= center_dz) then Q.neg unsigned_dist
     else unsigned_dist
   in
-  let dist = ratio_to_bonus dist_q in
+  let q_seconds_per_cycle = Q.of_int64 seconds_per_cycle in
+  let q_days_per_cycle = Q.div q_seconds_per_cycle (Q.of_int 86_400) in
+  let q_previous_bonus = (previous_bonus :> Q.t) in
   let new_bonus =
-    Int64.(add previous_bonus (mul dist (mul growth_rate seconds_per_cycle)))
+    Q.(add q_previous_bonus (mul q_dist (mul growth_rate q_days_per_cycle)))
   in
-  let new_bonus = Compare.Int64.max new_bonus 0L in
-  let new_bonus = Compare.Int64.min new_bonus max_bonus in
-  new_bonus
+  let new_bonus = Q.min new_bonus max_new_bonus in
+  let new_bonus = Q.max new_bonus Q.zero in
+  Issuance_bonus_repr.of_Q ~max_bonus new_bonus
 
 let compute_coeff =
   let q_min_per_year = Q.of_int 525600 in
-  fun ~base_total_issued_per_minute
-      ~total_supply
-      ~total_frozen_stake
-      ~bonus
-      ~reward_params ->
-    if Compare.Int64.equal (Tez_repr.to_mutez base_total_issued_per_minute) 0L
-    then Q.one
+  fun ~issuance_ratio_max
+      ~issuance_ratio_min
+      ~base_total_issued_per_minute
+      ~base_reward_coeff_ratio
+      ~q_total_supply
+      ~(bonus : Issuance_bonus_repr.t) ->
+    if Tez_repr.(base_total_issued_per_minute = zero) then Q.one
     else
-      let Constants_parametric_repr.{issuance_ratio_min; issuance_ratio_max; _}
-          =
-        reward_params
-      in
-      let q_total_supply = Tez_repr.to_mutez total_supply |> Q.of_int64 in
-      let q_total_frozen_stake =
-        Tez_repr.to_mutez total_frozen_stake |> Q.of_int64
-      in
-      let stake_ratio =
-        Q.div
-          q_total_frozen_stake
-          q_total_supply (* = portion of frozen stake *)
-      in
       let q_base_total_issued_per_minute =
         Tez_repr.to_mutez base_total_issued_per_minute |> Q.of_int64
       in
-      let f =
-        compute_reward_coeff_ratio
-          ~stake_ratio
-          ~bonus
-          ~issuance_ratio_max
-          ~issuance_ratio_min
-      in
+      let f = Q.add base_reward_coeff_ratio (bonus :> Q.t) in
+      let f = truncate_reward_coeff ~issuance_ratio_min ~issuance_ratio_max f in
       let f = Q.div f q_min_per_year (* = issuance rate per minute *) in
       let f = Q.mul f q_total_supply (* = issuance per minute *) in
       Q.div f q_base_total_issued_per_minute
@@ -207,11 +272,14 @@ let compute_and_store_reward_coeff_at_cycle_end ctxt ~new_cycle =
   let ai_enable = Constants_storage.adaptive_issuance_enable ctxt in
   if not ai_enable then return ctxt
   else
+    let* launch_cycle = launch_cycle ctxt in
     let reward_params =
       Constants_storage.adaptive_issuance_rewards_params ctxt
     in
-    let preserved = Constants_storage.preserved_cycles ctxt in
-    let for_cycle = Cycle_repr.add new_cycle preserved in
+    let modification_delay =
+      Constants_storage.issuance_modification_delay ctxt
+    in
+    let for_cycle = safe_cycle_add new_cycle modification_delay in
     let before_for_cycle = Cycle_repr.pred for_cycle in
     let* total_supply = Storage.Contract.Total_supply.get ctxt in
     let* total_stake = Stake_storage.get_total_active_stake ctxt for_cycle in
@@ -227,21 +295,54 @@ let compute_and_store_reward_coeff_at_cycle_end ctxt ~new_cycle =
       Constants_storage.minimal_block_delay ctxt |> Period_repr.to_seconds
     in
     let seconds_per_cycle = Int64.mul blocks_per_cycle minimal_block_delay in
-    let bonus =
+    let q_total_supply = Tez_repr.to_mutez total_supply |> Q.of_int64 in
+    let q_total_frozen_stake =
+      Tez_repr.to_mutez total_frozen_stake |> Q.of_int64
+    in
+    let stake_ratio =
+      Q.div q_total_frozen_stake q_total_supply (* = portion of frozen stake *)
+    in
+    (* Once computed here, the minimum is final. *)
+    let issuance_ratio_min =
+      compute_min ~launch_cycle ~new_cycle ~reward_params
+    in
+    (* Once computed here, the maximum is final. If it would have been smaller than
+       the min, then it is set to the min. *)
+    let issuance_ratio_max =
+      compute_max
+        ~issuance_ratio_min
+        ~stake_ratio
+        ~launch_cycle
+        ~new_cycle
+        ~reward_params
+    in
+    (* Compute the static curve, within the given bounds *)
+    let base_reward_coeff_ratio =
+      compute_reward_coeff_ratio_without_bonus
+        ~stake_ratio
+        ~issuance_ratio_max
+        ~issuance_ratio_min
+    in
+    (* Compute the dynamic curve. Keeps the sum static + dynamic within the
+       given bounds *)
+    let*? bonus =
       compute_bonus
+        ~issuance_ratio_max
         ~seconds_per_cycle
-        ~total_supply
-        ~total_frozen_stake
+        ~stake_ratio
+        ~base_reward_coeff_ratio
         ~previous_bonus
         ~reward_params
     in
+    (* Compute the multiplicative coefficient to apply to the base rewards *)
     let coeff =
       compute_coeff
+        ~issuance_ratio_max
+        ~issuance_ratio_min
         ~base_total_issued_per_minute
-        ~total_supply
-        ~total_frozen_stake
+        ~base_reward_coeff_ratio
+        ~q_total_supply
         ~bonus
-        ~reward_params
     in
     let*! ctxt = Storage.Issuance_bonus.add ctxt for_cycle bonus in
     let*! ctxt = Storage.Issuance_coeff.add ctxt for_cycle coeff in
@@ -271,8 +372,6 @@ let init ctxt =
 
 let activate ctxt ~cycle =
   Storage.Adaptive_issuance.Activation.update ctxt (Some cycle)
-
-let launch_cycle ctxt = Storage.Adaptive_issuance.Activation.get ctxt
 
 let set_adaptive_issuance_enable ctxt =
   let open Lwt_result_syntax in
@@ -306,8 +405,9 @@ let update_ema ctxt ~vote =
   let open Constants_storage in
   let+ ctxt, launch_cycle =
     if
-      Per_block_votes_repr.Adaptive_issuance_launch_EMA.(
-        new_ema < adaptive_issuance_launch_ema_threshold ctxt)
+      (not (adaptive_issuance_activation_vote_enable ctxt))
+      || Per_block_votes_repr.Adaptive_issuance_launch_EMA.(
+           new_ema < adaptive_issuance_launch_ema_threshold ctxt)
     then return (ctxt, launch_cycle)
     else
       match launch_cycle with
@@ -317,8 +417,8 @@ let update_ema ctxt ~vote =
       | None ->
           (* set the feature to activate in a few cycles *)
           let current_cycle = (Level_storage.current ctxt).cycle in
-          let delay = 1 + preserved_cycles ctxt + max_slashing_period ctxt in
-          let cycle = Cycle_repr.add current_cycle delay in
+          let delay = adaptive_issuance_activation_delay ctxt in
+          let cycle = safe_cycle_add current_cycle delay in
           let+ ctxt = activate ctxt ~cycle in
           (ctxt, Some cycle)
   in
@@ -326,4 +426,21 @@ let update_ema ctxt ~vote =
 
 module For_RPC = struct
   let get_reward_coeff = get_reward_coeff
+
+  let get_reward_bonus = get_reward_bonus
+end
+
+module Internal_for_tests = struct
+  let compute_reward_coeff_ratio_without_bonus =
+    compute_reward_coeff_ratio_without_bonus
+
+  let compute_bonus = compute_bonus
+
+  let compute_coeff = compute_coeff
+
+  let compute_min = compute_min
+
+  let dyn_max = dyn_max
+
+  let compute_max = compute_max
 end

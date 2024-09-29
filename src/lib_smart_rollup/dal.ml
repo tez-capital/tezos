@@ -41,6 +41,12 @@ module Commitment = struct
   type t = Tezos_crypto_dal.Cryptobox.Verifier.commitment
 end
 
+module Commitment_proof = struct
+  include Tezos_crypto_dal.Cryptobox.Verifier.Commitment_proof
+
+  type t = Tezos_crypto_dal.Cryptobox.Verifier.commitment_proof
+end
+
 module Slot_header = struct
   module V1 = struct
     type id = {published_level : int32; index : Slot_index.t}
@@ -65,7 +71,7 @@ module Slot_header = struct
   type versioned = V1 of V1.t
 
   let versioned_encoding =
-    let open Data_encoding in
+    let open Data_encoding.V1 in
     union
       [
         case
@@ -94,7 +100,7 @@ module Slot_history = struct
   type versioned = V1 of V1.t
 
   let versioned_encoding =
-    let open Data_encoding in
+    let open Data_encoding.V1 in
     union
       [
         case
@@ -123,7 +129,7 @@ module Slot_history_cache = struct
   type versioned = V1 of V1.t
 
   let versioned_encoding =
-    let open Data_encoding in
+    let open Data_encoding.V1 in
     union
       [
         case

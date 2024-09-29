@@ -46,6 +46,8 @@
    This is to check that injected protocols are propagated to other nodes
    after the migration. *)
 
+let team = Tag.layer1
+
 (* Protocol to inject when testing injection. *)
 let test_proto_dir = "src/bin_client/test/proto_test_injection"
 
@@ -57,7 +59,7 @@ let test_proto_files = ["main.ml"; "main.mli"]
 let test_proto_TEZOS_PROTOCOL =
   {|{
     "modules": ["Main"],
-    "expected_env_version": 11
+    "expected_env_version": 13
 }
 |}
 
@@ -126,7 +128,7 @@ let decode_period json =
 
 let get_current_period ?level client =
   let* json =
-    RPC.Client.call client
+    Client.RPC.call client
     @@ RPC.get_chain_block_votes_current_period
          ?block:(Option.map string_of_int level)
          ()
@@ -135,7 +137,7 @@ let get_current_period ?level client =
 
 let get_successor_period ?level client =
   let* json =
-    RPC.Client.call client
+    Client.RPC.call client
     @@ RPC.get_chain_block_votes_successor_period
          ?block:(Option.map string_of_int level)
          ()
@@ -161,7 +163,7 @@ let level_type : RPC.level Check.typ =
     Check.(tuple5 int int int int bool)
 
 let get_current_level client =
-  RPC.Client.call client @@ RPC.get_chain_block_helper_current_level ()
+  Client.RPC.call client @@ RPC.get_chain_block_helper_current_level ()
 
 let check_current_level client expected_level =
   let* level = get_current_level client in
@@ -171,7 +173,7 @@ let check_current_level client expected_level =
 
 let get_proposals ?level client =
   let* proposals =
-    RPC.Client.call client
+    Client.RPC.call client
     @@ RPC.get_chain_block_votes_proposals
          ?block:(Option.map string_of_int level)
          ()
@@ -186,7 +188,7 @@ let get_proposals ?level client =
 
 let get_current_proposal ?level client =
   let* proposal =
-    RPC.Client.call client
+    Client.RPC.call client
     @@ RPC.get_chain_block_votes_current_proposal
          ?block:(Option.map string_of_int level)
          ()
@@ -202,7 +204,7 @@ let check_current_proposal ?level client expected_proposal_hash =
 
 let check_protocols ?level client expected_protocols =
   let* block_metadata =
-    RPC.Client.call client
+    Client.RPC.call client
     @@ RPC.get_chain_block_metadata ?block:(Option.map string_of_int level) ()
   in
   let protocols_got = (block_metadata.protocol, block_metadata.next_protocol) in
@@ -212,7 +214,7 @@ let check_protocols ?level client expected_protocols =
 
 let check_listings_not_empty client =
   let* listings =
-    RPC.Client.call client @@ RPC.get_chain_block_votes_listings ()
+    Client.RPC.call client @@ RPC.get_chain_block_votes_listings ()
   in
   match JSON.as_list listings with
   | [] ->
@@ -263,9 +265,9 @@ let test_voting ~from_protocol ~(to_protocol : target_protocol) ~loser_protocols
          (Protocol.tag from_protocol)
          (target_protocol_tag to_protocol)
          (if loser_protocols = [] then "none"
-         else String.concat ", " (List.map Protocol.tag loser_protocols)))
+          else String.concat ", " (List.map Protocol.tag loser_protocols)))
     ~tags:
-      ("amendment"
+      (team :: "amendment"
        :: ("from_" ^ Protocol.tag from_protocol)
        :: ("to_" ^ target_protocol_tag to_protocol)
        :: List.map (fun p -> "loser_" ^ Protocol.tag p) loser_protocols
@@ -273,6 +275,7 @@ let test_voting ~from_protocol ~(to_protocol : target_protocol) ~loser_protocols
           (match to_protocol with
           | Known _ | Demo -> "known"
           | Injected_test -> "injected");
+          "singleprocess";
         ])
   @@ fun () ->
   (* Prepare protocol parameters such that voting periods are shorter
@@ -768,7 +771,10 @@ let test_voting ~from_protocol ~(to_protocol : target_protocol) ~loser_protocols
       let* () = Client.Admin.connect_address ~peer:node2 client in
       Log.info
         "Node 2 initialized and connected to node1, waiting for it to sync..." ;
-      let* level = Node.wait_for_level node2 (Node.get_level node) in
+      let* level =
+        let* node_level = Node.get_level node in
+        Node.wait_for_level node2 node_level
+      in
       Log.info "Both nodes are at level %d." level ;
       let all_checks =
         let* () = check_event_fetching_protocol
@@ -866,12 +872,19 @@ let test_user_activated_protocol_override_baker_vote ~from_protocol ~to_protocol
          (Protocol.tag to_protocol))
     ~tags:
       [
+        team;
         "amendment";
         "protocol_override";
         "baker";
         "voting";
         "from_" ^ Protocol.tag from_protocol;
         "to_" ^ Protocol.tag to_protocol;
+      ]
+    ~uses:
+      [
+        Protocol.accuser to_protocol;
+        Protocol.baker from_protocol;
+        Protocol.baker to_protocol;
       ]
   @@ fun () ->
   let node_arguments = [Node.Synchronisation_threshold 0] in
@@ -912,7 +925,7 @@ let test_user_activated_protocol_override_baker_vote ~from_protocol ~to_protocol
   *)
   let proposal_in_level ~proto_hash client level =
     let* ops =
-      RPC.Client.call client
+      Client.RPC.call client
       @@ RPC.get_chain_block_operations ~block:(string_of_int level) ()
     in
     let proposals =
@@ -958,10 +971,11 @@ let test_user_activated_protocol_override_baker_vote ~from_protocol ~to_protocol
 
     let action =
       let* r = action in
+      let* current_level = Node.get_level node in
       Log.info
         "Action `%s` executed before or at level %d (limit %d, %s)"
         action_description
-        (Node.get_level node)
+        current_level
         limit_level
         limit_description ;
       return r
@@ -994,7 +1008,7 @@ let test_user_activated_protocol_override_baker_vote ~from_protocol ~to_protocol
      block in which it is included. Returns the level of that block.
   *)
   let submit_and_wait_for_proposal ?(level_out = 5) node client proto_hash =
-    let start_level = Node.get_level node in
+    let* start_level = Node.get_level node in
 
     (* We have to perform the submissions sufficiently early in the
        proposal period:
@@ -1141,11 +1155,13 @@ let test_user_activated_protocol_override_baker_vote ~from_protocol ~to_protocol
   Log.info
     "Restart the node with a protocol override configuration for %s"
     test_proto_hash ;
-  Node.Config_file.(
-    update
-      node
-      (set_sandbox_network_with_user_activated_overrides
-         [(test_proto_hash, to_protocol_hash)])) ;
+  let* () =
+    Node.Config_file.(
+      update
+        node
+        (set_sandbox_network_with_user_activated_overrides
+           [(test_proto_hash, to_protocol_hash)]))
+  in
   let* () = Node.terminate node in
   let* () = Node.run node node_arguments in
   let* () = Node.wait_for_ready node in
@@ -1323,7 +1339,7 @@ let test_user_activated_protocol_override_baker_vote ~from_protocol ~to_protocol
     "Verify that the replacement accuser has registered at least one block" ;
   let* accuser_first_block_hash = to_protocol_accuser_received_block in
   let* proposal_first_block_hash =
-    RPC.Client.call client
+    Client.RPC.call client
     @@ RPC.get_chain_block_hash
          ~block:(string_of_int expected_level_of_next_proposal)
          ()

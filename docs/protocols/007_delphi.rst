@@ -9,7 +9,7 @@ and instructions to regenerate the protocol sources from the
 Gitlab branch.
 
 Test network Delphinet is available to test Delphi.
-See details in :ref:`Test Networks<test-networks>`
+See details in :ref:`Test Networks<test_networks>`
 and instructions to join in :ref:`How to get Tezos<howtoget>`.
 
 The source code of this proposal is available in `this tar archive
@@ -19,8 +19,6 @@ full hash is ``PsDELPH1Kxsxt8f9eWbxQeRxkjfbxoqM52jvs5Y5fBxWWh4ifpo``.
 **This protocol contains several breaking changes with respect to Carthage.**
 Developers are particularly encouraged to carefully read this page and
 to monitor it for updates.
-
-.. contents:: Summary of changes
 
 Performance Improvements
 ------------------------

@@ -23,8 +23,12 @@
 (*                                                                           *)
 (*****************************************************************************)
 
+let team = Tag.layer1
+
 let is_connected node ~peer_id =
-  let* response = RPC.get_network_connection peer_id |> RPC.call_raw node in
+  let* response =
+    RPC.get_network_connection peer_id |> Node.RPC.call_raw node
+  in
   match response.code with
   | 200 -> return true
   | 404 -> return false
@@ -91,7 +95,7 @@ let check_bootstrap_with_history_modes hmode1 hmode2 =
      starts.
 
      - When the checkpoint is set, its level is [preserved_blocks =
-     preserved_cycles * blocks_per_cycle] behind the current level of
+     blocks_preservation_cycles * blocks_per_cycle] behind the current level of
      the head
 
      - When the [caboose] is set, its level is [max(0, (checkpoint -
@@ -104,7 +108,7 @@ let check_bootstrap_with_history_modes hmode1 hmode2 =
      mod blocks_per_cycle] (the modulo 1 comes from the activation
      block).
 
-     In sandbox mode, we have [preserved_cycles = 2] and
+     In sandbox mode, we have [blocks_preservation_cycles = 2] and
      [blocks_per_cycle = 8].
 
      Hence, when [node_1] has baked [49] blocks, the checkpoint should
@@ -140,24 +144,6 @@ let check_bootstrap_with_history_modes hmode1 hmode2 =
      blocks since the store does not trigger a merge when there is
      already one merge in progress. However, we do not observe such
      behavior for this test and we do not handle that currently. *)
-
-  (* FIXME https://gitlab.com/tezos/tezos/-/issues/1337
-
-     This bug may create flakyness. We avoid it by baking [16] more
-     blocks. *)
-  let bakes_during_kill = 7 + 16 in
-  let last_cycle_being_merged = ref false in
-  let on_starting_merge_event node =
-    Node.on_event node @@ fun Node.{name; value; timestamp = _} ->
-    if name = "start_merging_stores.v0" then
-      let level = JSON.(value |> as_int) in
-      if level = bakes_during_kill + 1 + bakes_before_kill - 16 then
-        last_cycle_being_merged := true
-  in
-  let wait_for_end_merge_event node last_cycle_being_merged =
-    Node.wait_for node "end_merging_stores.v0" @@ fun _json ->
-    if !last_cycle_being_merged then Some () else None
-  in
   let hmode1s = Node.show_history_mode hmode1 in
   let hmode2s = Node.show_history_mode hmode2 in
   Protocol.register_test
@@ -165,6 +151,7 @@ let check_bootstrap_with_history_modes hmode1 hmode2 =
     ~title:(Format.sprintf "node synchronization (%s / %s)" hmode1s hmode2s)
     ~tags:
       [
+        team;
         "bootstrap";
         "node";
         "sync";
@@ -174,9 +161,45 @@ let check_bootstrap_with_history_modes hmode1 hmode2 =
         "secondary_" ^ hmode2s;
       ]
   @@ fun protocol ->
+  (* FIXME https://gitlab.com/tezos/tezos/-/issues/1337
+
+     This bug may create flakiness. We avoid it by baking [16] more
+     blocks. *)
+  let bakes_during_kill = 7 + 16 in
+  let last_cycle_being_merged = ref false in
+  let on_starting_merge_event node =
+    (* Hardcoding the preserved_cycles for Oxford and
+       preservation_cycles for Alpha and Paris. As soon as Oxford is
+       gone, we should rather get the "blocks_preservation_cycles"
+       protocol parameter -- or hardcode it to 1 for every
+       protocol. *)
+    let preservation_cycles = 1 in
+    (* Here, we assume that we have 8 blocks per cycle -- this is
+       already assumed in the rest of the test. *)
+    let preserved_blocks = preservation_cycles * 8 in
+    Node.on_event node @@ fun Node.{name; value; timestamp = _} ->
+    if name = "start_merging_stores.v0" then
+      let level = JSON.(value |> as_int) in
+      if level = bakes_during_kill + 1 + bakes_before_kill - preserved_blocks
+      then last_cycle_being_merged := true
+  in
+  let wait_for_end_merge_event node last_cycle_being_merged =
+    Node.wait_for node "end_merging_stores.v0" @@ fun _json ->
+    if !last_cycle_being_merged then Some () else None
+  in
   (* Initialize nodes and client. *)
-  let* node_1 =
-    Node.init [Synchronisation_threshold 0; Connections 1; History_mode hmode1]
+  let node_1_args =
+    (* Disable the storage maintenance delay to have a deterministic
+       behavior. *)
+    Node.
+      [
+        Synchronisation_threshold 0;
+        Connections 1;
+        History_mode hmode1;
+        Storage_maintenance_delay "disabled";
+      ]
+  in
+  let* node_1 = Node.init node_1_args
   and* node_2 = Node.init [Connections 1; History_mode hmode2] in
   let endpoint_1 = Client.(Node node_1) in
   let* node2_identity = Node.wait_for_identity node_2 in
@@ -210,6 +233,18 @@ let check_bootstrap_with_history_modes hmode1 hmode2 =
   let final_level = 1 + bakes_before_kill + bakes_during_kill in
   let* _ = Node.wait_for_level node_1 final_level in
   let* () = wait_for_last_cycle in
+  (* FIXME: https://gitlab.com/tezos/tezos/-/issues/7251
+     Restarting node_1 to make sure that the store invariant
+     (savepoint/checkpoint/…) are well synchronized. Indeed, these
+     invariant are synchronized with the RPC-process in a best effort
+     way and as the RPC-process synchronization can be faster than a
+     store merge, it can return an unexpected value (the value before
+     the last expected update). *)
+  let* () =
+    let* () = Node.terminate node_1 in
+    let* () = Node.run node_1 node_1_args in
+    Node.wait_for_ready node_1
+  in
   let* () = Node.run node_2 [Synchronisation_threshold 1; Connections 1] in
   let* _ = Node.wait_for_ready node_2 in
   (* Register the unknown ancestor event before connecting node 2 to node 1
@@ -237,7 +272,7 @@ let check_bootstrap_with_history_modes hmode1 hmode2 =
     match hmode1 with
     | Full _ ->
         let* {level = savepoint; _} =
-          RPC.Client.call ~endpoint:endpoint_1 client
+          Client.RPC.call ~endpoint:endpoint_1 client
           @@ RPC.get_chain_level_checkpoint ()
         in
         if savepoint <= bakes_before_kill then
@@ -248,7 +283,7 @@ let check_bootstrap_with_history_modes hmode1 hmode2 =
         return ()
     | Rolling _ ->
         let* {level = caboose; _} =
-          RPC.Client.call ~endpoint:endpoint_1 client
+          Client.RPC.call ~endpoint:endpoint_1 client
           @@ RPC.get_chain_level_caboose ()
         in
         if caboose <= bakes_before_kill then
@@ -272,7 +307,7 @@ let check_rpc_force_bootstrapped () =
   Test.register
     ~__FILE__
     ~title:(sf "RPC force bootstrapped")
-    ~tags:["rpc"; "bootstrapped"]
+    ~tags:[team; "rpc"; "bootstrapped"]
   @@ fun () ->
   Log.info "Start a node." ;
   let* node = Node.init [Synchronisation_threshold 255] in
@@ -280,7 +315,7 @@ let check_rpc_force_bootstrapped () =
   let bootstrapped_promise, bootstrapped_resolver = Lwt.task () in
   Node.on_event node (bootstrapped_event bootstrapped_resolver) ;
   Log.info "Force the node to be bootstrapped." ;
-  let* _ = RPC.Client.call client @@ RPC.patch_chain_bootstrapped true in
+  let* _ = Client.RPC.call client @@ RPC.patch_chain_bootstrapped true in
   Log.info "Waiting for the node to be bootstrapped." ;
   let* () = bootstrapped_promise in
   unit

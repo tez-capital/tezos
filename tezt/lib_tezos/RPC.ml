@@ -23,11 +23,6 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-include RPC_core
-include RPC_legacy
-
-type 'a t = (Node.t, 'a) RPC_core.t
-
 module Query_arg = struct
   let opt name f = function None -> [] | Some x -> [(name, f x)]
 
@@ -38,19 +33,19 @@ module Query_arg = struct
   let switch name b = if b then [(name, "")] else []
 end
 
-let make ?data ?query_string =
-  make
-    ?data
-    ?query_string
-    ~get_host:Node.rpc_host
-    ~get_port:Node.rpc_port
-    ~get_scheme:Node.rpc_scheme
-
 module Decode = struct
   let mutez json = json |> JSON.as_int |> Tez.of_mutez_int
 end
 
+type 'result t = 'result RPC_core.t
+
+type data = RPC_core.data
+
+let make = RPC_core.make
+
 let get_config = make GET ["config"] Fun.id
+
+let get_config_history_mode = make GET ["config"; "history_mode"] Fun.id
 
 let get_config_network_dal = make GET ["config"; "network"; "dal"] Fun.id
 
@@ -99,23 +94,21 @@ let get_network_self = make GET ["network"; "self"] JSON.as_string
 
 let get_network_greylist_ips = make GET ["network"; "greylist"; "ips"] Fun.id
 
-let get_network_greylist_clear =
-  make GET ["network"; "greylist"; "clear"] Fun.id
-
 let get_network_peers =
   make GET ["network"; "peers"] @@ fun json ->
   JSON.(json |> as_list |> List.map @@ fun p -> (p |=> 0 |> as_string, p |=> 1))
 
-let get_network_peer peer_id = make GET ["network"; "peers"; peer_id] Fun.id
+let patch_network_peer peer_id data =
+  make
+    PATCH
+    ["network"; "peers"; peer_id]
+    ~data:(Data (JSON.unannotate data))
+    ignore
 
-let get_network_peer_ban peer_id =
-  make GET ["network"; "peers"; peer_id; "ban"] Fun.id
+let get_network_peer peer_id = make GET ["network"; "peers"; peer_id] Fun.id
 
 let get_network_peer_banned peer_id =
   make GET ["network"; "peers"; peer_id; "banned"] Fun.id
-
-let get_network_peer_unban peer_id =
-  make GET ["network"; "peers"; peer_id; "unban"] Fun.id
 
 let get_chain_blocks ?(chain = "main") () =
   make GET ["chains"; chain; "blocks"] Fun.id
@@ -188,6 +181,16 @@ let get_chain_block_context_nonce ?(chain = "main") ?(block = "head")
     ]
     Fun.id
 
+let get_chain_block_context_seed ?(chain = "main") ?(block = "head") () =
+  make GET ["chains"; chain; "blocks"; block; "context"; "seed"] Fun.id
+
+let get_chain_block_context_seed_computation ?(chain = "main") ?(block = "head")
+    () =
+  make
+    GET
+    ["chains"; chain; "blocks"; block; "context"; "seed_computation"]
+    Fun.id
+
 let get_chain_block_context_liquidity_baking_cpmm_address ?(chain = "main")
     ?(block = "head") () =
   make
@@ -203,12 +206,6 @@ let get_chain_block_context_liquidity_baking_cpmm_address ?(chain = "main")
     ]
     JSON.as_string
 
-let get_network_peer_untrust peer_id =
-  make GET ["network"; "peers"; peer_id; "untrust"] Fun.id
-
-let get_network_peer_trust peer_id =
-  make GET ["network"; "peers"; peer_id; "trust"] Fun.id
-
 let get_network_points =
   make GET ["network"; "points"] @@ fun json ->
   JSON.(json |> as_list |> List.map @@ fun p -> (p |=> 0 |> as_string, p |=> 1))
@@ -222,29 +219,15 @@ let patch_network_point point_id data =
     ~data:(Data (JSON.unannotate data))
     ignore
 
-let get_network_point_ban point_id =
-  make GET ["network"; "points"; point_id; "ban"] Fun.id
-
 let get_network_point_banned point_id =
   make GET ["network"; "points"; point_id; "banned"] Fun.id
 
-let get_network_point_unban point_id =
-  make GET ["network"; "points"; point_id; "unban"] Fun.id
-
-let get_network_point_untrust point_id =
-  make GET ["network"; "points"; point_id; "untrust"] Fun.id
-
-let get_network_point_trust point_id =
-  make GET ["network"; "points"; point_id; "trust"] Fun.id
-
 let get_network_stat = make GET ["network"; "stat"] Fun.id
-
-let get_network_version = make GET ["network"; "version"] Fun.id
-
-let get_network_versions = make GET ["network"; "versions"] Fun.id
 
 let put_network_points point =
   make PUT ["network"; "points"; point] ~data:(Data (`O [])) Fun.id
+
+let delete_network_greylist = make DELETE ["network"; "greylist"] Fun.id
 
 let get_version = make GET ["version"] Fun.id
 
@@ -347,6 +330,11 @@ let get_chain_block_metadata ?(chain = "main") ?(block = "head") ?version () =
     max_operations_ttl;
     balance_updates;
   }
+
+let get_chain_block_metadata_raw ?(chain = "main") ?(block = "head") ?version ()
+    =
+  let query_string = Query_arg.opt "version" Fun.id version in
+  make ~query_string GET ["chains"; chain; "blocks"; block; "metadata"] Fun.id
 
 let get_chain_block_protocols ?(chain = "main") ?(block = "head") () =
   make GET ["chains"; chain; "blocks"; block; "protocols"] Fun.id
@@ -489,7 +477,8 @@ let get_chain_block_operations_validation_pass ?(chain = "main")
   make ~query_string GET path Fun.id
 
 let get_chain_mempool_pending_operations ?(chain = "main") ?version ?validated
-    ?branch_delayed ?branch_refused ?refused ?outdated ?validation_passes () =
+    ?branch_delayed ?branch_refused ?refused ?outdated ?validation_passes
+    ?sources ?operation_hash () =
   let query_string =
     Query_arg.opt "version" Fun.id version
     @ Query_arg.opt_bool "validated" validated
@@ -501,6 +490,11 @@ let get_chain_mempool_pending_operations ?(chain = "main") ?version ?validated
         "validation_pass"
         (fun name vp -> (name, string_of_int vp))
         validation_passes
+    @ Query_arg.opt_list "source" (fun name d -> (name, d)) sources
+    @ Query_arg.opt_list
+        "operation_hash"
+        (fun name h -> (name, h))
+        operation_hash
   in
   make
     ~query_string
@@ -509,7 +503,8 @@ let get_chain_mempool_pending_operations ?(chain = "main") ?version ?validated
     Fun.id
 
 let get_chain_mempool_monitor_operations ?(chain = "main") ?version ?validated
-    ?branch_delayed ?branch_refused ?refused ?outdated ?validation_passes () =
+    ?branch_delayed ?branch_refused ?refused ?outdated ?validation_passes
+    ?sources () =
   let query_string =
     Query_arg.opt "version" Fun.id version
     @ Query_arg.opt_bool "validated" validated
@@ -521,6 +516,7 @@ let get_chain_mempool_monitor_operations ?(chain = "main") ?version ?validated
         "validation_pass"
         (fun name vp -> (name, string_of_int vp))
         validation_passes
+    @ Query_arg.opt_list "sources" (fun name source -> (name, source)) sources
   in
   make
     ~query_string
@@ -649,6 +645,16 @@ let get_chain_block_context_raw ?(chain = "main") ?(block = "head")
     @ value_path)
     Fun.id
 
+let get_chain_block_context_raw_bytes ?(chain = "main") ?(block = "head") () =
+  make GET ["chains"; chain; "blocks"; block; "context"; "raw"; "bytes"] Fun.id
+
+let get_chain_block_context_cache_contracts_all ?(chain = "main")
+    ?(block = "head") () =
+  make
+    GET
+    ["chains"; chain; "blocks"; block; "context"; "cache"; "contracts"; "all"]
+    Fun.id
+
 let get_chain_block_context_constants ?(chain = "main") ?(block = "head") () =
   make GET ["chains"; chain; "blocks"; block; "context"; "constants"] Fun.id
 
@@ -700,11 +706,93 @@ let get_chain_block_context_contract_storage_paid_space ?(chain = "main")
     ]
     JSON.as_int
 
+let get_chain_block_context_contract_staking_numerator ?(chain = "main")
+    ?(block = "head") contract =
+  make
+    GET
+    [
+      "chains";
+      chain;
+      "blocks";
+      block;
+      "context";
+      "contracts";
+      contract;
+      "staking_numerator";
+    ]
+    JSON.as_int
+
+let get_chain_block_context_contract_staked_balance ?(chain = "main")
+    ?(block = "head") contract =
+  make
+    GET
+    [
+      "chains";
+      chain;
+      "blocks";
+      block;
+      "context";
+      "contracts";
+      contract;
+      "staked_balance";
+    ]
+    JSON.as_int
+
+let get_chain_block_context_contract_unstake_requests ?(chain = "main")
+    ?(block = "head") contract =
+  make
+    GET
+    [
+      "chains";
+      chain;
+      "blocks";
+      block;
+      "context";
+      "contracts";
+      contract;
+      "unstake_requests";
+    ]
+    Fun.id
+
+let get_chain_block_context_contract_unstaked_finalizable_balance
+    ?(chain = "main") ?(block = "head") contract =
+  make
+    GET
+    [
+      "chains";
+      chain;
+      "blocks";
+      block;
+      "context";
+      "contracts";
+      contract;
+      "unstaked_finalizable_balance";
+    ]
+    JSON.as_int
+
+let get_chain_block_context_contract_unstaked_frozen_balance ?(chain = "main")
+    ?(block = "head") contract =
+  make
+    GET
+    [
+      "chains";
+      chain;
+      "blocks";
+      block;
+      "context";
+      "contracts";
+      contract;
+      "unstaked_frozen_balance";
+    ]
+    JSON.as_int
+
 let get_chain_block_helper_baking_rights ?(chain = "main") ?(block = "head")
-    ?delegate ?level () =
+    ?delegate ?level ?cycle ?max_round () =
   let query_string =
     Query_arg.opt "delegate" Fun.id delegate
     @ Query_arg.opt "level" Int.to_string level
+    @ Query_arg.opt "cycle" string_of_int cycle
+    @ Query_arg.opt "max_round" Int.to_string max_round
   in
   make
     ~query_string
@@ -952,6 +1040,41 @@ let get_chain_block_context_smart_rollups_smart_rollup_staker_games
     ]
     Fun.id
 
+let get_chain_block_context_smart_rollups_smart_rollup_consumed_outputs
+    ?(chain = "main") ?(block = "head") ~sc_rollup ~outbox_level () =
+  make
+    GET
+    [
+      "chains";
+      chain;
+      "blocks";
+      block;
+      "context";
+      "smart_rollups";
+      "smart_rollup";
+      sc_rollup;
+      "consumed_outputs";
+      string_of_int outbox_level;
+    ]
+  @@ fun json -> JSON.(as_list json |> List.map as_int)
+
+type smart_rollup_inbox = {
+  old_levels_messages : string;
+  level : int;
+  current_messages_hash : string option;
+}
+
+let smart_rollup_inbox_from_json json =
+  let open JSON in
+  let old_levels_messages =
+    json |-> "old_levels_messages" |-> "content" |-> "hash" |> as_string
+  in
+  let level = json |-> "level" |> as_int in
+  let current_messages_hash =
+    json |-> "current_messages_hash" |> as_string_opt
+  in
+  {old_levels_messages; level; current_messages_hash}
+
 let get_chain_block_context_smart_rollups_all_inbox ?(chain = "main")
     ?(block = "head") () =
   make
@@ -966,7 +1089,7 @@ let get_chain_block_context_smart_rollups_all_inbox ?(chain = "main")
       "all";
       "inbox";
     ]
-    Fun.id
+    smart_rollup_inbox_from_json
 
 let get_chain_block_context_smart_rollups_smart_rollup_genesis_info
     ?(chain = "main") ?(block = "head") sc_rollup =
@@ -1002,6 +1125,20 @@ let get_chain_block_context_smart_rollups_smart_rollup_last_cemented_commitment_
     ]
     Fun.id
 
+type smart_rollup_commitment = {
+  compressed_state : string;
+  inbox_level : int;
+  predecessor : string;
+  number_of_ticks : int;
+}
+
+let smart_rollup_commitment_from_json json =
+  let compressed_state = JSON.as_string @@ JSON.get "compressed_state" json in
+  let inbox_level = JSON.as_int @@ JSON.get "inbox_level" json in
+  let predecessor = JSON.as_string @@ JSON.get "predecessor" json in
+  let number_of_ticks = JSON.as_int @@ JSON.get "number_of_ticks" json in
+  {compressed_state; inbox_level; predecessor; number_of_ticks}
+
 let get_chain_block_context_smart_rollups_smart_rollup_commitment
     ?(chain = "main") ?(block = "head") ~sc_rollup ~hash () =
   make
@@ -1018,7 +1155,7 @@ let get_chain_block_context_smart_rollups_smart_rollup_commitment
       "commitment";
       hash;
     ]
-    Fun.id
+    (fun json -> smart_rollup_commitment_from_json json)
 
 let get_chain_block_context_smart_rollups_smart_rollup_staker_staked_on_commitment
     ?(chain = "main") ?(block = "head") ~sc_rollup staker =
@@ -1073,7 +1210,7 @@ let get_chain_block_context_smart_rollups_smart_rollup_whitelist
       "whitelist";
     ]
     (fun whitelist ->
-      match JSON.(as_list_opt whitelist) with
+      match JSON.(whitelist |> as_opt |> Option.map as_list) with
       | Some l -> Some (List.map JSON.as_string l)
       | None -> None)
 
@@ -1087,6 +1224,22 @@ let get_chain_block_context_delegate ?(chain = "main") ?(block = "head") pkh =
   make
     GET
     ["chains"; chain; "blocks"; block; "context"; "delegates"; pkh]
+    Fun.id
+
+let get_chain_block_context_delegate_active_staking_parameters ?(chain = "main")
+    ?(block = "head") pkh =
+  make
+    GET
+    [
+      "chains";
+      chain;
+      "blocks";
+      block;
+      "context";
+      "delegates";
+      pkh;
+      "active_staking_parameters";
+    ]
     Fun.id
 
 let get_chain_block_context_delegate_current_frozen_deposits ?(chain = "main")
@@ -1153,6 +1306,61 @@ let get_chain_block_context_delegate_delegated_contracts ?(chain = "main")
     ]
     Fun.id
 
+let get_chain_block_context_delegate_stakers ?(chain = "main") ?(block = "head")
+    pkh =
+  make
+    GET
+    ["chains"; chain; "blocks"; block; "context"; "delegates"; pkh; "stakers"]
+    Fun.id
+
+let get_chain_block_context_delegate_is_forbidden ?(chain = "main")
+    ?(block = "head") pkh =
+  make
+    GET
+    [
+      "chains";
+      chain;
+      "blocks";
+      block;
+      "context";
+      "delegates";
+      pkh;
+      "is_forbidden";
+    ]
+    JSON.as_bool
+
+let get_chain_block_context_delegate_total_delegated_stake ?(chain = "main")
+    ?(block = "head") pkh =
+  make
+    GET
+    [
+      "chains";
+      chain;
+      "blocks";
+      block;
+      "context";
+      "delegates";
+      pkh;
+      "total_delegated_stake";
+    ]
+    Fun.id
+
+let get_chain_block_context_delegate_staking_denominator ?(chain = "main")
+    ?(block = "head") pkh =
+  make
+    GET
+    [
+      "chains";
+      chain;
+      "blocks";
+      block;
+      "context";
+      "delegates";
+      pkh;
+      "staking_denominator";
+    ]
+    Fun.id
+
 let get_chain_block_context_delegate_frozen_deposits ?(chain = "main")
     ?(block = "head") pkh =
   make
@@ -1214,6 +1422,22 @@ let get_chain_block_context_delegate_grace_period ?(chain = "main")
       "delegates";
       pkh;
       "grace_period";
+    ]
+    Fun.id
+
+let get_chain_block_context_delegate_min_delegated_in_current_cycle
+    ?(chain = "main") ?(block = "head") pkh =
+  make
+    GET
+    [
+      "chains";
+      chain;
+      "blocks";
+      block;
+      "context";
+      "delegates";
+      pkh;
+      "min_delegated_in_current_cycle";
     ]
     Fun.id
 
@@ -1320,6 +1544,22 @@ let get_chain_block_context_delegate_voting_power ?(chain = "main")
     ]
     Fun.id
 
+let get_chain_block_context_delegate_consensus_key ?(chain = "main")
+    ?(block = "head") pkh =
+  make
+    GET
+    [
+      "chains";
+      chain;
+      "blocks";
+      block;
+      "context";
+      "delegates";
+      pkh;
+      "consensus_key";
+    ]
+    Fun.id
+
 let get_chain_block_context_total_supply ?(chain = "main") ?(block = "head") ()
     =
   make GET ["chains"; chain; "blocks"; block; "context"; "total_supply"] Fun.id
@@ -1329,6 +1569,13 @@ let get_chain_block_context_total_frozen_stake ?(chain = "main")
   make
     GET
     ["chains"; chain; "blocks"; block; "context"; "total_frozen_stake"]
+    Fun.id
+
+let get_chain_block_context_total_currently_staked ?(chain = "main")
+    ?(block = "head") () =
+  make
+    GET
+    ["chains"; chain; "blocks"; block; "context"; "total_currently_staked"]
     Fun.id
 
 let get_chain_block_context_issuance_current_yearly_rate ?(chain = "main")
@@ -1358,6 +1605,21 @@ let get_chain_block_context_issuance_current_yearly_rate_exact ?(chain = "main")
       "context";
       "issuance";
       "current_yearly_rate_exact";
+    ]
+    Fun.id
+
+let get_chain_block_context_issuance_current_yearly_rate_details
+    ?(chain = "main") ?(block = "head") () =
+  make
+    GET
+    [
+      "chains";
+      chain;
+      "blocks";
+      block;
+      "context";
+      "issuance";
+      "current_yearly_rate_details";
     ]
     Fun.id
 
@@ -1405,19 +1667,11 @@ let get_chain_block_context_issuance_expected_issuance ?(chain = "main")
     ]
     Fun.id
 
-let get_chain_block_context_dal_confirmed_slot_headers_history ?(chain = "main")
+let get_chain_block_context_dal_commitments_history ?(chain = "main")
     ?(block = "head") () =
   make
     GET
-    [
-      "chains";
-      chain;
-      "blocks";
-      block;
-      "context";
-      "dal";
-      "confirmed_slot_headers_history";
-    ]
+    ["chains"; chain; "blocks"; block; "context"; "dal"; "commitments_history"]
     Fun.id
 
 let get_chain_block_context_raw_json ?(chain = "main") ?(block = "head")
@@ -1469,11 +1723,10 @@ let get_chain_block_votes_total_voting_power ?(chain = "main") ?(block = "head")
     Fun.id
 
 let get_chain_block_context_dal_shards ?(chain = "main") ?(block = "head")
-    ?level () =
+    ?level ?delegates () =
   let query_string =
-    match level with
-    | None -> []
-    | Some offset -> [("level", string_of_int offset)]
+    Query_arg.opt_list "delegates" (fun x y -> (x, y)) delegates
+    @ Query_arg.opt "level" Int.to_string level
   in
   make
     GET
@@ -1481,4 +1734,16 @@ let get_chain_block_context_dal_shards ?(chain = "main") ?(block = "head")
     ~query_string
     Fun.id
 
-let make = RPC_core.make
+let get_monitor_applied_blocks = make GET ["monitor"; "applied_blocks"] Fun.id
+
+let get_monitor_heads_chain ?(chain = "main") () =
+  make GET ["monitor"; "heads"; chain] Fun.id
+
+let get_monitor_validated_blocks =
+  make GET ["monitor"; "validated_blocks"] Fun.id
+
+let nonexistent_path = make GET ["nonexistent"; "path"] Fun.id
+
+let get_chain_block_context_denunciations ?(chain = "main") ?(block = "head") ()
+    =
+  make GET ["chains"; chain; "blocks"; block; "context"; "denunciations"] Fun.id

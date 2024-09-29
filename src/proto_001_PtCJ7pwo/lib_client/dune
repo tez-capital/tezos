@@ -3,22 +3,22 @@
 
 (library
  (name tezos_client_001_PtCJ7pwo)
- (public_name tezos-client-001-PtCJ7pwo)
+ (public_name octez-protocol-001-PtCJ7pwo-libs.client)
  (libraries
-  octez-libs.tezos-base
-  tezos-clic
-  octez-libs.tezos-shell-services
-  tezos-client-base
-  tezos-protocol-001-PtCJ7pwo
-  tezos-protocol-001-PtCJ7pwo.lifted
-  tezos-signer-backends
-  octez-libs.tezos-rpc
+  octez-libs.base
+  octez-libs.clic
+  octez-shell-libs.shell-services
+  octez-shell-libs.client-base
+  tezos-protocol-001-PtCJ7pwo.protocol
+  tezos-protocol-001-PtCJ7pwo.protocol.lifted
+  octez-shell-libs.signer-backends
+  octez-libs.rpc
   uri)
  (library_flags (:standard -linkall))
  (flags
   (:standard)
   -open Tezos_base.TzPervasives
-  -open Tezos_base.TzPervasives.Error_monad.Legacy_monad_globals
+  -open Tezos_base.TzPervasives.Error_monad_legacy
   -open Tezos_shell_services
   -open Tezos_client_base
   -open Tezos_protocol_001_PtCJ7pwo))

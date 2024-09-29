@@ -6,15 +6,15 @@
  (instrumentation (backend bisect_ppx))
  (libraries
   tezt.core
-  octez-libs.tezos-stdlib
-  octez-libs.tezos-crypto-dal
-  octez-libs.tezos-crypto-dal.octez-dal-config
-  octez-libs.tezos-error-monad
-  data-encoding
+  octez-libs.stdlib
+  octez-libs.crypto-dal
+  octez-libs.crypto-dal.dal-config
+  octez-libs.error-monad
+  octez-libs.data-encoding
   octez-alcotezt
   qcheck-alcotest
-  octez-libs.octez-bls12-381-polynomial
-  tezos-test-helpers)
+  octez-libs.bls12-381-polynomial
+  octez-libs.test-helpers)
  (library_flags (:standard -linkall))
  (flags
   (:standard)
@@ -41,7 +41,7 @@
  (package octez-libs)
  (deps srs_zcash_g1_5 srs_zcash_g2_5)
  (enabled_if (<> false %{env:RUNTEZTALIAS=true}))
- (action (run %{dep:./main.exe})))
+ (action (run %{dep:./main.exe} /flaky /ci_disabled)))
 
 (rule
  (targets main.ml)

@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: 2023 Nomadic Labs <contact@nomadic-labs.com>
-# SPDX-FileCopyrightText: 2023 TriliTech <contact@trili.tech>
+# SPDX-FileCopyrightText: 2023-2024 TriliTech <contact@trili.tech>
 #
 # SPDX-License-Identifier: MIT
 
@@ -20,11 +20,13 @@ ifneq ($(NATIVE_TARGET),)
 NATIVE_OPT := --target "$(NATIVE_TARGET)"
 endif
 
-SDK_VERSION := "0.2.1"
+RISCV_OPTS = --target riscv64gc-unknown-hermit --no-default-features
+RISCV_OPTS_ALPHA = $(RISCV_OPTS) --features proto-alpha
+
+SDK_VERSION := "0.2.2"
 
 .PHONY: check
-check: installer-template publish-check doc
-	@cargo fmt --check
+check: installer-template publish-check doc riscv-check
 	@cargo clippy --all-targets --all-features -- --deny warnings
 	@cargo check --no-default-features
 	@cargo check --target wasm32-unknown-unknown
@@ -35,6 +37,7 @@ check: installer-template publish-check doc
 # on all.
 .PHONY: publish-check
 publish-check: installer-template
+	@cargo check -p tezos-smart-rollup-constants
 	@cargo check -p tezos-smart-rollup-core
 	@cargo check -p tezos-smart-rollup-host
 	@cargo check -p tezos-smart-rollup-debug
@@ -46,6 +49,19 @@ publish-check: installer-template
 	@cargo check -p tezos-smart-rollup-installer-config
 	@cargo check -p tezos-smart-rollup-installer
 	@cargo check -p tezos-smart-rollup
+
+.PHONY: riscv-check
+riscv-check:
+	@cargo check -p tezos-smart-rollup-constants $(RISCV_OPTS)
+	@cargo check -p tezos-smart-rollup-core $(RISCV_OPTS_ALPHA)
+	@cargo check -p tezos-smart-rollup-host $(RISCV_OPTS_ALPHA)
+	@cargo check -p tezos-smart-rollup-debug $(RISCV_OPTS_ALPHA)
+	@cargo check -p tezos-smart-rollup-panic-hook $(RISCV_OPTS_ALPHA)
+	@cargo check -p tezos-smart-rollup-entrypoint $(RISCV_OPTS_ALPHA)
+	@cargo check -p tezos-smart-rollup-encoding $(RISCV_OPTS_ALPHA)
+	# @cargo check -p tezos-smart-rollup-storage $(RISCV_OPTS_ALPHA)
+	@cargo check -p tezos-smart-rollup-mock $(RISCV_OPTS_ALPHA)
+	@cargo check -p tezos-smart-rollup $(RISCV_OPTS_ALPHA)
 
 .PHONY: build
 build: installer-template
@@ -70,10 +86,11 @@ test:
 
 .PHONY: doc
 doc:
-	@cargo doc  --no-deps --all-features
+	@cargo doc --no-deps --all-features
 
 .PHONY: build-deps
 build-deps:
+	@exec ../riscv/scripts/install-rust-std-hermit.sh
 	@rustup target add wasm32-unknown-unknown $(NATIVE_TARGET)
 
 .PHONY: build-dev-deps

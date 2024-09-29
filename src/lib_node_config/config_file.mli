@@ -3,6 +3,7 @@
 (* Open Source License                                                       *)
 (* Copyright (c) 2018 Dynamic Ledger Solutions, Inc. <contact@tezos.com>     *)
 (* Copyright (c) 2019-2020 Nomadic Labs, <contact@nomadic-labs.com>          *)
+(* Copyright (c) 2024 TriliTech <contact@trili.tech>                         *)
 (*                                                                           *)
 (* Permission is hereby granted, free of charge, to any person obtaining a   *)
 (* copy of this software and associated documentation files (the "Software"),*)
@@ -75,11 +76,14 @@ and p2p = {
 
 and rpc = {
   listen_addrs : string list;
+  external_listen_addrs : string list;
   cors_origins : string list;
   cors_headers : string list;
   tls : tls option;
   acl : RPC_server.Acl.policy;
   media_type : Media_type.Command_line.t;
+  max_active_rpc_connections : RPC_server.Max_active_rpc_connections.t;
+  enable_http_cache_headers : bool;
 }
 
 and tls = {cert : string; key : string}
@@ -91,6 +95,8 @@ val default_data_dir : string
 val default_p2p_port : int
 
 val default_rpc_port : int
+
+val default_max_active_rpc_connections : RPC_server.Max_active_rpc_connections.t
 
 val default_p2p : p2p
 
@@ -116,8 +122,10 @@ val update :
   ?advertised_net_port:int ->
   ?discovery_addr:string ->
   ?rpc_listen_addrs:string list ->
+  ?external_rpc_listen_addrs:string list ->
   ?allow_all_rpc:P2p_point.Id.addr_port_id list ->
   ?media_type:Media_type.Command_line.t ->
+  ?max_active_rpc_connections:RPC_server.Max_active_rpc_connections.t ->
   ?metrics_addr:string list ->
   ?operation_metadata_size_limit:Shell_limits.operation_metadata_size_limit ->
   ?private_mode:bool ->
@@ -134,6 +142,9 @@ val update :
   ?history_mode:History_mode.t ->
   ?network:blockchain_network ->
   ?latency:int ->
+  ?enable_http_cache_headers:bool ->
+  ?disable_context_pruning:bool ->
+  ?storage_maintenance_delay:Storage_maintenance.delay ->
   t ->
   t tzresult Lwt.t
 
@@ -176,6 +187,8 @@ val resolve_metrics_addrs :
    [default_p2p_port]. Fails if the address could not be parsed. *)
 val resolve_bootstrap_addrs :
   string list -> (P2p_point.Id.t * P2p_peer.Id.t option) list tzresult Lwt.t
+
+val rpc_encoding : rpc Data_encoding.t
 
 val encoding : t Data_encoding.t
 

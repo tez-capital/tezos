@@ -13,8 +13,6 @@ The code can be found in the :src:`src/proto_011_PtHangz2` directory of the
 This page documents the changes brought by protocol Hangzhou with respect
 to Granada.
 
-.. contents::
-
 New Environment Version (V3)
 ----------------------------
 
@@ -92,7 +90,7 @@ Timelock
 Michelson On-Chain Views
 ------------------------
 
-:ref:`Views <MichelsonViews>` are a new mechanism for contract calls that:
+:doc:`Views <../active/views>` are a new mechanism for contract calls that:
 
 - are read-only: they may depend on the contract storage but cannot
   modify it nor emit operations (but they can call other views);

@@ -1,31 +1,13 @@
 (*****************************************************************************)
 (*                                                                           *)
-(* Open Source License                                                       *)
-(* Copyright (c) 2022 Nomadic-Labs. <contact@nomadic-labs.com>               *)
-(*                                                                           *)
-(* Permission  is hereby granted, free of charge, to any person obtaining a  *)
-(* copy of this software and associated documentation files (the "Software"),*)
-(* to deal in the Software without restriction, including without limitation *)
-(* the rights to use, copy, modify, merge, publish, distribute, sublicense,  *)
-(* and/or sell copies of the Software, and to permit persons to whom the     *)
-(* Software is furnished to do so, subject to the following conditions:      *)
-(*                                                                           *)
-(* The above copyright notice and this permission notice shall be included   *)
-(* in all copies or substantial portions of the Software.                    *)
-(*                                                                           *)
-(* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR*)
-(* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,  *)
-(* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL   *)
-(* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER*)
-(* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING   *)
-(* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER       *)
-(* DEALINGS IN THE SOFTWARE.                                                 *)
+(* SPDX-License-Identifier: MIT                                              *)
+(* Copyright (c) 2022 Nomadic Labs, <contact@nomadic-labs.com>               *)
 (*                                                                           *)
 (*****************************************************************************)
 
 open Protocol
 open Alpha_context
-open Test_tez
+open Tez_helpers
 
 (** {2 Constants} *)
 
@@ -62,7 +44,7 @@ type accounts = {
 }
 
 (** Feature flags requirements for a context setting for a test. *)
-type feature_flags = {dal : bool; scoru : bool; toru : bool; zkru : bool}
+type feature_flags = {dal : bool; scoru_arith : bool; zkru : bool}
 
 (** Infos describes the information of the setting for a test: the
    context and used accounts. *)
@@ -80,6 +62,7 @@ type manager_operation_kind =
   | K_Delegation
   | K_Undelegation
   | K_Self_delegation
+  | K_Set_deposits_limit
   | K_Update_consensus_key
   | K_Increase_paid_storage
   | K_Reveal
@@ -92,7 +75,7 @@ type manager_operation_kind =
   | K_Sc_rollup_timeout
   | K_Sc_rollup_execute_outbox_message
   | K_Sc_rollup_recover_bond
-  | K_Dal_publish_slot_header
+  | K_Dal_publish_commitment
   | K_Zk_rollup_origination
   | K_Zk_rollup_publish
   | K_Zk_rollup_update
@@ -129,13 +112,11 @@ type ctxt_req = {
 type mode = Construction | Mempool | Application
 
 (** {2 Default values} *)
-let all_enabled = {dal = true; scoru = true; toru = true; zkru = true}
+let all_enabled = {dal = true; scoru_arith = true; zkru = true}
 
 let disabled_dal = {all_enabled with dal = false}
 
-let disabled_scoru = {all_enabled with scoru = false}
-
-let disabled_toru = {all_enabled with toru = false}
+let disabled_scoru_arith = {all_enabled with scoru_arith = false}
 
 let disabled_zkru = {all_enabled with zkru = false}
 
@@ -170,6 +151,7 @@ let kind_to_string = function
   | K_Delegation -> "Delegation"
   | K_Undelegation -> "Undelegation"
   | K_Self_delegation -> "Self-delegation"
+  | K_Set_deposits_limit -> "Set deposits limit"
   | K_Update_consensus_key -> "Update consensus key"
   | K_Origination -> "Origination"
   | K_Register_global_constant -> "Register global constant"
@@ -184,7 +166,7 @@ let kind_to_string = function
   | K_Sc_rollup_add_messages -> "Sc_rollup_add_messages"
   | K_Sc_rollup_execute_outbox_message -> "Sc_rollup_execute_outbox_message"
   | K_Sc_rollup_recover_bond -> "Sc_rollup_recover_bond"
-  | K_Dal_publish_slot_header -> "Dal_publish_slot_header"
+  | K_Dal_publish_commitment -> "Dal_publish_commitment"
   | K_Zk_rollup_origination -> "Zk_rollup_origination"
   | K_Zk_rollup_publish -> "Zk_rollup_publish"
   | K_Zk_rollup_update -> "Zk_rollup_update"
@@ -252,8 +234,7 @@ let pp_ctxt_req pp
      fund_sc: %a tz@,\
      fund_zk: %a tz@,\
      dal_flag: %a@,\
-     scoru_flag: %a@,\
-     toru_flag: %a@,\
+     scoru_arith_flag: %a@,\
      zkru_flag: %a@,\
      @]"
     (pp_opt Gas.Arith.pp_integral)
@@ -272,9 +253,7 @@ let pp_ctxt_req pp
     Format.pp_print_bool
     flags.dal
     Format.pp_print_bool
-    flags.scoru
-    Format.pp_print_bool
-    flags.toru
+    flags.scoru_arith
     Format.pp_print_bool
     flags.zkru
 
@@ -356,7 +335,7 @@ let originate_zk_rollup block rollup_account =
       rollup_contract
       ~public_parameters
       ~circuits_info:
-        (Zk_rollup.Account.SMap.of_seq @@ Plonk.SMap.to_seq ZKOperator.circuits)
+        (Zk_rollup.Account.SMap.of_seq @@ Kzg.SMap.to_seq ZKOperator.circuits)
       ~init_state:ZKOperator.init_state
       ~nb_ops:1
   in
@@ -368,14 +347,15 @@ let originate_zk_rollup block rollup_account =
 (** {2 Setting's context construction} *)
 
 let fund_account_op block bootstrap account fund counter =
-  let open Lwt_result_syntax in
+  let open Lwt_result_wrap_syntax in
   let* fund =
     match fund with
     | None -> return Tez.one
     | Some fund ->
         let* source_balance = Context.Contract.balance (B block) bootstrap in
         if Tez.(fund > source_balance) then
-          Lwt.return (Environment.wrap_tzresult Tez.(source_balance -? one))
+          let*?@ result = Tez.(source_balance -? one) in
+          return result
         else return fund
   in
   let+ op =
@@ -404,15 +384,11 @@ let manager_parameters : Parameters.t -> ctxt_req -> Parameters.t =
   let hard_gas_limit_per_block =
     match hard_gas_limit_per_block with
     | Some gb -> gb
-    | None -> Gas.Arith.(integral_of_int_exn 5_200_000)
+    | None -> Default_parameters.constants_mainnet.hard_gas_limit_per_block
   in
   let dal = {params.constants.dal with feature_enable = flags.dal} in
   let sc_rollup =
-    {
-      params.constants.sc_rollup with
-      enable = flags.scoru;
-      arith_pvm_enable = flags.scoru;
-    }
+    {params.constants.sc_rollup with arith_pvm_enable = flags.scoru_arith}
   in
   let zk_rollup = {params.constants.zk_rollup with enable = flags.zkru} in
   let constants =
@@ -428,7 +404,7 @@ let init_ctxt_only ctxtreq =
     Tezos_protocol_alpha_parameters.Default_parameters.parameters_of_constants
       {Context.default_test_constants with consensus_threshold = 0}
   in
-  let*? _cryptobox =
+  let* _cryptobox =
     Dal_helpers.mk_cryptobox initial_params.constants.dal.cryptobox_parameters
   in
   let* block, contracts =
@@ -496,7 +472,7 @@ let init_infos :
     create_and_fund block (get_bootstrap bootstraps 2) fund_del
   in
   let* block, sc, sc_rollup =
-    if flags.scoru then
+    if flags.scoru_arith then
       create_and_fund
         ~originate_rollup:originate_sc_rollup
         block
@@ -523,7 +499,7 @@ let init_infos :
   let* reveal_operations =
     if reveal_accounts then
       reveal_accounts_operations block [Some source; dest; del]
-    else return []
+    else return_nil
   in
   let operations = create_contract_hash :: reveal_operations in
   let+ block = Block.bake ~operations block in
@@ -673,6 +649,17 @@ let mk_register_global_constant (oinfos : operation_req) (infos : infos) =
     ~source:(contract_of (get_source infos))
     ~value:(Script_repr.lazy_expr (Expr.from_string "Pair 1 2"))
 
+let mk_set_deposits_limit (oinfos : operation_req) (infos : infos) =
+  Op.set_deposits_limit
+    ?force_reveal:oinfos.force_reveal
+    ?fee:oinfos.fee
+    ?gas_limit:oinfos.gas_limit
+    ?storage_limit:oinfos.storage_limit
+    ?counter:oinfos.counter
+    (B infos.ctxt.block)
+    (contract_of (get_source infos))
+    None
+
 let mk_update_consensus_key (oinfos : operation_req) (infos : infos) =
   Op.update_consensus_key
     ?force_reveal:oinfos.force_reveal
@@ -718,11 +705,15 @@ let mk_reveal (oinfos : operation_req) (infos : infos) =
     (B infos.ctxt.block)
     pk
 
-let sc_rollup_of = function
+let sc_rollup_of =
+  let open Lwt_result_syntax in
+  function
   | Some sc_rollup -> return sc_rollup
   | None -> failwith "Sc_rollup not created in this context"
 
-let zk_rollup_of = function
+let zk_rollup_of =
+  let open Lwt_result_syntax in
+  function
   | Some zk_rollup -> return zk_rollup
   | None -> failwith "Zk_rollup not created in this context"
 
@@ -891,15 +882,14 @@ let mk_sc_rollup_return_bond (oinfos : operation_req) (infos : infos) =
     sc_rollup
     staker
 
-let mk_dal_publish_slot_header (oinfos : operation_req) (infos : infos) =
+let mk_dal_publish_commitment (oinfos : operation_req) (infos : infos) =
   let slot_index = Alpha_context.Dal.Slot_index.zero in
   let commitment = Alpha_context.Dal.Slot.Commitment.zero in
   let commitment_proof = Alpha_context.Dal.Slot.Commitment_proof.zero in
   let slot =
-    Dal.Operations.Publish_slot_header.
-      {slot_index; commitment; commitment_proof}
+    Dal.Operations.Publish_commitment.{slot_index; commitment; commitment_proof}
   in
-  Op.dal_publish_slot_header
+  Op.dal_publish_commitment
     ?fee:oinfos.fee
     ?gas_limit:oinfos.gas_limit
     ?counter:oinfos.counter
@@ -923,7 +913,7 @@ let mk_zk_rollup_origination (oinfos : operation_req) (infos : infos) =
       (contract_of (get_source infos))
       ~public_parameters
       ~circuits_info:
-        (Zk_rollup.Account.SMap.of_seq @@ Plonk.SMap.to_seq ZKOperator.circuits)
+        (Zk_rollup.Account.SMap.of_seq @@ Kzg.SMap.to_seq ZKOperator.circuits)
       ~init_state:ZKOperator.init_state
       ~nb_ops:1
   in
@@ -981,6 +971,7 @@ let select_op (op_req : operation_req) (infos : infos) =
     | K_Delegation -> mk_delegation
     | K_Undelegation -> mk_undelegation
     | K_Self_delegation -> mk_self_delegation
+    | K_Set_deposits_limit -> mk_set_deposits_limit
     | K_Update_consensus_key -> mk_update_consensus_key
     | K_Increase_paid_storage -> mk_increase_paid_storage
     | K_Reveal -> mk_reveal
@@ -993,42 +984,59 @@ let select_op (op_req : operation_req) (infos : infos) =
     | K_Sc_rollup_timeout -> mk_sc_rollup_timeout
     | K_Sc_rollup_execute_outbox_message -> mk_sc_rollup_execute_outbox_message
     | K_Sc_rollup_recover_bond -> mk_sc_rollup_return_bond
-    | K_Dal_publish_slot_header -> mk_dal_publish_slot_header
+    | K_Dal_publish_commitment -> mk_dal_publish_commitment
     | K_Zk_rollup_origination -> mk_zk_rollup_origination
     | K_Zk_rollup_publish -> mk_zk_rollup_publish
     | K_Zk_rollup_update -> mk_zk_rollup_update
   in
   mk_op op_req infos
 
-let make_tztest ?(fmt = Format.std_formatter) name test subjects info_builder =
-  let open Lwt_result_syntax in
-  Tztest.tztest name `Quick (fun () ->
+let make_test
+    ~(register_test :
+       title:string ->
+       ?additional_tags:string trace ->
+       ?slow:bool ->
+       (unit -> (unit, tztrace) result Lwt.t) ->
+       unit) name test (subjects : manager_operation_kind list) info_builder =
+  List.iter
+    (fun kind ->
+      let title = sf "%s: %s" name (kind_to_string kind) in
+      register_test ~title @@ fun () ->
+      let open Lwt_syntax in
       let* infos = info_builder () in
-      List.iter_es
-        (fun kind ->
-          Format.fprintf fmt "%s: %s@." name (kind_to_string kind) ;
-          test infos kind)
-        subjects)
+      let infos =
+        match infos with
+        | Error errs ->
+            Tezt.Test.fail "Error: %a" Error_monad.pp_print_trace errs
+        | Ok infos -> infos
+      in
+      test infos kind)
+    subjects
 
-let make_tztest_batched ?(fmt = Format.std_formatter) name test subjects
-    info_builder =
-  let open Lwt_result_syntax in
-  Tztest.tztest name `Quick (fun () ->
-      let* infos = info_builder () in
-      List.iter_es
-        (fun kind1 ->
-          let k1s = kind_to_string kind1 in
-          List.iter_es
-            (fun kind2 ->
-              Format.fprintf
-                fmt
-                "%s: [%s ; %s]@."
-                name
-                k1s
-                (kind_to_string kind2) ;
-              test infos kind1 kind2)
-            subjects)
+let make_test_batched
+    ~(register_test :
+       title:string ->
+       ?additional_tags:string trace ->
+       ?slow:bool ->
+       (unit -> (unit, tztrace) result Lwt.t) ->
+       unit) name test subjects info_builder =
+  List.iter
+    (fun kind1 ->
+      let k1s = kind_to_string kind1 in
+      List.iter
+        (fun kind2 ->
+          let title = sf "%s: [%s ; %s]" name k1s (kind_to_string kind2) in
+          register_test ~title @@ fun () ->
+          let* infos = info_builder () in
+          let infos =
+            match infos with
+            | Error errs ->
+                Tezt.Test.fail "Error: %a" Error_monad.pp_print_trace errs
+            | Ok infos -> infos
+          in
+          test infos kind1 kind2)
         subjects)
+    subjects
 
 (** {2 Diagnostic helpers.} *)
 
@@ -1042,7 +1050,7 @@ let make_tztest_batched ?(fmt = Format.std_formatter) name test subjects
    batch of n manager operations. *)
 type probes = {
   source : Signature.Public_key_hash.t;
-  fee : Tez.tez;
+  fee : Tez.t;
   gas_limit : Gas.Arith.integral;
   nb_counter : int;
 }
@@ -1114,7 +1122,7 @@ let expected_witness witness probes ~mode ctxt =
     | Some g_in, Construction ->
         return_some (Gas.Arith.sub g_in (Gas.Arith.fp probes.gas_limit))
     | _, Mempool ->
-        Context.get_constants ctxt >>=? fun c ->
+        let* c = Context.get_constants ctxt in
         return_some
           (Gas.Arith.sub
              (Gas.Arith.fp c.parametric.hard_gas_limit_per_block)
@@ -1154,7 +1162,7 @@ let expected_witness witness probes ~mode ctxt =
     In the [Application] mode, we do not perform any check on the
     available gas. *)
 let observe ~mode ~deallocated ctxt_pre ctxt_post op =
-  let open Lwt_result_syntax in
+  let open Lwt_result_wrap_syntax in
   let check_deallocated ctxt contract =
     let* actxt =
       let+ i =
@@ -1164,8 +1172,8 @@ let observe ~mode ~deallocated ctxt_pre ctxt_post op =
       in
       Incremental.alpha_ctxt i
     in
-    let*! res = Contract.must_be_allocated actxt contract in
-    match Environment.wrap_tzresult res with
+    let*!@ res = Contract.must_be_allocated actxt contract in
+    match res with
     | Ok () ->
         failwith
           "%a should have been deallocated@."
@@ -1346,6 +1354,7 @@ let subjects =
     K_Delegation;
     K_Undelegation;
     K_Self_delegation;
+    K_Set_deposits_limit;
     K_Update_consensus_key;
     K_Increase_paid_storage;
     K_Reveal;
@@ -1358,19 +1367,19 @@ let subjects =
     K_Sc_rollup_timeout;
     K_Sc_rollup_execute_outbox_message;
     K_Sc_rollup_recover_bond;
-    K_Dal_publish_slot_header;
+    K_Dal_publish_commitment;
     K_Zk_rollup_origination;
     K_Zk_rollup_publish;
     K_Zk_rollup_update;
   ]
 
 let is_consumer = function
-  | K_Update_consensus_key | K_Increase_paid_storage | K_Reveal
-  | K_Self_delegation | K_Delegation | K_Undelegation | K_Sc_rollup_add_messages
-  | K_Sc_rollup_origination | K_Sc_rollup_refute | K_Sc_rollup_timeout
-  | K_Sc_rollup_cement | K_Sc_rollup_publish
+  | K_Set_deposits_limit | K_Update_consensus_key | K_Increase_paid_storage
+  | K_Reveal | K_Self_delegation | K_Delegation | K_Undelegation
+  | K_Sc_rollup_add_messages | K_Sc_rollup_origination | K_Sc_rollup_refute
+  | K_Sc_rollup_timeout | K_Sc_rollup_cement | K_Sc_rollup_publish
   | K_Sc_rollup_execute_outbox_message | K_Sc_rollup_recover_bond
-  | K_Dal_publish_slot_header | K_Zk_rollup_origination | K_Zk_rollup_publish
+  | K_Dal_publish_commitment | K_Zk_rollup_origination | K_Zk_rollup_publish
   | K_Zk_rollup_update ->
       false
   | K_Transaction | K_Origination | K_Register_global_constant
@@ -1385,13 +1394,14 @@ let revealed_subjects =
 
 let is_disabled flags = function
   | K_Transaction | K_Origination | K_Register_global_constant | K_Delegation
-  | K_Undelegation | K_Self_delegation | K_Update_consensus_key
-  | K_Increase_paid_storage | K_Reveal | K_Transfer_ticket ->
+  | K_Undelegation | K_Self_delegation | K_Set_deposits_limit
+  | K_Update_consensus_key | K_Increase_paid_storage | K_Reveal
+  | K_Transfer_ticket ->
       false
   | K_Sc_rollup_origination | K_Sc_rollup_publish | K_Sc_rollup_cement
   | K_Sc_rollup_add_messages | K_Sc_rollup_refute | K_Sc_rollup_timeout
   | K_Sc_rollup_execute_outbox_message | K_Sc_rollup_recover_bond ->
-      flags.scoru = false
-  | K_Dal_publish_slot_header -> flags.dal = false
+      flags.scoru_arith = false
+  | K_Dal_publish_commitment -> flags.dal = false
   | K_Zk_rollup_origination | K_Zk_rollup_publish | K_Zk_rollup_update ->
       flags.zkru = false

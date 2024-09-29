@@ -12,7 +12,6 @@ In particular, this includes scripts for:
  (`update_opam_repo.sh`, `opam-*.sh`)
 * generate base58 prefixes (`b58_prefix/`)
 * generate configuration code (in OCaml) to bootstrap a new network (`gen-genesis/`)
-* running quick checks as a git hook before commiting (`pre_commit/`)
 * preparing the environment for migration tests (`prepare_migration_test.ml`)
 * releasing static Octez binaries (`release/`)
 * snapshotting protocols, linking them to the build system (`snapshot_alpha.sh`, `link_protocol.sh`, `snapshot_alpha_and_link.sh`)
@@ -21,10 +20,11 @@ In particular, this includes scripts for:
 * creating a yes-wallet, to be used in conjunction with a yes-node (`yes-wallet/` and `yes-node.patch`)
 * setting user-activated upgrades (`user_activated_upgrade.sh`)
 * generating commitments (initial accounts) for test networks (`create_genesis/create_genesis_info.py`)
-* [obsolete] re-computing and updating the hashes of the genesis and alpha protocols (`update_hashes.sh`)
 
-This directory also includes an example docker-compose file to run a node
-with a baker and an accuser (`docker/docker-compose-generic.yml`).
+This directory also includes an example docker-compose file to run a
+node with a baker and an accuser (`docker/docker-compose-generic.yml`)
+and a minimalistic Michelson REPL built on top of `octez-client`
+(`michelson_repl.sh`).
 
 ## API
 <!-- For each script where this is possible, indicate how to obtain usage info

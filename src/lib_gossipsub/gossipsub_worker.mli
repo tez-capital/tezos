@@ -27,5 +27,8 @@
 module Make (C : Gossipsub_intf.WORKER_CONFIGURATION) :
   Gossipsub_intf.WORKER
     with module GS = C.GS
+     and module GS.Peer = C.GS.Peer
+     and module GS.Topic = C.GS.Topic
      and module Monad = C.Monad
      and module Stream = C.Stream
+     and module Point = C.Point

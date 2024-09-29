@@ -243,10 +243,10 @@ let preapply (type t) (cctxt : #Protocol_client_context.full) ~chain ~block
         | _ -> Signature.Generic_operation
       in
       (if verbose_signing then
-       cctxt#message
-         "Pre-signature information (verbose signing):@.%t%!"
-         (print_for_verbose_signing ~watermark ~bytes ~branch ~contents)
-      else Lwt.return_unit)
+         cctxt#message
+           "Pre-signature information (verbose signing):@.%t%!"
+           (print_for_verbose_signing ~watermark ~bytes ~branch ~contents)
+       else Lwt.return_unit)
       >>= fun () ->
       Client_keys.sign cctxt ~watermark src_sk bytes >>=? fun signature ->
       return_some signature)
@@ -605,7 +605,7 @@ let signature_size_of_algo : Signature.algo -> int = function
       Signature.Bls.size + 2
 
 (* This value is used as a safety guard for gas limit. *)
-let safety_guard = Gas.Arith.(integral_of_int_exn 100)
+let default_safety_guard = Gas.Arith.(integral_of_int_exn 100)
 
 (*
 
@@ -632,7 +632,7 @@ let safety_guard = Gas.Arith.(integral_of_int_exn 100)
 
 let may_patch_limits (type kind) (cctxt : #Protocol_client_context.full)
     ~fee_parameter ~signature_algo ~chain ~block ?successor_level ?branch
-    ?(force = false) ?(simulation = false)
+    ?(force = false) ?(simulation = false) ?safety_guard
     (annotated_contents : kind Annotated_manager_operation.annotated_list) :
     kind Kind.manager contents_list tzresult Lwt.t =
   Tezos_client_base.Client_confirmations.wait_for_bootstrapped cctxt
@@ -819,80 +819,85 @@ let may_patch_limits (type kind) (cctxt : #Protocol_client_context.full)
    fun ~first -> function
     | (Manager_info c as op), (Manager_operation_result _ as result) ->
         (if user_gas_limit_needs_patching c.gas_limit then
-         Lwt.return (estimated_gas_single result) >>= fun gas ->
-         match gas with
-         | Error _ when force ->
-             (* When doing a simulation, set gas to the maximum possible value
-                so as to not change the error. When force injecting a failing
-                operation, set gas to zero to not pay fees for this
-                operation. *)
-             let gas =
-               if simulation then gas_limit_per_patched_op else Gas.Arith.zero
-             in
-             return
-               (Annotated_manager_operation.set_gas_limit (Limit.known gas) op)
-         | Error _ as res -> Lwt.return res
-         | Ok gas ->
-             if Gas.Arith.(gas = zero) then
-               cctxt#message "Estimated gas: none" >>= fun () ->
-               return
-                 (Annotated_manager_operation.set_gas_limit
-                    (Limit.known Gas.Arith.zero)
-                    op)
-             else
-               let safety_guard =
-                 match c.operation with
-                 | Transaction {destination = Implicit _; _}
-                 | Reveal _ | Delegation _ | Set_deposits_limit _
-                 | Increase_paid_storage _ ->
-                     Gas.Arith.zero
-                 | _ -> safety_guard
-               in
-               cctxt#message
-                 "Estimated gas: %a units (will add %a for safety)"
-                 Gas.Arith.pp
-                 gas
-                 Gas.Arith.pp
-                 safety_guard
-               >>= fun () ->
-               let safe_gas = Gas.Arith.(add (ceil gas) safety_guard) in
-               let patched_gas =
-                 Gas.Arith.min safe_gas hard_gas_limit_per_operation
+           Lwt.return (estimated_gas_single result) >>= fun gas ->
+           match gas with
+           | Error _ when force ->
+               (* When doing a simulation, set gas to the maximum possible value
+                  so as to not change the error. When force injecting a failing
+                  operation, set gas to zero to not pay fees for this
+                  operation. *)
+               let gas =
+                 if simulation then gas_limit_per_patched_op else Gas.Arith.zero
                in
                return
                  (Annotated_manager_operation.set_gas_limit
-                    (Limit.known patched_gas)
+                    (Limit.known gas)
                     op)
-        else return op)
+           | Error _ as res -> Lwt.return res
+           | Ok gas ->
+               if Gas.Arith.(gas = zero) then
+                 cctxt#message "Estimated gas: none" >>= fun () ->
+                 return
+                   (Annotated_manager_operation.set_gas_limit
+                      (Limit.known Gas.Arith.zero)
+                      op)
+               else
+                 let default_safety_guard =
+                   match c.operation with
+                   | Transaction {destination = Implicit _; _}
+                   | Reveal _ | Delegation _ | Set_deposits_limit _
+                   | Increase_paid_storage _ ->
+                       Gas.Arith.zero
+                   | _ -> default_safety_guard
+                 in
+                 let safety_guard =
+                   Option.value safety_guard ~default:default_safety_guard
+                 in
+                 cctxt#message
+                   "Estimated gas: %a units (will add %a for safety)"
+                   Gas.Arith.pp
+                   gas
+                   Gas.Arith.pp
+                   safety_guard
+                 >>= fun () ->
+                 let safe_gas = Gas.Arith.(add (ceil gas) safety_guard) in
+                 let patched_gas =
+                   Gas.Arith.min safe_gas hard_gas_limit_per_operation
+                 in
+                 return
+                   (Annotated_manager_operation.set_gas_limit
+                      (Limit.known patched_gas)
+                      op)
+         else return op)
         >>=? fun op ->
         (if user_storage_limit_needs_patching c.storage_limit then
-         Lwt.return
-           (estimated_storage_single
-              ~origination_size:(Z.of_int origination_size)
-              ~force
-              result)
-         >>=? fun storage ->
-         if Z.equal storage Z.zero then
-           cctxt#message "Estimated storage: no bytes added" >>= fun () ->
-           return
-             (Annotated_manager_operation.set_storage_limit
-                (Limit.known Z.zero)
-                op)
-         else
-           cctxt#message
-             "Estimated storage: %s bytes added (will add 20 for safety)"
-             (Z.to_string storage)
-           >>= fun () ->
-           let storage_limit =
-             Z.min
-               (Z.add storage (Z.of_int 20))
-               hard_storage_limit_per_operation
-           in
-           return
-             (Annotated_manager_operation.set_storage_limit
-                (Limit.known storage_limit)
-                op)
-        else return op)
+           Lwt.return
+             (estimated_storage_single
+                ~origination_size:(Z.of_int origination_size)
+                ~force
+                result)
+           >>=? fun storage ->
+           if Z.equal storage Z.zero then
+             cctxt#message "Estimated storage: no bytes added" >>= fun () ->
+             return
+               (Annotated_manager_operation.set_storage_limit
+                  (Limit.known Z.zero)
+                  op)
+           else
+             cctxt#message
+               "Estimated storage: %s bytes added (will add 20 for safety)"
+               (Z.to_string storage)
+             >>= fun () ->
+             let storage_limit =
+               Z.min
+                 (Z.add storage (Z.of_int 20))
+                 hard_storage_limit_per_operation
+             in
+             return
+               (Annotated_manager_operation.set_storage_limit
+                  (Limit.known storage_limit)
+                  op)
+         else return op)
         >>=? fun op ->
         if Limit.is_unknown c.fee then
           (* Setting a dummy fee is required for converting to manager op *)
@@ -998,17 +1003,17 @@ let inject_operation_internal (type kind) cctxt ~chain ~block ?confirmations
     ?branch ?src_sk ?verbose_signing ?fee_parameter
     (contents : kind contents_list) =
   (if simulation then
-   simulate cctxt ~chain ~block ?successor_level ?branch contents
-  else
-    preapply
-      cctxt
-      ~chain
-      ~block
-      ?fee_parameter
-      ?verbose_signing
-      ?branch
-      ?src_sk
-      contents)
+     simulate cctxt ~chain ~block ?successor_level ?branch contents
+   else
+     preapply
+       cctxt
+       ~chain
+       ~block
+       ?fee_parameter
+       ?verbose_signing
+       ?branch
+       ?src_sk
+       contents)
   >>=? fun (_oph, op, result) ->
   (match detect_script_failure result with
   | Ok () -> return_unit
@@ -1332,9 +1337,9 @@ let may_replace_operation (type kind) (cctxt : #full) chain from
     Lwt.return_ok contents
 
 let inject_manager_operation cctxt ~chain ~block ?successor_level ?branch
-    ?confirmations ?dry_run ?verbose_signing ?simulation ?force ~source
-    ~(src_pk : public_key) ~src_sk ~fee ~gas_limit ~storage_limit ?counter
-    ?(replace_by_fees = false) ~fee_parameter (type kind)
+    ?confirmations ?dry_run ?verbose_signing ?simulation ?force ?safety_guard
+    ~source ~(src_pk : public_key) ~src_sk ~fee ~gas_limit ~storage_limit
+    ?counter ?(replace_by_fees = false) ~fee_parameter (type kind)
     (operations : kind Annotated_manager_operation.annotated_list) :
     (Operation_hash.t
     * packed_operation
@@ -1391,8 +1396,8 @@ let inject_manager_operation cctxt ~chain ~block ?successor_level ?branch
   match key with
   | None when not (has_reveal operations) -> (
       (if not (Limit.is_unknown fee && Limit.is_unknown storage_limit) then
-       reveal_error cctxt
-      else return_unit)
+         reveal_error cctxt
+       else return_unit)
       >>=? fun () ->
       let reveal =
         prepare_manager_operation
@@ -1413,6 +1418,7 @@ let inject_manager_operation cctxt ~chain ~block ?successor_level ?branch
         ~block
         ?force
         ?simulation
+        ?safety_guard
         ?successor_level
         ?branch
         contents
@@ -1455,6 +1461,7 @@ let inject_manager_operation cctxt ~chain ~block ?successor_level ?branch
         ~block
         ?force
         ?simulation
+        ?safety_guard
         ?successor_level
         ?branch
         contents

@@ -72,13 +72,19 @@ let with_store f =
       Wasmer.Store.delete store ;
       Lwt.return_unit)
 
-let load_kernel durable =
+let load_kernel ~hooks durable =
   let store = Lazy.force static_store in
-  Module_cache.load_kernel store durable
+  Module_cache.load_kernel ~hooks store durable
 
-let compute ~version ~reveal_builtins ~write_debug durable buffers =
+let preload_kernel ~hooks durable =
+  let open Lwt_syntax in
+  let* _ = load_kernel ~hooks durable in
+  return_unit
+
+let compute ?(wasm_entrypoint = Constants.wasm_entrypoint) ~hooks ~version
+    ~reveal_builtins ~write_debug durable buffers =
   let open Lwt.Syntax in
-  let* module_ = load_kernel durable in
+  let* module_ = load_kernel ~hooks durable in
 
   let main_mem : (unit -> Wasmer.Memory.t) option ref = ref None in
   let retrieve_mem () =
@@ -106,7 +112,7 @@ let compute ~version ~reveal_builtins ~write_debug durable buffers =
 
   let exports = Wasmer.Exports.from_instance instance in
   let kernel_run =
-    Wasmer.(Exports.fn exports "kernel_run" (producer nothing))
+    Wasmer.(Exports.fn exports wasm_entrypoint (producer nothing))
   in
 
   main_mem := Some (fun () -> Wasmer.Exports.mem0 exports) ;

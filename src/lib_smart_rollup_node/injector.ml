@@ -32,17 +32,19 @@ type state = {
   delay_increment_per_round : int64;
 }
 
+let registry = Prometheus.CollectorRegistry.create ()
+
 module Parameters :
   PARAMETERS
     with type state = state
-     and type Tag.t = Configuration.operation_kind
+     and type Tag.t = Operation_kind.t
      and type Operation.t = L1_operation.t = struct
   type nonrec state = state
 
-  let events_section = ["sc_rollup_node"]
+  let events_section = ["smart_rollup_node"]
 
-  module Tag : TAG with type t = Configuration.operation_kind = struct
-    type t = Configuration.operation_kind
+  module Tag : TAG with type t = Operation_kind.t = struct
+    type t = Operation_kind.t
 
     let compare = Stdlib.compare
 
@@ -50,14 +52,11 @@ module Parameters :
 
     let hash = Hashtbl.hash
 
-    let string_of_tag = Configuration.string_of_operation_kind
+    let string_of_tag = Operation_kind.to_string
 
     let pp ppf t = Format.pp_print_string ppf (string_of_tag t)
 
-    let encoding : t Data_encoding.t =
-      let open Data_encoding in
-      string_enum
-        (List.map (fun t -> (string_of_tag t, t)) Configuration.operation_kinds)
+    let encoding : t Data_encoding.t = Operation_kind.encoding
   end
 
   module Operation = L1_operation
@@ -71,6 +70,9 @@ module Parameters :
     | Cement -> 1
     | Timeout -> 1
     | Refute -> 1
+    | Recover -> 1
+    | Execute_outbox_message -> 1
+    | Publish_dal_commitment -> 1
 
   let operation_tag : Operation.t -> Tag.t = function
     | Add_messages _ -> Add_messages
@@ -78,31 +80,51 @@ module Parameters :
     | Publish _ -> Publish
     | Timeout _ -> Timeout
     | Refute _ -> Refute
+    | Recover_bond _ -> Recover
+    | Execute_outbox_message _ -> Execute_outbox_message
+    | Publish_dal_commitment _ -> Publish_dal_commitment
 
   let fee_parameter {fee_parameters; _} operation =
     let operation_kind = operation_tag operation in
-    Configuration.Operation_kind_map.find operation_kind fee_parameters
+    Operation_kind.Map.find operation_kind fee_parameters
     |> Option.value
-         ~default:(Configuration.default_fee_parameter ~operation_kind ())
+         ~default:(Configuration.default_fee_parameter operation_kind)
 
-  (* TODO: https://gitlab.com/tezos/tezos/-/issues/3459
-     Decide if some batches must have all the operations succeed. See
-     {!Injector_sigs.Parameter.batch_must_succeed}. *)
-  let batch_must_succeed _ = `At_least_one
+  let safety_guard = function
+    | Operation.Publish _ ->
+        (* Gas consumption of commitment publication can increase if there are
+           already commitments for the same level in the context. The value 300
+           was inferred empirically by looking at gas consumption on a running
+           rollup, and is sufficient to cover the difference in the case where a
+           commitment for the same level already exists. *)
+        Some 300
+    | Timeout _ | Refute _ ->
+        (* We increase safety of refutation game operations by precaution. *)
+        Some 300
+    | Add_messages _ | Cement _ | Recover_bond _ | Execute_outbox_message _ ->
+        None
+    | Publish_dal_commitment _ -> None
 
-  let retry_unsuccessful_operation _state (_op : Operation.t) status =
+  let persist_operation (op : Operation.t) =
+    match op with
+    | Cement _ | Publish _
+    (* Cement and Publish commitments don't need to be persisted as they are
+       requeued by the node automatically. *)
+    | Refute _ | Timeout _
+    (* Refutation game operations don't need to be persisted as they are
+       requeued by the node automatically depending on the state of the game on
+       L1 on startup. *) ->
+        false
+    | Add_messages _ | Recover_bond _ | Execute_outbox_message _
+    | Publish_dal_commitment _ ->
+        true
+
+  let retry_unsuccessful_operation _state (op : Operation.t) ?reason status =
     let open Lwt_syntax in
     match status with
-    | Backtracked | Skipped | Other_branch ->
-        (* Always retry backtracked or skipped operations, or operations that
+    | Backtracked | Other_branch ->
+        (* Always retry backtracked operations, or operations that
            are on another branch because of a reorg:
-
-           - Commitments are always produced on finalized blocks. They don't
-             need to be recomputed, and as such are valid in another branch.
-
-           - The cementation operations should be re-injected because the node
-             only keeps track of the last cemented level and the last published
-             commitment, without rollbacks.
 
            - Messages posted to an inbox should be re-emitted (i.e. re-queued)
              in case of a fork.
@@ -115,15 +137,38 @@ module Parameters :
              maybe check if game exists on other branch as well.
         *)
         return Retry
+    | Skipped -> (
+        match (op, reason) with
+        | Cement _, Some (Operation.Cement _, _) ->
+            (* Cementations following a failed cement are bound to fail *)
+            return Forget
+        | _ -> return Retry)
     | Failed error -> (
         (* TODO: https://gitlab.com/tezos/tezos/-/issues/4071
            Think about which operations should be retried and when. *)
-        match classify_trace error with
-        | Permanent | Outdated -> return Forget
-        | Branch | Temporary -> return Retry)
+        match op with
+        | Cement _ | Publish _ ->
+            (* Cement and Publish commitments can be forgotten to free up the
+               injector as they are requeued by the node automatically. *)
+            return Forget
+        | Refute _ | Timeout _ | Add_messages _ | Recover_bond _
+        | Execute_outbox_message _ | Publish_dal_commitment _ -> (
+            match classify_trace error with
+            | Permanent | Outdated -> return Forget
+            | Branch | Temporary -> return Retry))
     | Never_included ->
         (* Forget operations that are never included *)
         return Forget
+
+  let metrics_registry = registry
 end
 
 include Injector_functor.Make (Parameters)
+
+let check_and_add_pending_operation (mode : Configuration.mode)
+    (operation : L1_operation.t) =
+  let open Lwt_result_syntax in
+  if Configuration.(can_inject mode (Parameters.operation_tag operation)) then
+    let* hash = add_pending_operation operation in
+    return (Some hash)
+  else return None

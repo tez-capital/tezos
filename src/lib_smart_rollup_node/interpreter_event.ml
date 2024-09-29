@@ -26,16 +26,16 @@
 module Simple = struct
   include Internal_event.Simple
 
-  let section = ["sc_rollup_node"; "interpreter"]
+  let section = ["smart_rollup_node"; "interpreter"]
 
   let transitioned_pvm =
     declare_4
       ~section
-      ~name:"sc_rollup_node_interpreter_transitioned_pvm"
+      ~name:"smart_rollup_node_interpreter_transitioned_pvm"
       ~msg:
         "Transitioned PVM at inbox level {inbox_level} to {state_hash} at tick \
          {ticks} with {num_messages} messages"
-      ~level:Notice
+      ~level:Info
       ("inbox_level", Data_encoding.int32)
       ("state_hash", State_hash.encoding)
       ("ticks", Data_encoding.z)
@@ -44,16 +44,47 @@ module Simple = struct
   let intended_failure =
     declare_4
       ~section
-      ~name:"sc_rollup_node_interpreter_intended_failure"
+      ~name:"smart_rollup_node_interpreter_intended_failure"
       ~msg:
         "Intended failure at level {level} for message indexed {message_index} \
          and at the tick {message_tick} of message processing (internal = \
-         {internal})."
+         {internal})"
       ~level:Notice
       ("level", Data_encoding.int31)
       ("message_index", Data_encoding.int31)
       ("message_tick", Data_encoding.int64)
       ("internal", Data_encoding.bool)
+
+  let missing_pre_image =
+    declare_1
+      ~section
+      ~name:"smart_rollup_node_interpreter_missing_pre_image"
+      ~msg:"The pre-image {hash} is missing locally"
+      ~level:Info
+      ("hash", Data_encoding.string)
+      ~pp1:Format.pp_print_string
+
+  let fetched_incorrect_pre_image =
+    declare_2
+      ~section
+      ~name:"smart_rollup_node_interpreter_fetched_incorrect_pre_image"
+      ~msg:
+        "Fetched pre-image for {content_hash} instead of {expected_hash} from \
+         pre-image-service"
+      ~level:Error
+      ("expected_hash", Data_encoding.string)
+      ("content_hash", Data_encoding.string)
+      ~pp1:Format.pp_print_string
+      ~pp2:Format.pp_print_string
+
+  let patching_genesis_state =
+    declare_1
+      ~section
+      ~name:"smart_rollup_node_interpreter_patching_genesis_pvm_state"
+      ~msg:"Patching genesis PVM state: {patch}"
+      ~level:Warning
+      ("patch", Pvm_patches.unsafe_patch_encoding)
+      ~pp1:Pvm_patches.pp_unsafe_patch
 end
 
 (** [transition_pvm inbox_level hash tick n] emits the event that a PVM
@@ -71,3 +102,10 @@ let transitioned_pvm inbox_level hash tick num_messages =
    to the PVM. *)
 let intended_failure ~level ~message_index ~message_tick ~internal =
   Simple.(emit intended_failure (level, message_index, message_tick, internal))
+
+let missing_pre_image ~hash = Simple.(emit missing_pre_image) hash
+
+let fetched_incorrect_pre_image ~expected_hash ~content_hash =
+  Simple.(emit fetched_incorrect_pre_image) (expected_hash, content_hash)
+
+let patching_genesis_state patch = Simple.(emit patching_genesis_state) patch

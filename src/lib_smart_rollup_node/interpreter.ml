@@ -23,11 +23,11 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-let get_boot_sector (module Plugin : Protocol_plugin_sig.PARTIAL) block_hash
-    (node_ctxt : _ Node_context.t) =
+let get_boot_sector (module Plugin : Protocol_plugin_sig.PARTIAL)
+    genesis_block_hash (node_ctxt : _ Node_context.t) =
   let open Lwt_result_syntax in
-  match node_ctxt.boot_sector_file with
-  | None -> Plugin.Layer1_helpers.get_boot_sector block_hash node_ctxt
+  match node_ctxt.config.boot_sector_file with
+  | None -> Plugin.Layer1_helpers.get_boot_sector genesis_block_hash node_ctxt
   | Some boot_sector_file ->
       let*! boot_sector = Lwt_utils_unix.read_file boot_sector_file in
       let*? boot_sector =
@@ -40,16 +40,72 @@ let get_boot_sector (module Plugin : Protocol_plugin_sig.PARTIAL) block_hash
       in
       return boot_sector
 
-let genesis_state (module Plugin : Protocol_plugin_sig.PARTIAL) block_hash
-    node_ctxt ctxt =
+(** Apply potential unsafe patches to the PVM state. *)
+let apply_unsafe_patches (module Plugin : Protocol_plugin_sig.PARTIAL)
+    ~genesis_block_hash (node_ctxt : _ Node_context.t) state =
   let open Lwt_result_syntax in
-  let* boot_sector = get_boot_sector (module Plugin) block_hash node_ctxt in
+  match
+    (node_ctxt.unsafe_patches
+      :> (Pvm_patches.unsafe_patch * Pvm_patches.kind) list)
+  with
+  | [] -> return state
+  | patches ->
+      let has_user_provided_patches =
+        List.exists
+          (function
+            | _, Pvm_patches.User_provided -> true | _, Hardcoded -> false)
+          patches
+      in
+      let*? () =
+        error_when
+          (has_user_provided_patches
+          && not node_ctxt.config.apply_unsafe_patches)
+          (Rollup_node_errors.Needs_apply_unsafe_flag (List.map fst patches))
+      in
+      let* whitelist =
+        Plugin.Layer1_helpers.find_whitelist
+          node_ctxt.cctxt
+          ~block:genesis_block_hash
+          node_ctxt.config.sc_rollup_address
+      in
+      let private_rollup = whitelist <> None in
+      let*? () =
+        error_unless
+          private_rollup
+          Rollup_node_errors.Cannot_patch_pvm_of_public_rollup
+      in
+      List.fold_left_es
+        (fun state (patch, _kind) ->
+          let*! () = Interpreter_event.patching_genesis_state patch in
+          Plugin.Pvm.Unsafe.apply_patch node_ctxt.kind state patch)
+        state
+        patches
+
+type original_genesis_state = Original of Context.pvmstate
+
+let genesis_state (module Plugin : Protocol_plugin_sig.PARTIAL) ?genesis_block
+    node_ctxt =
+  let open Lwt_result_syntax in
+  let* genesis_block_hash =
+    match genesis_block with
+    | Some b -> return b
+    | None -> Node_context.hash_of_level node_ctxt node_ctxt.genesis_info.level
+  in
+  let* boot_sector =
+    get_boot_sector (module Plugin) genesis_block_hash node_ctxt
+  in
   let*! initial_state = Plugin.Pvm.initial_state node_ctxt.kind in
-  let*! genesis_state =
+  let*! unpatched_genesis_state =
     Plugin.Pvm.install_boot_sector node_ctxt.kind initial_state boot_sector
   in
-  let*! ctxt = Context.PVMState.set ctxt genesis_state in
-  return (ctxt, genesis_state)
+  let* genesis_state =
+    apply_unsafe_patches
+      (module Plugin)
+      node_ctxt
+      ~genesis_block_hash
+      unpatched_genesis_state
+  in
+  return (genesis_state, Original unpatched_genesis_state)
 
 let state_of_head plugin node_ctxt ctxt Layer1.{hash; level} =
   let open Lwt_result_syntax in
@@ -57,9 +113,11 @@ let state_of_head plugin node_ctxt ctxt Layer1.{hash; level} =
   match state with
   | None ->
       let genesis_level = node_ctxt.Node_context.genesis_info.level in
-      if level = genesis_level then genesis_state plugin hash node_ctxt ctxt
+      if level = genesis_level then
+        let+ state, _ = genesis_state plugin ~genesis_block:hash node_ctxt in
+        state
       else tzfail (Rollup_node_errors.Missing_PVM_state (hash, level))
-  | Some state -> return (ctxt, state)
+  | Some state -> return state
 
 (** [transition_pvm plugin node_ctxt ctxt predecessor head] runs a PVM at the
     previous state from block [predecessor] by consuming as many messages as
@@ -68,7 +126,7 @@ let transition_pvm (module Plugin : Protocol_plugin_sig.PARTIAL) node_ctxt ctxt
     predecessor Layer1.{hash = _; _} inbox_messages =
   let open Lwt_result_syntax in
   (* Retrieve the previous PVM state from store. *)
-  let* ctxt, predecessor_state =
+  let* predecessor_state =
     state_of_head (module Plugin) node_ctxt ctxt predecessor
   in
   let* eval_result =
@@ -96,19 +154,13 @@ let transition_pvm (module Plugin : Protocol_plugin_sig.PARTIAL) node_ctxt ctxt
 (** [process_head plugin node_ctxt ctxt ~predecessor head inbox_and_messages] runs the PVM for the given
     head. *)
 let process_head plugin (node_ctxt : _ Node_context.t) ctxt
-    ~(predecessor : Layer1.header) (head : Layer1.header) inbox_and_messages =
+    ~(predecessor : Layer1.head) (head : Layer1.head) inbox_and_messages =
   let open Lwt_result_syntax in
   let first_inbox_level = node_ctxt.genesis_info.level |> Int32.succ in
-  if head.Layer1.level >= first_inbox_level then
-    transition_pvm
-      plugin
-      node_ctxt
-      ctxt
-      (Layer1.head_of_header predecessor)
-      (Layer1.head_of_header head)
-      inbox_and_messages
-  else if head.Layer1.level = node_ctxt.genesis_info.level then
-    let* ctxt, state = genesis_state plugin head.hash node_ctxt ctxt in
+  if head.level >= first_inbox_level then
+    transition_pvm plugin node_ctxt ctxt predecessor head inbox_and_messages
+  else if head.level = node_ctxt.genesis_info.level then
+    let* state, _ = genesis_state plugin ~genesis_block:head.hash node_ctxt in
     let*! ctxt = Context.PVMState.set ctxt state in
     return (ctxt, 0, 0L, Z.zero)
   else return (ctxt, 0, 0L, Z.zero)
@@ -122,7 +174,7 @@ let start_state_of_block plugin node_ctxt (block : Sc_rollup_block.t) =
   let* ctxt =
     Node_context.checkout_context node_ctxt block.header.predecessor
   in
-  let* _ctxt, state =
+  let* state =
     state_of_head
       plugin
       node_ctxt
@@ -130,23 +182,11 @@ let start_state_of_block plugin node_ctxt (block : Sc_rollup_block.t) =
       Layer1.{hash = block.header.predecessor; level = pred_level}
   in
   let* inbox = Node_context.get_inbox node_ctxt block.header.inbox_hash in
-  let* {is_first_block; predecessor; predecessor_timestamp; messages} =
-    Node_context.get_messages node_ctxt block.header.inbox_witness
-  in
   let inbox_level = Octez_smart_rollup.Inbox.inbox_level inbox in
   let module Plugin = (val plugin) in
   let*! tick = Plugin.Pvm.get_tick node_ctxt.kind state in
   let*! state_hash = Plugin.Pvm.state_hash node_ctxt.kind state in
-  let messages =
-    Plugin.Pvm.start_of_level_serialized
-    ::
-    (if is_first_block then
-     Option.to_list Plugin.Pvm.protocol_migration_serialized
-    else [])
-    @ Plugin.Pvm.info_per_level_serialized ~predecessor ~predecessor_timestamp
-      :: messages
-    @ [Plugin.Pvm.end_of_level_serialized]
-  in
+  let* messages = Messages.get node_ctxt block.header.inbox_witness in
   return
     Pvm_plugin_sig.
       {
@@ -194,37 +234,41 @@ let state_of_tick_aux plugin node_ctxt ~start_state (event : Sc_rollup_block.t)
   let result_state = Delayed_write_monad.ignore result_state in
   return result_state
 
-(* The cache allows cache intermediate states of the PVM in e.g. dissections. *)
-module Tick_state_cache =
-  Aches_lwt.Lache.Make
-    (Aches.Rache.Transfer
-       (Aches.Rache.LRU)
-       (struct
-         type t = Z.t * Block_hash.t
+(* Global cache to share states between different parallel refutation games. *)
+let global_tick_state_cache =
+  Pvm_plugin_sig.make_state_cache 64 (* size of 2 dissections *)
 
-         let equal (t1, b1) (t2, b2) = Z.equal t1 t2 && Block_hash.(b1 = b2)
-
-         let hash (tick, block) = (Z.hash tick * 13) + Block_hash.hash block
-       end))
-
-let tick_state_cache = Tick_state_cache.create 64 (* size of 2 dissections *)
-
-(* Memoized version of [state_of_tick_aux]. *)
-let memo_state_of_tick_aux plugin node_ctxt ~start_state
+(* Memoized version of [state_of_tick_aux] using global cache. *)
+let global_memo_state_of_tick_aux plugin node_ctxt ~start_state
     (event : Sc_rollup_block.t) tick =
-  Tick_state_cache.bind_or_put
-    tick_state_cache
-    (tick, event.header.block_hash)
-    (fun (tick, _hash) ->
-      state_of_tick_aux plugin node_ctxt ~start_state event tick)
+  Pvm_plugin_sig.Tick_state_cache.bind_or_put
+    global_tick_state_cache
+    tick
+    (state_of_tick_aux plugin node_ctxt ~start_state event)
+    Lwt.return
+
+(* Memoized version of [state_of_tick_aux] using both global and local caches. *)
+let memo_state_of_tick_aux plugin node_ctxt state_cache ~start_state
+    (event : Sc_rollup_block.t) tick =
+  Pvm_plugin_sig.Tick_state_cache.bind_or_put
+    state_cache
+    tick
+    (global_memo_state_of_tick_aux plugin node_ctxt ~start_state event)
     Lwt.return
 
 (** [state_of_tick plugin node_ctxt ?start_state ~tick level] returns [Some
     end_state] for [tick] if [tick] happened before
     [level]. Otherwise, returns [None].*)
-let state_of_tick plugin node_ctxt ?start_state ~tick level =
+let state_of_tick plugin node_ctxt state_cache ?start_state ~tick level =
   let open Lwt_result_syntax in
-  let* event = Node_context.block_with_tick node_ctxt ~max_level:level tick in
+  let min_level =
+    match start_state with
+    | None -> None
+    | Some s -> Some s.Pvm_plugin_sig.inbox_level
+  in
+  let* event =
+    Node_context.block_with_tick node_ctxt ?min_level ~max_level:level tick
+  in
   match event with
   | None -> return_none
   | Some event ->
@@ -235,6 +279,13 @@ let state_of_tick plugin node_ctxt ?start_state ~tick level =
              The failures/loser mode does not work properly when restarting
              from intermediate states. *)
           state_of_tick_aux plugin node_ctxt ~start_state:None event tick
-        else memo_state_of_tick_aux plugin node_ctxt ~start_state event tick
+        else
+          memo_state_of_tick_aux
+            plugin
+            node_ctxt
+            state_cache
+            ~start_state
+            event
+            tick
       in
       return_some result_state

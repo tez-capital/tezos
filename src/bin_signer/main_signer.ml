@@ -82,7 +82,7 @@ let high_watermark_switch =
   Tezos_clic.switch
     ~doc:
       "high watermark restriction\n\
-       Stores the highest level signed for blocks and endorsements for each \
+       Stores the highest level signed for blocks and attestations for each \
        address, and forbids to sign a level and round that are inferior or \
        equal afterwards, except for the exact same input data."
     ~short:'W'
@@ -101,9 +101,9 @@ let may_setup_pidfile pidfile_opt f =
   match pidfile_opt with
   | None -> f ()
   | Some pidfile ->
-      Lwt_lock_file.try_with_lock
-        ~when_locked:(fun () ->
-          failwith "Failed to create the pidfile: %s" pidfile)
+      Lwt_lock_file.with_lock
+        ~when_locked:
+          (`Fail (Exn (Failure ("Failed to create the pidfile: " ^ pidfile))))
         ~filename:pidfile
         f
 

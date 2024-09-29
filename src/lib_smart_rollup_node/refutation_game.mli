@@ -25,19 +25,22 @@
 
 (** This module implements the refutation game logic of the rollup node. *)
 
-(** [play_opening_move node_ctxt self conflict] injects the opening refutation
+(** [play_opening_move node_ctxt conflict] injects the opening refutation
     game move for [conflict]. *)
 val play_opening_move :
   [< `Read | `Write > `Read] Node_context.t ->
-  Signature.public_key_hash ->
   Octez_smart_rollup.Game.conflict ->
   (unit, tztrace) result Lwt.t
 
-(** [play head_block plugin node_ctxt ~self game opponent] injects the next move
-    in the refutation [game] played by [self] and [opponent]. *)
+(** [play head_block plugin node_ctxt cache ~self ~commitment_period_tick_offset
+    game opponent] injects the next move in the refutation [game] played by
+    [self] and [opponent], where [commitment_period_tick_offset] is the tick
+    offset for the commitment period for the conflict. *)
 val play :
   Node_context.rw ->
+  Pvm_plugin_sig.state_cache ->
   self:Signature.public_key_hash ->
+  commitment_period_tick_offset:Z.t ->
   Octez_smart_rollup.Game.t ->
   Signature.public_key_hash ->
   (unit, tztrace) result Lwt.t

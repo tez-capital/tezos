@@ -6,19 +6,17 @@
 # shellcheck disable=SC2086
 # for omitting quotes in: source $HOME/.cargo/env
 
-usage () {
-    cat >&2 <<!EOF
+usage() {
+  cat >&2 << !EOF
 usage:
   $0 [<repo> <branch>]
 !EOF
 }
 
-if [ $# -eq 2 ]
-then
+if [ $# -eq 2 ]; then
   REPO=$1
   BRANCH=$2
-elif [ $# -eq 0 ]  # don't remove this branch used for an example in the doc!
-then
+elif [ $# -eq 0 ]; then # don't remove this branch used for an example in the doc!
   # [select branch]
   REPO="tezos/tezos"
   BRANCH="latest-release"
@@ -42,7 +40,7 @@ sudo apt-get install -y rsync git m4 build-essential patch unzip wget opam jq bc
 # [install rust]
 wget https://sh.rustup.rs/rustup-init.sh
 chmod +x rustup-init.sh
-./rustup-init.sh --profile minimal --default-toolchain 1.64.0 -y
+./rustup-init.sh --profile minimal --default-toolchain 1.74.0 -y
 # [source cargo]
 . $HOME/.cargo/env
 # [get sources]

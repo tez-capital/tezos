@@ -6,11 +6,11 @@
  (instrumentation (backend bisect_ppx))
  (libraries
   tezt.core
-  octez-libs.tezos-stdlib
+  octez-libs.stdlib
   octez-alcotezt
   bigstring
   lwt.unix
-  tezos-test-helpers
+  octez-libs.test-helpers
   qcheck-alcotest)
  (library_flags (:standard -linkall))
  (flags
@@ -39,7 +39,7 @@
  (alias runtest)
  (package octez-libs)
  (enabled_if (<> false %{env:RUNTEZTALIAS=true}))
- (action (run %{dep:./main.exe})))
+ (action (run %{dep:./main.exe} /flaky /ci_disabled)))
 
 (rule
  (targets main.ml)

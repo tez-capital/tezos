@@ -11,7 +11,7 @@ and instructions to regenerate the protocol sources from the
 Gitlab branch.
 
 Test network Carthagenet is available to test Carthage.
-See details in :ref:`Test Networks<test-networks>`
+See details in :ref:`Test Networks<test_networks>`
 and instructions to join in :ref:`How to get Tezos<howtoget>`.
 
 The code can be found in the Gitlab branch
@@ -21,8 +21,6 @@ full hash is ``PsCARTHAGazKbHtnKfLzQg3kms52kSRpgnDY982a9oYsSXRLQEb``.
 **This protocol contains several breaking changes with respect to Babylon.**
 Developers are particularly encouraged to carefully read this page and
 to monitor it for updates.
-
-.. contents:: Summary of changes
 
 Baking Daemon
 -------------

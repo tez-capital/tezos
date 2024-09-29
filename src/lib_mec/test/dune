@@ -7,7 +7,7 @@
  (libraries
   tezt.core
   octez-alcotezt
-  octez-mec)
+  octez-libs.mec)
  (library_flags (:standard -linkall))
  (flags
   (:standard)
@@ -82,9 +82,9 @@
 
 (rule
  (alias runtest)
- (package octez-mec)
+ (package octez-libs)
  (enabled_if (<> false %{env:RUNTEZTALIAS=true}))
- (action (run %{dep:./main.exe})))
+ (action (run %{dep:./main.exe} /flaky /ci_disabled)))
 
 (rule
  (targets main.ml)

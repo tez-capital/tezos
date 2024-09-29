@@ -32,7 +32,7 @@ open Alpha_context
     It is imperative that this is aligned with the protocol's implementation.
 *)
 module Arith_proof_format =
-  Context.Proof
+  Irmin_context.Proof
     (struct
       include Sc_rollup.State_hash
 
@@ -48,13 +48,30 @@ module Impl : Pvm_sig.S = struct
   module PVM = Sc_rollup.ArithPVM.Make (Arith_proof_format)
   include PVM
 
+  type repo = Irmin_context.repo
+
+  type tree = Irmin_context.tree
+
+  module Ctxt_wrapper = Context_wrapper.Irmin
+
   let kind = Sc_rollup.Kind.Example_arith
 
-  module State = Context.PVMState
+  module State = Irmin_context.PVMState
 
   module Inspect_durable_state = struct
     let lookup _state _keys =
       raise (Invalid_argument "No durable storage for arith PVM")
+  end
+
+  module Unsafe_patches = struct
+    (** No unsafe patches for the arith PVM. *)
+    type t = |
+
+    let of_patch (p : Pvm_patches.unsafe_patch) =
+      match p with
+      | Increase_max_nb_ticks _ | Patch_durable_storage _ -> assert false
+
+    let apply _state (x : t) = match x with _ -> .
   end
 
   let new_dissection = Game_helpers.default_new_dissection

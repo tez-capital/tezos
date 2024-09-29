@@ -112,6 +112,8 @@ type nonrec t = {
   prefetch_blocks : int;  (** Number of blocks to prefetch by default. *)
 }
 
+let raw_l1_connection {l1; _} = l1
+
 let start ~name ~reconnection_delay ~l1_blocks_cache_size ?protocols
     ?(prefetch_blocks = l1_blocks_cache_size) cctxt =
   let open Lwt_result_syntax in
@@ -122,10 +124,42 @@ let start ~name ~reconnection_delay ~l1_blocks_cache_size ?protocols
         l1_blocks_cache_size
     else Ok ()
   in
-  let*! l1 = start ~name ~reconnection_delay ?protocols cctxt in
+  let chain = cctxt#chain in
+  let*! l1 =
+    start
+      ~name
+      ~chain
+      ~reconnection_delay
+      ?protocols
+      (cctxt :> Tezos_rpc.Context.generic)
+  in
+  let cctxt = (cctxt :> Client_context.full) in
   let blocks_cache = Blocks_cache.create l1_blocks_cache_size in
   let headers_cache = Blocks_cache.create l1_blocks_cache_size in
+  return {l1; cctxt; blocks_cache; headers_cache; prefetch_blocks}
+
+let create ~name ~reconnection_delay ~l1_blocks_cache_size ?protocols
+    ?(prefetch_blocks = l1_blocks_cache_size) cctxt =
+  let open Result_syntax in
+  let* () =
+    if prefetch_blocks > l1_blocks_cache_size then
+      error_with
+        "Blocks to prefetch must be less than the cache size: %d"
+        l1_blocks_cache_size
+    else Ok ()
+  in
+  let chain = cctxt#chain in
+  let l1 =
+    create
+      ~name
+      ~chain
+      ~reconnection_delay
+      ?protocols
+      (cctxt :> Tezos_rpc.Context.generic)
+  in
   let cctxt = (cctxt :> Client_context.full) in
+  let blocks_cache = Blocks_cache.create l1_blocks_cache_size in
+  let headers_cache = Blocks_cache.create l1_blocks_cache_size in
   return {l1; cctxt; blocks_cache; headers_cache; prefetch_blocks}
 
 let shutdown {l1; _} = shutdown l1
@@ -135,8 +169,9 @@ let cache_shell_header {headers_cache; _} hash header =
 
 let client_context {cctxt; _} = cctxt
 
-let iter_heads l1_ctxt f =
-  iter_heads l1_ctxt.l1 @@ fun (hash, {shell = {level; _} as header; _}) ->
+let iter_heads ?name l1_ctxt f =
+  iter_heads ?name l1_ctxt.l1
+  @@ fun (hash, {shell = {level; _} as header; _}) ->
   cache_shell_header l1_ctxt hash header ;
   f {hash; level; header}
 
@@ -144,6 +179,14 @@ let wait_first l1_ctxt =
   let open Lwt_syntax in
   let+ hash, {shell = {level; _} as header; _} = wait_first l1_ctxt.l1 in
   {hash; level; header}
+
+let get_latest_head l1_ctxt =
+  Option.map
+    (fun (hash, {Tezos_base.Block_header.shell = {level; _} as header; _}) ->
+      {hash; level; header})
+    (get_latest_head l1_ctxt.l1)
+
+let get_status l1_ctxt = get_status l1_ctxt.l1
 
 let get_predecessor_opt ?max_read {l1; _} = get_predecessor_opt ?max_read l1
 
@@ -156,8 +199,8 @@ let get_tezos_reorg_for_new_head {l1; _} ?get_old_predecessor old_head new_head
 module Internal_for_tests = struct
   let dummy cctxt =
     {
-      l1 = Internal_for_tests.dummy cctxt;
-      cctxt = (cctxt :> Client_context.full);
+      l1 = Internal_for_tests.dummy (cctxt :> Tezos_rpc.Context.generic);
+      cctxt :> Client_context.full;
       blocks_cache = Blocks_cache.create 1;
       headers_cache = Blocks_cache.create 1;
       prefetch_blocks = 0;
@@ -212,14 +255,35 @@ let fetch_tezos_block (fetch_rpc : fetch_block_rpc) extract_header
     cache_shell_header l1_ctxt hash (extract_header block) ;
     return block
   in
-  let* block = Blocks_cache.bind_or_put blocks_cache hash fetch Lwt.return in
+  let*! block = Blocks_cache.bind_or_put blocks_cache hash fetch Lwt.return in
+  (* TODO: https://gitlab.com/tezos/tezos/-/issues/6292
+     Consider cleaner ways to "prefetch" tezos blocks:
+     - know before where are protocol boundaries
+     - prefetch blocks in binary form *)
   let is_of_expected_protocol =
-    try
-      let (_ : Block_header.shell_header) = extract_header block in
-      true
-    with _ -> false
+    match block with
+    | Error
+        (Tezos_rpc_http.RPC_client_errors.(
+           Request_failed {error = Unexpected_content _; _})
+        :: _) ->
+        (* The promise cached failed to parse the block because it was for the
+           wrong protocol. *)
+        false
+    | Error _ ->
+        (* The promise cached failed for another reason. *)
+        true
+    | Ok block -> (
+        (* We check if we are able to extract the header, which inherently
+           ensures that we are in the correct case of type {!type:block}. *)
+        try
+          let (_ : Block_header.shell_header) = extract_header block in
+          true
+        with _ ->
+          (* This can happen if the blocks for two protocols have the same
+             binary representation. *)
+          false)
   in
-  if is_of_expected_protocol then return block
+  if is_of_expected_protocol then Lwt.return block
   else
     (* It is possible for a value stored in the cache to have been parsed
        with the wrong protocol code because:

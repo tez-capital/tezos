@@ -325,9 +325,6 @@ type validation_process_error =
   | Missing_handshake
   | Inconsistent_handshake of string
   | Protocol_dynlink_failure of string
-  | Socket_path_too_long of string
-  | Socket_path_wrong_permission of string
-  | Cannot_run_external_validator of string
 
 let validation_process_error_encoding =
   let open Data_encoding in
@@ -351,24 +348,6 @@ let validation_process_error_encoding =
         (obj1 (req "protocol_dynlink_failure" string))
         (function Protocol_dynlink_failure msg -> Some msg | _ -> None)
         (fun msg -> Protocol_dynlink_failure msg);
-      case
-        (Tag 3)
-        ~title:"Socket_path_too_long"
-        (obj1 (req "path" string))
-        (function Socket_path_too_long path -> Some path | _ -> None)
-        (fun path -> Socket_path_too_long path);
-      case
-        (Tag 4)
-        ~title:"Socket_path_wrong_permission"
-        (obj1 (req "path" string))
-        (function Socket_path_wrong_permission path -> Some path | _ -> None)
-        (fun path -> Socket_path_wrong_permission path);
-      case
-        (Tag 5)
-        ~title:"Cannot_run_external_validator"
-        (obj1 (req "msg" string))
-        (function Cannot_run_external_validator msg -> Some msg | _ -> None)
-        (fun msg -> Cannot_run_external_validator msg);
     ]
 
 let pp_validation_process_error ppf = function
@@ -379,23 +358,6 @@ let pp_validation_process_error ppf = function
   | Protocol_dynlink_failure msg -> Format.fprintf ppf "%s" msg
   | Inconsistent_handshake msg ->
       Format.fprintf ppf "Inconsistent handshake: %s." msg
-  | Socket_path_too_long path ->
-      Format.fprintf
-        ppf
-        "The socket path %s is too long. Please set an alternative path using \
-         XDG_RUNTIME_DIR to specify where to create the file"
-        path
-  | Socket_path_wrong_permission path ->
-      Format.fprintf
-        ppf
-        "The socket path %s has wrong permissions. Please set an alternative \
-         path using XDG_RUNTIME_DIR to specify where to create the file"
-        path
-  | Cannot_run_external_validator msg ->
-      Format.fprintf
-        ppf
-        "Failed to run the external block validator process: %s"
-        msg
 
 type error +=
   | Invalid_block of {block : Block_hash.t; error : block_error}
@@ -410,7 +372,7 @@ type error +=
   | System_error of {errno : string; fn : string; msg : string}
   | Missing_test_protocol of Protocol_hash.t
   | Validation_process_failed of validation_process_error
-  | Cannot_validate_while_shutting_down
+  | Cannot_process_request_while_shutting_down
 
 let () =
   Error_monad.register_error_kind
@@ -556,15 +518,16 @@ let () =
     (fun error -> Validation_process_failed error) ;
   Error_monad.register_error_kind
     `Temporary
-    ~id:"validator.cannot_validate_while_shutting_down"
-    ~title:"Cannot validate while shutting down"
-    ~description:"Cannot validate block while the node is shutting down."
+    ~id:"validator.cannot_process_request_while_shutting_down"
+    ~title:"Cannot process request while shutting down"
+    ~description:"Cannot process request while the node is shutting down."
     ~pp:(fun ppf () ->
       Format.fprintf
         ppf
-        "Cannot validate block while the node is shutting down.")
+        "Cannot process request while the node is shutting down.")
     Data_encoding.empty
-    (function Cannot_validate_while_shutting_down -> Some () | _ -> None)
-    (fun () -> Cannot_validate_while_shutting_down)
+    (function
+      | Cannot_process_request_while_shutting_down -> Some () | _ -> None)
+    (fun () -> Cannot_process_request_while_shutting_down)
 
 let invalid_block block error = Invalid_block {block; error}

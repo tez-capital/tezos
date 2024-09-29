@@ -27,14 +27,12 @@ module Alpha_block_services =
   Block_services.Make (Lifted_protocol) (Lifted_protocol)
 
 (** Client RPC context *)
-class type rpc_context =
-  object
-    inherit Tezos_rpc.Context.generic
+class type rpc_context = object
+  inherit Tezos_rpc.Context.generic
 
-    inherit
-      [Shell_services.chain * Shell_services.block] Environment.RPC_context
-                                                    .simple
-  end
+  inherit
+    [Shell_services.chain * Shell_services.block] Environment.RPC_context.simple
+end
 
 (** The class [wrap_rpc_context] is a wrapper class used by the proxy
     mode clients. From a general-purpose Tezos_rpc.Context.generic [t], the
@@ -80,24 +78,22 @@ class wrap_rpc_context (t : Tezos_rpc.Context.generic) : rpc_context =
     usage, the type may be coerced into one of its following ascendants
     to serve for explicit operations on blocks, chain or daemon for
     instance. *)
-class type full =
-  object
-    (** The class Client_context.full provides I/O services for the
+class type full = object
+  (** The class Client_context.full provides I/O services for the
         client, the wallet, etc. *)
-    inherit Client_context.full
+  inherit Client_context.full
 
-    (** Base interface provided to call RPCs, i.e., communication
+  (** Base interface provided to call RPCs, i.e., communication
         with the node. A client context is defined by mapping all
         RPCs protocol-generic to a specific protocol. *)
-    inherit
-      [Shell_services.chain * Shell_services.block] Environment.RPC_context
-                                                    .simple
+  inherit
+    [Shell_services.chain * Shell_services.block] Environment.RPC_context.simple
 
-    (** Protocol RPCs exposed through the environment (using
+  (** Protocol RPCs exposed through the environment (using
         an additional chainpath). *)
-    inherit
-      [Shell_services.chain, Shell_services.block] Environment.proto_rpc_context
-  end
+  inherit
+    [Shell_services.chain, Shell_services.block] Environment.proto_rpc_context
+end
 
 (** From a [Client_context.full], the class allows to call RPCs from
     the node and those defined by the protocol. *)
@@ -166,7 +162,12 @@ let () =
   @@ def "script" ["loc"] Protocol.Alpha_context.Script.location_encoding ;
   register ~pp:Protocol.Alpha_context.Contract.pp
   @@ def "contract" [] Protocol.Alpha_context.Contract.encoding ;
-  register @@ def "staker" [] Protocol.Stake_repr.staker_encoding ;
+  register
+  @@ def
+       "unstaked_frozen_staker"
+       []
+       Protocol.Unstaked_frozen_staker_repr.encoding ;
+  register @@ def "frozen_staker" [] Protocol.Frozen_staker_repr.encoding ;
   register
   @@ def
        "receipt"
@@ -269,6 +270,66 @@ let () =
        "voting_period"
        ["kind"]
        Protocol.Alpha_context.Voting_period.kind_encoding ;
+  register ~pp:Protocol.Alpha_context.Sc_rollup.Address.pp
+  @@ def
+       "smart_rollup"
+       ["address"]
+       Protocol.Alpha_context.Sc_rollup.Address.encoding ;
+  register ~pp:Protocol.Alpha_context.Sc_rollup.Kind.pp
+  @@ def "smart_rollup" ["kind"] Protocol.Alpha_context.Sc_rollup.Kind.encoding ;
+  register ~pp:Protocol.Alpha_context.Sc_rollup.Whitelist.pp
+  @@ def
+       "smart_rollup"
+       ["whitelist"]
+       Protocol.Alpha_context.Sc_rollup.Whitelist.encoding ;
+  register ~pp:Protocol.Alpha_context.Sc_rollup.Metadata.pp
+  @@ def
+       "smart_rollup"
+       ["metadata"]
+       Protocol.Alpha_context.Sc_rollup.Metadata.encoding ;
+  register
+  @@ def
+       "smart_rollup"
+       ["inbox"]
+       Protocol.Alpha_context.Sc_rollup.Inbox.encoding ;
+  register
+  @@ def
+       "smart_rollup"
+       ["inbox"; "message"]
+       Protocol.Alpha_context.Sc_rollup.Inbox_message.encoding ;
+  register
+  @@ def
+       "smart_rollup"
+       ["reveal"]
+       Protocol.Alpha_context.Sc_rollup.reveal_encoding ;
+  register
+  @@ def
+       "smart_rollup"
+       ["outbox"; "message"]
+       Protocol.Alpha_context.Sc_rollup.Outbox.Message.encoding ;
+  register
+  @@ def
+       "smart_rollup"
+       ["output"]
+       Protocol.Alpha_context.Sc_rollup.output_encoding ;
+  register
+  @@ def
+       "smart_rollup"
+       ["wasm_2_0_0"; "output"; "proof"]
+       Protocol.Alpha_context.Sc_rollup.Wasm_2_0_0PVM.Protocol_implementation
+       .output_proof_encoding ;
+  register
+  @@ def
+       "smart_rollup"
+       ["commmitment"]
+       Protocol.Alpha_context.Sc_rollup.Commitment.encoding ;
+  register
+  @@ def
+       "smart_rollup"
+       ["proof"]
+       Protocol.Alpha_context.Sc_rollup.Proof.encoding ;
+  register
+  @@ def "smart_rollup" ["game"] Protocol.Alpha_context.Sc_rollup.Game.encoding ;
   register
   @@ def
        "errors"

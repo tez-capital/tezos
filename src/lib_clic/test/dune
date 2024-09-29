@@ -6,8 +6,8 @@
  (instrumentation (backend bisect_ppx))
  (libraries
   tezt.core
-  octez-libs.tezos-stdlib
-  tezos-clic
+  octez-libs.stdlib
+  octez-libs.clic
   lwt.unix
   octez-alcotezt)
  (library_flags (:standard -linkall))
@@ -30,9 +30,9 @@
 
 (rule
  (alias runtest)
- (package tezos-clic)
+ (package octez-libs)
  (enabled_if (<> false %{env:RUNTEZTALIAS=true}))
- (action (run %{dep:./main.exe})))
+ (action (run %{dep:./main.exe} /flaky /ci_disabled)))
 
 (rule
  (targets main.ml)

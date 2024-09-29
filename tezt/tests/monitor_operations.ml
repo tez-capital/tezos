@@ -30,6 +30,8 @@
    Subject:      Test monitor_operations RPC
 *)
 
+let team = Tag.layer1
+
 let get_monitor_operations_hashes output_monitor =
   let open JSON in
   let output_monitor_length = String.length output_monitor in
@@ -75,7 +77,7 @@ let monitor_operations =
   Protocol.register_test
     ~__FILE__
     ~title:"Test monitor_operations RPC"
-    ~tags:["monitor"; "operations"]
+    ~tags:[team; "monitor"; "operations"]
   @@ fun protocol ->
   (* Step 1 *)
   (* initialize the node and the client *)
@@ -83,7 +85,9 @@ let monitor_operations =
   (* Step 2 *)
   (* call the monitor_operations RPC *)
   let monitor_path =
-    sf "http://localhost:%d/chains/main/mempool/monitor_operations"
+    sf
+      "http://%s:%d/chains/main/mempool/monitor_operations"
+      Constant.default_host
     @@ Node.rpc_port node
   in
   let proc_monitor = Process.spawn "curl" [monitor_path] in
@@ -105,7 +109,7 @@ let monitor_operations =
       Constant.bootstrap2
       Constant.bootstrap3
   in
-  let* ophs = Node_event_level.get_applied_operation_hash_list client in
+  let* ophs = Node_event_level.get_validated_operation_hash_list client in
   (* Step 4 *)
   (* Bake a block *)
   let* () = Node_event_level.bake_wait_log node client in

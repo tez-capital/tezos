@@ -8,17 +8,16 @@ bug-reports: "https://gitlab.com/tezos/tezos/issues"
 dev-repo: "git+https://gitlab.com/tezos/tezos.git"
 license: "MIT"
 depends: [
-  "dune" { >= "3.0" }
+  "dune" { >= "3.11.1" }
   "ocaml" { >= "4.14" }
-  "octez-libs"
-  "tezos-clic"
-  "tezos-benchmark"
-  "tezos-benchmark-examples"
-  "tezos-shell-benchmarks"
-  "tezos-benchmarks-proto-alpha"
-  "pyml"
+  "octez-libs" { = version }
+  "tezos-benchmark" { = version }
+  "tezos-benchmark-examples" { = version }
+  "octez-shell-libs" { = version }
+  "tezos-benchmarks-proto-alpha" { = version }
+  "pyml" { >= "20220905" }
   "prbnmcn-stats" { = "0.0.6" }
-  "tezos-version"
+  "octez-version" { = version }
 ]
 build: [
   ["rm" "-r" "vendors" "contrib"]

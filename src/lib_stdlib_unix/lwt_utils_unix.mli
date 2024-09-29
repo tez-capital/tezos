@@ -100,12 +100,32 @@ val copy_dir : ?perm:int -> string -> string -> unit Lwt.t
 
 val read_file : string -> string Lwt.t
 
-val copy_file : src:string -> dst:string -> unit Lwt.t
+(** [copy_file ?buffer_size ~src ~dst ()] copies the file from [src]
+    to [dst]. The permissions of the [dst] file are inherited from
+    `Lwt_io.with_file`. The [buffer_size] parameter, which defaults to
+    4096, can be adjusted to improve performance. *)
+val copy_file :
+  ?buffer_size:int -> src:string -> dst:string -> unit -> unit Lwt.t
+
+(** [copy_file_raw ?buffer_size ?dst_perm ~src ~dst ()] is very
+    similar to [copy_file] but it uses an alternate implementation
+    using raw file descriptors, enabling better performances. It
+    copies the file from [src] to [dst]. The permissions of the [dst]
+    file is 0o666 by default. The [buffer_size] parameter, which
+    defaults to 4096*1024, can be adjusted to improve performance. *)
+val copy_file_raw :
+  ?buffer_size:int ->
+  ?dst_perm:int ->
+  src:string ->
+  dst:string ->
+  unit ->
+  unit Lwt.t
 
 val create_file :
   ?close_on_exec:bool -> ?perm:int -> string -> string -> unit Lwt.t
 
-val with_tempdir : string -> (string -> 'a Lwt.t) -> 'a Lwt.t
+val with_tempdir :
+  ?temp_dir:string -> string -> (string -> 'a Lwt.t) -> 'a Lwt.t
 
 val safe_close : Lwt_unix.file_descr -> unit tzresult Lwt.t
 
@@ -144,9 +164,10 @@ type 'action io_error = {
   arg : string;  (** Argument given to the unix function: generally a path. *)
 }
 
-type error += Io_error of [`Close | `Open | `Rename] io_error
+type error += Io_error of [`Close | `Open | `Rename | `Unlink | `Lock] io_error
 
-val tzfail_of_io_error : [`Close | `Open | `Rename] io_error -> 'b tzresult
+val tzfail_of_io_error :
+  [`Close | `Open | `Rename | `Unlink | `Lock] io_error -> 'b tzresult
 
 (** [with_open_file ~flags ~perm filename f] opens the given file
    using {!Lwt_unix.open_file} and passes the resulting file-descriptor
@@ -169,7 +190,7 @@ val with_open_file :
   ?perm:Unix.file_perm ->
   string ->
   (Lwt_unix.file_descr -> 'a Lwt.t) ->
-  ('a, [`Open | `Close] io_error) result Lwt.t
+  ('a, [> `Open | `Close] io_error) result Lwt.t
 
 (** [with_open_out ?overwrite filename f] uses [with_open_file] with
    the flags [O_WRONLY; O_CREAT; O_CLOEXEC] and the default
@@ -179,7 +200,7 @@ val with_open_out :
   ?overwrite:bool ->
   string ->
   (Lwt_unix.file_descr -> 'a Lwt.t) ->
-  ('a, [`Open | `Close] io_error) result Lwt.t
+  ('a, [> `Open | `Close] io_error) result Lwt.t
 
 (** [with_atomic_open_out ?(overwrite=true) filename ?temp_dir f] is a
    wrapper around [with_open_out] that ensures that the data are
@@ -202,7 +223,7 @@ val with_atomic_open_out :
   string ->
   ?temp_dir:string ->
   (Lwt_unix.file_descr -> 'a Lwt.t) ->
-  ('a, [`Open | `Close | `Rename] io_error) result Lwt.t
+  ('a, [> `Open | `Close | `Rename] io_error) result Lwt.t
 
 (** [with_open_in filename f] uses [with_open_file] with the flags
    [O_RDONLY; O_CLOEXEC] and the default permissions. *)

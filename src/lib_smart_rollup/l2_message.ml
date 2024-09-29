@@ -24,7 +24,7 @@
 (*****************************************************************************)
 
 type t = {
-  counter : Z.t;
+  counter : Z.t option;
       (** Each message is given a unique counter to allow for the batcher to
           receive multiple identical messages. *)
   content : string;  (** The actual content of the message. *)
@@ -40,24 +40,26 @@ let encoding =
   conv
     (fun {counter; content} -> (counter, content))
     (fun (counter, content) -> {counter; content})
-  @@ obj2 (req "counter" z) (req "content" content_encoding)
+  @@ obj2 (opt "counter" z) (req "content" content_encoding)
 
 let make =
   let counter = ref Z.zero in
-  fun content ->
-    let m = {content; counter = !counter} in
-    counter := Z.succ !counter ;
-    m
+  fun ~unique content ->
+    if unique then (
+      let m = {content; counter = Some !counter} in
+      counter := Z.succ !counter ;
+      m)
+    else {content; counter = None}
 
 let content m = m.content
 
-module Hash =
+module Id =
   Tezos_crypto.Blake2B.Make
     (Tezos_crypto.Base58)
     (struct
-      let name = "sc_rollup_l2_message"
+      let name = "sc_rollup_l2_message_id"
 
-      let title = "A smart rollup layer 2 message"
+      let title = "A smart rollup layer 2 message identifier"
 
       let b58check_prefix = "\003\250\179\247\196" (* scmsg(55) *)
 
@@ -65,8 +67,8 @@ module Hash =
     end)
 
 let () =
-  Tezos_crypto.Base58.check_encoded_prefix Hash.b58check_encoding "scmsg" 55
+  Tezos_crypto.Base58.check_encoded_prefix Id.b58check_encoding "scmsg" 55
 
-type hash = Hash.t
+type id = Id.t
 
-let hash t = Hash.hash_bytes [Data_encoding.Binary.to_bytes_exn encoding t]
+let id t = Id.hash_bytes [Data_encoding.Binary.to_bytes_exn encoding t]

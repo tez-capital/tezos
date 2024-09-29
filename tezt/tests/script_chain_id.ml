@@ -30,11 +30,14 @@
    Subject:      Tests of the [CHAIN_ID] Michelson instruction.
 *)
 
+let team = Tag.layer1
+
 let test_chain_id_opcode =
   Protocol.register_test
     ~__FILE__
     ~title:"Chain ID Opcode"
-    ~tags:["client"; "contract"]
+    ~tags:[team; "client"; "contract"]
+    ~uses_node:false
   @@ fun protocol ->
   let* client = Client.init_mockup ~protocol () in
   let* chain_id_alias, _contract =
@@ -57,7 +60,8 @@ let test_chain_id_authentication =
   Protocol.register_test
     ~__FILE__
     ~title:"Chain ID Authentication"
-    ~tags:["client"; "contract"]
+    ~tags:[team; "client"; "contract"]
+    ~uses_node:false
   @@ fun protocol ->
   let* client = Client.init_mockup ~protocol () in
   Log.info "Originate contract" ;
@@ -79,7 +83,7 @@ let test_chain_id_authentication =
       {|{DROP; NIL operation; PUSH address "%s"; CONTRACT unit; ASSERT_SOME; PUSH mutez 1000; UNIT; TRANSFER_TOKENS; CONS}|}
       destination
   in
-  let* chain_id = RPC.Client.call client @@ RPC.get_chain_chain_id () in
+  let* chain_id = Client.RPC.call client @@ RPC.get_chain_chain_id () in
   let* packed =
     let data =
       sf

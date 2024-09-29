@@ -88,18 +88,18 @@ module Arith_Context = struct
     match Context_binary.Tree.kinded_key tree with
     | Some k ->
         let* p = Context_binary.produce_tree_proof index k step in
-        return (Some p)
-    | None -> return None
+        return_some p
+    | None -> return_none
 
   let verify_proof proof step =
     let open Lwt_syntax in
     let* result = Context_binary.verify_tree_proof proof step in
     match result with
-    | Ok v -> return (Some v)
+    | Ok v -> return_some v
     | Error _ ->
         (* We skip the error analysis here since proof verification is not a
            job for the rollup node. *)
-        return None
+        return_none
 end
 
 module FullArithPVM = Sc_rollup_arith.Make (Arith_Context)
@@ -120,21 +120,28 @@ let pre_boot boot_sector f =
   | Some boot_sector -> setup boot_sector @@ f
 
 let test_preboot () =
+  let open Lwt_result_syntax in
   [""; "1"; "1 2 +"]
   |> List.iter_es (fun boot_sector ->
-         pre_boot boot_sector @@ fun _ctxt _state -> return ())
+         pre_boot boot_sector @@ fun _ctxt _state -> return_unit)
 
 let boot boot_sector f =
-  pre_boot boot_sector @@ fun ctxt state -> eval state >>= f ctxt
+  let open Lwt_result_syntax in
+  pre_boot boot_sector @@ fun ctxt state ->
+  let*! state = eval state in
+  f ctxt state
 
 let test_boot () =
+  let open Lwt_result_syntax in
   let open Sc_rollup_helpers.Arith_pvm in
   boot "" @@ fun _ctxt state ->
-  is_input_state
-    ~is_reveal_enabled:Sc_rollup_helpers.is_reveal_enabled_default
-    state
-  >>= function
-  | Needs_reveal Reveal_metadata -> return ()
+  let*! result =
+    is_input_state
+      ~is_reveal_enabled:Sc_rollup_helpers.is_reveal_enabled_default
+      state
+  in
+  match result with
+  | Needs_reveal Reveal_metadata -> return_unit
   | Initial | Needs_reveal _ | First_after _ ->
       failwith "After booting, the machine should be waiting for the metadata."
   | No_input_required ->
@@ -161,64 +168,72 @@ let test_metadata () =
       state
   in
   match input_request with
-  | Initial -> return ()
+  | Initial -> return_unit
   | Needs_reveal _ | First_after _ | No_input_required ->
       failwith
         "After evaluating the metadata, the machine must be in the [Initial] \
          state."
 
 let test_input_message () =
+  let open Lwt_result_syntax in
   let open Sc_rollup_helpers.Arith_pvm in
   boot "" @@ fun _ctxt state ->
   let input = Sc_rollup_helpers.make_external_input "MESSAGE" in
-  set_input input state >>= fun state ->
-  eval state >>= fun state ->
-  is_input_state
-    ~is_reveal_enabled:Sc_rollup_helpers.is_reveal_enabled_default
-    state
-  >>= function
+  let*! state = set_input input state in
+  let*! state = eval state in
+  let*! result =
+    is_input_state
+      ~is_reveal_enabled:Sc_rollup_helpers.is_reveal_enabled_default
+      state
+  in
+  match result with
   | Initial | Needs_reveal _ | First_after _ ->
       failwith
         "After receiving a message, the rollup must not be waiting for input."
-  | No_input_required -> return ()
+  | No_input_required -> return_unit
 
 let go ?(is_reveal_enabled = fun ~current_block_level:_ _ -> true) ~max_steps
     target_status state =
+  let open Lwt_result_syntax in
   let rec aux i state =
-    pp state >>= fun pp ->
+    let*! pp = pp state in
     Format.eprintf "%a" pp () ;
     if i > max_steps then
       failwith "Maximum number of steps reached before target status."
     else
-      get_status ~is_reveal_enabled state >>= fun current_status ->
+      let*! current_status = get_status ~is_reveal_enabled state in
       if target_status = current_status then return state
-      else eval state >>= aux (i + 1)
+      else
+        let*! state = eval state in
+        aux (i + 1) state
   in
   aux 0 state
 
 let test_parsing_message ~valid (source, expected_code) =
+  let open Lwt_result_syntax in
   boot "" @@ fun _ctxt state ->
   let input = Sc_rollup_helpers.make_external_input_repr source in
-  set_input input state >>= fun state ->
-  eval state >>= fun state ->
-  go ~max_steps:10000 Evaluating state >>=? fun state ->
-  get_parsing_result state >>= fun result ->
-  Assert.equal
-    ~loc:__LOC__
-    (Option.equal Bool.equal)
-    "Unexpected parsing result"
-    (fun fmt r ->
-      Format.fprintf
-        fmt
-        (match r with
-        | None -> "No parsing running"
-        | Some true -> "Syntax correct"
-        | Some false -> "Syntax error"))
-    (Some valid)
-    result
-  >>=? fun () ->
+  let*! state = set_input input state in
+  let*! state = eval state in
+  let* state = go ~max_steps:10000 Evaluating state in
+  let*! result = get_parsing_result state in
+  let* () =
+    Assert.equal
+      ~loc:__LOC__
+      (Option.equal Bool.equal)
+      "Unexpected parsing result"
+      (fun fmt r ->
+        Format.fprintf
+          fmt
+          (match r with
+          | None -> "No parsing running"
+          | Some true -> "Syntax correct"
+          | Some false -> "Syntax error"))
+      (Some valid)
+      result
+  in
   if valid then
-    get_code state >>= fun code ->
+    let*! code = get_code state in
     Assert.equal
       ~loc:__LOC__
       (List.equal equal_instruction)
@@ -226,7 +241,7 @@ let test_parsing_message ~valid (source, expected_code) =
       (Format.pp_print_list pp_instruction)
       expected_code
       code
-  else return ()
+  else return_unit
 
 let syntactically_valid_messages =
   List.map
@@ -250,32 +265,37 @@ let syntactically_invalid_messages =
     ["@"; "  @"; "  @  "; "---"; "12 +++ --"; "1a"; "a$"]
 
 let test_parsing_messages () =
-  List.iter_es (test_parsing_message ~valid:true) syntactically_valid_messages
-  >>=? fun () ->
+  let open Lwt_result_syntax in
+  let* () =
+    List.iter_es (test_parsing_message ~valid:true) syntactically_valid_messages
+  in
   List.iter_es
     (test_parsing_message ~valid:false)
     syntactically_invalid_messages
 
 let test_evaluation_message ~valid
     (boot_sector, source, expected_stack, expected_vars) =
+  let open Lwt_result_syntax in
   boot boot_sector @@ fun _ctxt state ->
   let input = Sc_rollup_helpers.make_external_input_repr source in
-  set_input input state >>= fun state ->
-  eval state >>= fun state ->
-  go ~max_steps:10000 Waiting_for_input_message state >>=? fun state ->
+  let*! state = set_input input state in
+  let*! state = eval state in
+  let* state = go ~max_steps:10000 Waiting_for_input_message state in
   if valid then
-    get_stack state >>= fun stack ->
-    Assert.equal
-      ~loc:__LOC__
-      (List.equal Compare.Int.equal)
-      "The stack is not what we expected: "
-      Format.(pp_print_list (fun fmt -> fprintf fmt "%d;@;"))
-      expected_stack
-      stack
-    >>=? fun () ->
+    let*! stack = get_stack state in
+    let* () =
+      Assert.equal
+        ~loc:__LOC__
+        (List.equal Compare.Int.equal)
+        "The stack is not what we expected: "
+        Format.(pp_print_list (fun fmt -> fprintf fmt "%d;@;"))
+        expected_stack
+        stack
+    in
     List.iter_es
       (fun (x, v) ->
-        get_var state x >>= function
+        let*! result = get_var state x in
+        match result with
         | None -> failwith "The variable %s cannot be found." x
         | Some v' ->
             Assert.equal
@@ -287,10 +307,11 @@ let test_evaluation_message ~valid
               v')
       expected_vars
   else
-    get_evaluation_result state >>= function
+    let*! result = get_evaluation_result state in
+    match result with
     | Some true -> failwith "This code should lead to an evaluation error."
     | None -> failwith "We should have reached the evaluation end."
-    | Some false -> return ()
+    | Some false -> return_unit
 
 let valid_messages =
   [
@@ -320,8 +341,8 @@ let invalid_messages =
     ["+"; "1 +"; "1 1 + +"; "1 1 + 1 1 + + +"; "a"]
 
 let test_evaluation_messages () =
-  List.iter_es (test_evaluation_message ~valid:true) valid_messages
-  >>=? fun () ->
+  let open Lwt_result_syntax in
+  let* () = List.iter_es (test_evaluation_message ~valid:true) valid_messages in
   List.iter_es (test_evaluation_message ~valid:false) invalid_messages
 
 let boot_then_reveal_metadata sc_rollup_address origination_level
@@ -352,6 +373,9 @@ let test_reveal ~threshold ~inbox_level ~hash ~preimage_reveal_step
       raw_data = {blake2B};
       metadata = Protocol.Raw_level_repr.root;
       dal_page = Protocol.Raw_level_repr.root;
+      dal_parameters = Protocol.Raw_level_repr.root;
+      dal_attested_slots_validity_lag = 241_920;
+      (* 4 weeks with a 10 secs block time. *)
     }
   in
   let is_reveal_enabled =
@@ -449,7 +473,7 @@ let test_output_messages_proofs ~valid ~inbox_level (source, expected_outputs) =
                      source
                      Sc_rollup_PVM_sig.pp_output
                      output)))
-      | Error _ -> return ()
+      | Error _ -> return_unit
   in
   List.iter_es check_output expected_outputs
 
@@ -529,24 +553,8 @@ let test_invalid_outbox_level () =
   ]
   |> List.iter_es (test_output_messages_proofs ~valid:false ~inbox_level)
 
-let test_initial_state_hash_arith_pvm () =
-  let open Alpha_context in
-  let open Lwt_result_syntax in
-  let empty = Sc_rollup_helpers.Arith_pvm.make_empty_state () in
-  let*! state = Sc_rollup_helpers.Arith_pvm.initial_state ~empty in
-  let*! hash = Sc_rollup_helpers.Arith_pvm.state_hash state in
-  let expected = Sc_rollup.ArithPVM.reference_initial_state_hash in
-  if Sc_rollup.State_hash.(hash = expected) then return_unit
-  else
-    failwith
-      "incorrect hash, expected %a, got %a"
-      Sc_rollup.State_hash.pp
-      expected
-      Sc_rollup.State_hash.pp
-      hash
-
 let dummy_internal_transfer address =
-  let open Lwt_result_syntax in
+  let open Lwt_result_wrap_syntax in
   let open Alpha_context.Sc_rollup in
   let* ctxt =
     let* block, _baker, _contract, _src2 = Contract_helpers.init () in
@@ -563,21 +571,19 @@ let dummy_internal_transfer address =
          "tz1RjtZUVeLhADFHDL8UwDZA6vjWWhojpu5w")
   in
   let payload = Bytes.of_string "foo" in
-  let* payload, _ctxt =
+  let*! result =
     Script_ir_translator.unparse_data
       ctxt
       Script_ir_unparser.Optimized
       Bytes_t
       payload
-    >|= Environment.wrap_tzresult
   in
+  let*?@ payload, _ctxt = result in
   let transfer =
     Inbox_message.Internal
       (Transfer {payload; sender; source; destination = address})
   in
-  let*? serialized_transfer =
-    Environment.wrap_tzresult (Inbox_message.serialize transfer)
-  in
+  let*?@ serialized_transfer = Inbox_message.serialize transfer in
   return serialized_transfer
 
 let test_filter_internal_message () =
@@ -613,7 +619,7 @@ let test_filter_internal_message () =
         state
     in
     match input_state with
-    | No_input_required -> return ()
+    | No_input_required -> return_unit
     | _ -> failwith "The arith pvm should be processing the internal transfer"
   in
 
@@ -645,10 +651,10 @@ let test_filter_internal_message () =
     match input_state with
     | No_input_required ->
         failwith "The arith pvm should avoid ignored the internal transfer"
-    | _ -> return ()
+    | _ -> return_unit
   in
 
-  return ()
+  return_unit
 
 module Arith_pvm = Sc_rollup_helpers.Arith_pvm
 
@@ -666,7 +672,16 @@ let test_serialized_reveal_proof ~hashed_preimage ~input_preimage () =
   in
   let snapshot = Sc_rollup.Inbox.take_snapshot inbox.inbox in
   let dal_snapshot = Dal.Slots_history.genesis in
-  let dal_parameters = Default_parameters.constants_mainnet.dal in
+  let constants = Default_parameters.constants_mainnet in
+  let dal_parameters = constants.dal in
+  let dal_activation_level =
+    if constants.dal.feature_enable then
+      Some constants.sc_rollup.reveal_activation_level.dal_parameters
+    else None
+  in
+  let dal_attested_slots_validity_lag =
+    constants.sc_rollup.reveal_activation_level.dal_attested_slots_validity_lag
+  in
   let ctxt = Sc_rollup_helpers.Arith_pvm.make_empty_context () in
 
   let is_reveal_enabled = Sc_rollup_helpers.is_reveal_enabled_default in
@@ -716,7 +731,10 @@ let test_serialized_reveal_proof ~hashed_preimage ~input_preimage () =
        Raw_level.root
        dal_snapshot
        dal_parameters.cryptobox_parameters
+       ~dal_activation_level
+       ~dal_attested_slots_validity_lag
        ~dal_attestation_lag:dal_parameters.attestation_lag
+       ~dal_number_of_slots:dal_parameters.number_of_slots
        ~is_reveal_enabled
        {proof with pvm_step}
 
@@ -759,10 +777,6 @@ let tests =
     Tztest.tztest "Valid output messages" `Quick test_valid_output_messages;
     Tztest.tztest "Invalid output messages" `Quick test_invalid_output_messages;
     Tztest.tztest "Invalid outbox level" `Quick test_invalid_outbox_level;
-    Tztest.tztest
-      "Initial state hash for Arith"
-      `Quick
-      test_initial_state_hash_arith_pvm;
     Tztest.tztest "Filter internal message" `Quick test_filter_internal_message;
     Tztest.tztest
       "Reveal below threshold"

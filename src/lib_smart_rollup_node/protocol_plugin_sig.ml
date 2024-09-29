@@ -33,12 +33,12 @@ module type RPC_DIRECTORY = sig
     (unit * Rollup_node_services.Arg.block_id) Tezos_rpc.Directory.t
 end
 
-(** Protocol specific functions to track endorsed DAL slots of L1 blocks. *)
+(** Protocol specific functions to track attested DAL slots of L1 blocks. *)
 module type DAL_SLOTS_TRACKER = sig
   (** [process_head node_ctxt head] performs the following operations for a
       given protocol:
       {ul
-        {li it reads the endorsements for headers published attestation_lag
+        {li it reads the attestations for headers published attestation_lag
         levels preceding [head] from the block metadata, determines which
         ones the rollup node will download, and stores the results in
         [Store.Dal_confirmed_slots].}
@@ -80,18 +80,24 @@ module type INBOX = sig
       beginning. *)
   val serialize_external_message : string -> string tzresult
 
+  (** Returns the initial global inbox where [level] is the first level of the
+      protocol with smart rollups. *)
+  val init :
+    predecessor_timestamp:Time.Protocol.t ->
+    predecessor:Block_hash.t ->
+    level:int32 ->
+    Octez_smart_rollup.Inbox.t
+
   (**/**)
 
   module Internal_for_tests : sig
     (** Only for tests. [process_messages node_ctxt ~is_first_block ~predecessor
-        head messages] reconstructs the inbox on disk for the [messages] as if
-        they appeared in [head]. See {!val:process_head} for the return
-        values. *)
+        messages] reconstructs the inbox on disk for the [messages]. See
+        {!val:process_head} for the return values. *)
     val process_messages :
       Node_context.rw ->
       is_first_block:bool ->
       predecessor:Layer1.header ->
-      Layer1.header ->
       string list ->
       (Octez_smart_rollup.Inbox.Hash.t
       * Octez_smart_rollup.Inbox.t
@@ -113,51 +119,6 @@ module type BATCHER_CONSTANTS = sig
   val protocol_max_batch_size : int
 end
 
-(** Protocol specific batcher. NOTE: The batcher has to be stopped and the new
-    one restarted on protocol change. *)
-module type BATCHER = sig
-  (** The type for the status of messages in the batcher.  *)
-  type status =
-    | Pending_batch  (** The message is in the queue of the batcher. *)
-    | Batched of Injector.Inj_operation.hash
-        (** The message has already been batched and sent to the injector in an
-            L1 operation whose hash is given. *)
-
-  (** [init config ~signer node_ctxt] initializes and starts the batcher for
-      [signer]. If [config.simulation] is [true] (the default), messages added
-      to the batcher are simulated in an incremental simulation context. *)
-  val init :
-    Configuration.batcher ->
-    signer:Signature.public_key_hash ->
-    _ Node_context.t ->
-    unit tzresult Lwt.t
-
-  (** [new_head head] create batches of L2 messages from the queue and pack each
-      batch in an L1 operation. The L1 operations (i.e. L2 batches) are queued
-      in the injector for injection on the Tezos node.  *)
-  val new_head : Layer1.head -> unit tzresult Lwt.t
-
-  (** [shutdown ()] stops the batcher, waiting for the ongoing request to be
-      processed. *)
-  val shutdown : unit -> unit Lwt.t
-
-  (** List all queued messages in the order they appear in the queue, i.e. the
-      message that were added first to the queue are at the end of list. *)
-  val get_queue : unit -> (L2_message.hash * L2_message.t) list tzresult
-
-  (** [register_messages messages] registers new L2 [messages] in the queue of
-      the batcher for future injection on L1. If the batcher was initialized
-      with [simualte = true], the messages are evaluated the batcher's
-      incremental simulation context. In this case, when the application fails,
-      the messages are not queued.  *)
-  val register_messages : string list -> L2_message.hash list tzresult Lwt.t
-
-  (** The status of a message in the batcher. Returns [None] if the message is
-      not known by the batcher (the batcher only keeps the batched status of the
-      last 500000 messages). *)
-  val message_status : L2_message.hash -> (status * string) option tzresult
-end
-
 (** Protocol specific functions to interact with the L1 node. *)
 module type LAYER1_HELPERS = sig
   (** [prefetch_tezos_blocks l1_ctxt blocks] prefetches the blocks
@@ -169,6 +130,7 @@ module type LAYER1_HELPERS = sig
     #Client_context.full -> Address.t -> Node_context.lcc tzresult Lwt.t
 
   val get_last_published_commitment :
+    ?allow_unstake:bool ->
     #Client_context.full ->
     Address.t ->
     Signature.public_key_hash ->
@@ -192,24 +154,48 @@ module type LAYER1_HELPERS = sig
     Address.t ->
     Node_context.genesis_info tzresult Lwt.t
 
+  (** [get_boot_sector block_hash node_ctxt] retrieves the boot sector from the
+      rollup origination operation in block [block_hash]. Precondition:
+      [block_hash] has to be the block where the rollup was originated. *)
   val get_boot_sector :
     Block_hash.t -> _ Node_context.t -> string tzresult Lwt.t
 
+  (** Find and retrieve the whitelist the rollup at a given block (if provided)
+      or the head. *)
   val find_whitelist :
     #Client_context.full ->
+    ?block:Block_hash.t ->
     Address.t ->
     Signature.public_key_hash list option tzresult Lwt.t
+
+  (** Retrieve information about the last whitelist update on L1. *)
+  val find_last_whitelist_update :
+    #Client_context.full -> Address.t -> (Z.t * Int32.t) option tzresult Lwt.t
+
+  (** Retrieve a commitment published on L1. *)
+  val get_commitment :
+    #Client_context.full ->
+    Address.t ->
+    Commitment.Hash.t ->
+    Commitment.t tzresult Lwt.t
+
+  (** Retrieve the balance in mutez for a given public key hash. *)
+  val get_balance_mutez :
+    #Client_context.full ->
+    ?block:Block_hash.t ->
+    Signature.public_key_hash ->
+    int64 tzresult Lwt.t
 end
 
 (** Protocol specific functions for processing L1 blocks. *)
 module type L1_PROCESSING = sig
-  (** Ensure that the initial state hash of the PVM as defined by the rollup
-      node matches the one of the PVM on the L1 node.  *)
-  val check_pvm_initial_state_hash : _ Node_context.t -> unit tzresult Lwt.t
-
-  (** React to L1 operations included in a block of the chain. *)
+  (** React to L1 operations included in a block of the chain. When
+      [catching_up] is true, the process block is in the past and the
+      failure condition of the process differs (e.g. if it detects a
+      whitelist update execution, it does not fail when the operator
+      is not in the whitelist).  *)
   val process_l1_block_operations :
-    Node_context.rw -> Layer1.header -> unit tzresult Lwt.t
+    catching_up:bool -> Node_context.rw -> Layer1.header -> unit tzresult Lwt.t
 end
 
 (** Partial protocol plugin with just the PVM and the function to access the
@@ -230,19 +216,23 @@ module type REFUTATION_GAME_HELPERS = sig
     for the current [game] for the execution step starting with
     [start_state]. *)
   val generate_proof :
-    Node_context.rw -> Game.t -> Context.tree -> string tzresult Lwt.t
+    Node_context.rw -> Game.t -> Context.pvmstate -> string tzresult Lwt.t
 
-  (** [make_dissection plugin node_ctxt ~start_state ~start_chunk ~our_stop_chunk
-    ~default_number_of_sections ~last_level] computes a dissection from between
-    [start_chunk] and [our_stop_chunk] at level [last_level]. This dissection
-    has [default_number_of_sections] if there are enough ticks. *)
+  (** [make_dissection plugin node_ctxt cache ~start_state ~start_chunk
+      ~our_stop_chunk ~default_number_of_sections ~commitment_period_tick_offset
+      ~last_level] computes a dissection from between [start_chunk] and
+      [our_stop_chunk] at level [last_level]. [commitment_period_tick_offset] is
+      the tick offset of the commitment period for the conflict/dissection. This
+      dissection has [default_number_of_sections] if there are enough ticks. *)
   val make_dissection :
     (module PARTIAL) ->
-    _ Node_context.t ->
+    Node_context.rw ->
+    Pvm_plugin_sig.state_cache ->
     start_state:Fuel.Accounted.t Pvm_plugin_sig.eval_state option ->
     start_chunk:Game.dissection_chunk ->
     our_stop_chunk:Game.dissection_chunk ->
     default_number_of_sections:int ->
+    commitment_period_tick_offset:Z.t ->
     last_level:int32 ->
     Game.dissection_chunk trace tzresult Lwt.t
 

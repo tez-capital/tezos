@@ -62,6 +62,12 @@ module Sliding_message_id_map (C : Gossipsub_intf.AUTOMATON_SUBCONFIG) : sig
   (** Shifts the sliding window by one slot. *)
   val shift : 'a t -> 'a t
 
+  module Introspection : sig
+    module Map : Map.S with type key = Int64.t
+
+    val get_slot_entries : 'a t -> C.Message_id.t list C.Topic.Map.t Map.t
+  end
+
   module Internal_for_tests : sig
     val get_values : 'a t -> (C.Message_id.t * 'a) Seq.t
   end
@@ -204,6 +210,12 @@ end = struct
             window_size = t.window_size;
           }
 
+  module Introspection = struct
+    module Map = Map
+
+    let get_slot_entries t = t.slot_entries
+  end
+
   module Internal_for_tests = struct
     let get_values t =
       t.values_with_counter |> Message_id.Map.to_seq
@@ -236,7 +248,8 @@ module Make
   type t = {
     gossip_slots : int;
     messages : message_with_access_counter Sliding_message_id_map.t;
-    first_seen_times : Time.t Sliding_message_id_map.t;
+    first_seen_times_and_senders :
+      (Time.t * Peer.Set.t) Sliding_message_id_map.t;
   }
 
   let create ~history_slots ~gossip_slots ~seen_message_slots =
@@ -246,11 +259,11 @@ module Make
     {
       gossip_slots;
       messages = Sliding_message_id_map.make ~window_size:history_slots;
-      first_seen_times =
+      first_seen_times_and_senders =
         Sliding_message_id_map.make ~window_size:seen_message_slots;
     }
 
-  let add_message message_id message topic t =
+  let add_message ~peer message_id message topic t =
     let messages =
       Sliding_message_id_map.add
         topic
@@ -260,15 +273,19 @@ module Make
           | Some m -> Some m)
         t.messages
     in
-    let first_seen_times =
+    let with_peer set =
+      match peer with None -> set | Some peer -> Peer.Set.add peer set
+    in
+    let first_seen_times_and_senders =
       Sliding_message_id_map.add
         topic
         message_id
         ~update_value:(function
-          | None -> Some (Time.now ()) | Some time -> Some time)
-        t.first_seen_times
+          | None -> Some (Time.now (), with_peer Peer.Set.empty)
+          | Some (time, peers) -> Some (time, with_peer peers))
+        t.first_seen_times_and_senders
     in
-    {t with messages; first_seen_times}
+    {t with messages; first_seen_times_and_senders}
 
   let get_message_for_peer peer message_id t =
     let access_count = ref 0 in
@@ -306,19 +323,29 @@ module Make
            | Some message_ids -> List.rev_append message_ids acc_message_ids)
          []
 
-  let get_first_seen_time message_id t =
-    Sliding_message_id_map.get_value message_id t.first_seen_times
+  let get_first_seen_time_and_senders message_id t =
+    Sliding_message_id_map.get_value message_id t.first_seen_times_and_senders
 
   let seen_message message_id t =
     Option.is_some
-    @@ Sliding_message_id_map.get_value message_id t.first_seen_times
+    @@ Sliding_message_id_map.get_value
+         message_id
+         t.first_seen_times_and_senders
 
   let shift t =
     {
       t with
       messages = Sliding_message_id_map.shift t.messages;
-      first_seen_times = Sliding_message_id_map.shift t.first_seen_times;
+      first_seen_times_and_senders =
+        Sliding_message_id_map.shift t.first_seen_times_and_senders;
     }
+
+  module Introspection = struct
+    module Map = Sliding_message_id_map.Introspection.Map
+
+    let get_message_ids t =
+      Sliding_message_id_map.Introspection.get_slot_entries t.messages
+  end
 
   module Internal_for_tests = struct
     let get_access_counters t =

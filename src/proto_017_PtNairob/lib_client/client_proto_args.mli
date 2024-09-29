@@ -40,6 +40,8 @@ val counter_arg : (Manager_counter.t option, full) Tezos_clic.arg
 
 val gas_limit_arg : (Gas.Arith.integral option, full) Tezos_clic.arg
 
+val safety_guard_arg : (Gas.Arith.integral option, full) Tezos_clic.arg
+
 val default_gas_limit_arg : (Gas.Arith.integral option, full) Tezos_clic.arg
 
 val run_gas_limit_arg : (Gas.Arith.integral option, full) Tezos_clic.arg
@@ -114,6 +116,15 @@ val non_negative_parameter :
   unit -> (int, #Client_context.io) Tezos_clic.parameter
 
 val non_negative_param :
+  name:string ->
+  desc:string ->
+  ('a, (#Client_context.io as 'b)) Tezos_clic.params ->
+  (int -> 'a, 'b) Tezos_clic.params
+
+val positive_int_parameter :
+  unit -> (int, #Client_context.io) Tezos_clic.parameter
+
+val positive_int_param :
   name:string ->
   desc:string ->
   ('a, (#Client_context.io as 'b)) Tezos_clic.params ->

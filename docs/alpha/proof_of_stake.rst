@@ -24,33 +24,48 @@ determined from the seed; and it is random, in that its seed (and hence its resu
 be predicted too much in advance.
 
 
-Delegation
-----------
+Delegation and Staking
+----------------------
 
-A *delegate* is any :ref:`implicit account <def_implicit_account_alpha>` registered as
+A *delegate* is any :ref:`user account <def_user_account_alpha>` registered as
 such. This is done by *self-delegating*, that is, emitting a delegation
 operation (see below) in which the specified delegate is the same as the
 operation emitter (its signer). Note that ``tz4`` accounts cannot be registered
 as delegates.
 
-Any :ref:`account <def_account_alpha>` (implicit or originated) can specify a delegate
-through a delegation operation.  Any account can change or revoke its delegate
+Any :ref:`account <def_account_alpha>` (user account or smart contract) can specify a delegate
+through a delegation operation.  Any non-delegate account can change or revoke its delegate
 at any time, again through a delegation operation. However, the change only
-becomes effective after ``PRESERVED_CYCLES + 2`` :ref:`cycles <def_cycle_alpha>`.  The
-value ``PRESERVED_CYCLES`` is a :ref:`protocol constant
-<protocol_constants_alpha>`.
+becomes effective after ``CONSENSUS_RIGHTS_DELAY + 2`` :ref:`cycles <def_cycle_alpha>`.  The
+value ``CONSENSUS_RIGHTS_DELAY`` is a :ref:`protocol constant
+<protocol_constants_alpha>`. A delegate cannot stop self-delegating.
 
-A delegate participates in consensus and in governance with a weight
-proportional to their *delegated stake* -- that is, the balance
-of all the accounts that delegate to it, including the balance of the delegate itself. To
-participate in consensus or in governance, a
-delegate needs to have at least a minimal stake, which is given by the
-``MINIMAL_STAKE`` :ref:`protocol constant
-<protocol_constants_alpha>`.
+A delegate participates in consensus and in governance in proportion
+to their *baking power* and *voting power* respectively.
 
-Delegates place security deposits that may be forfeited in case they do not
-follow (some particular rules of) the protocol. Security deposits are deduced
-from the delegates' own balance.
+- The voting power of a delegate is the total amount of tez owned by
+  all the accounts that delegate to it (including the delegate
+  itself), with no distinctions made between :doc:`staked<staking>`
+  and non-staked tez.
+
+- The baking power is similar, except that non-staked tez
+  are weighted less than :doc:`staked<staking>` tez, and there are additional
+  considerations such as overstaking and overdelegation. See the
+  :doc:`Baking Power<baking_power>` page for more details.
+
+Moreover, to participate in consensus and governance, the delegate
+needs to be :ref:`active<active_delegate_alpha>` and to meet
+:ref:`minimal balance requirements<minimal_baking_power_alpha>`.
+
+Delegates and delegators may :doc:`stake<staking>` their tez. Staked
+tez are security deposits that may be forfeited in case the baker does
+not follow (some particular rules of) the protocol. Besides, as
+mentioned above, staked tez are weighted higher than non-staked tez
+when computing the baking power.
+
+
+Consensus key
+^^^^^^^^^^^^^
 
 The key used by a delegate to sign blocks and consensus operations is called the
 *consensus key*. By default, this is the delegate's private key, called its
@@ -62,6 +77,12 @@ transfer the delegate's free balance to an arbitrary account.  In :doc:`relevant
 like ``/chains/main/blocks/head/helpers/baking_rights``, both the delegate's
 manager and consensus keys are listed.
 
+If the :ref:`adaptive issuance <adaptive_issuance_alpha>`
+feature is activated, it grants delegators the ability to become
+'stakers' by placing security deposits. These deposits would contribute to their
+delegate's stake and could be subject to slashing penalties if their delegate
+misbehaves.  The staking power of funds placed by stakers and delegates is twice
+that of delegated funds.
 
 Active and passive delegates
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -75,14 +96,15 @@ A delegate is marked as active at its registration.
 
 A delegate becomes passive at the end of cycle ``n`` when it has
 failed to participate in the consensus algorithm in
-the past ``PRESERVED_CYCLES + 1`` cycles. That is, in cycles ``n``, ``n-1``,
-``n-2``, ..., ``n - PRESERVED_CYCLES``.
+the past ``CONSENSUS_RIGHTS_DELAY + 1`` cycles. That is, in cycles ``n``, ``n-1``,
+``n-2``, ..., ``n - CONSENSUS_RIGHTS_DELAY``.
 
 Delegates' rights selection
 ---------------------------
 
-Tezos being proof-of-stake, the delegates' rights are selected at random based on their
-stake. In what follows we detail the selection mechanism used in Tezos.
+Tezos being proof-of-stake, the delegates' rights are selected at
+random based on their :doc:`baking power<baking_power>`. Let us detail
+the selection mechanism used in Tezos.
 
 .. _random_seed_alpha:
 
@@ -95,29 +117,8 @@ values in the protocol, in particular for selecting delegates to participate in 
 
 For more information on randomness generation, see :doc:`randomness-generation<randomness_generation>`.
 
-.. _snapshots_alpha:
-
-Stake snapshots
-^^^^^^^^^^^^^^^
-
-Before turning to the rights selection mechanism, we first introduce a new
-terminology, *stake snapshot*, to denote the stake distribution for a given block,
-as stored in the :ref:`context<def_context_alpha>`.
-Stake snapshots are taken (and stored) every ``BLOCKS_PER_STAKE_SNAPSHOT`` levels.
-More precisely, a snapshot is taken at a level if and only if its cycle
-position modulo ``BLOCKS_PER_STAKE_SNAPSHOT`` is ``BLOCKS_PER_STAKE_SNAPSHOT - 1``.
-Therefore, at the end of a cycle there are ``BLOCKS_PER_CYCLE /
-BLOCKS_PER_STAKE_SNAPSHOT`` stored snapshots.
-
-At the end of cycle ``n-1-PRESERVED_CYCLES``, the snapshot for cycle
-``n`` is randomly selected from the snapshots stored in cycle
-``n-1-PRESERVED_CYCLES``. The selection is done through a very simple
-PRNG having as seed the :ref:`random seed<random_seed_alpha>` for
-cycle ``n``.
-
-Only the stake of active delegates with the minimal stake of ``MINIMAL_STAKE`` is snapshot.
-
 .. _rights_alpha:
+.. _slots_alpha:
 
 Slot selection
 ^^^^^^^^^^^^^^
@@ -129,9 +130,9 @@ using `Vose's algorithm
 (see also `this more pedagogic description
 <https://www.keithschwarz.com/darts-dice-coins/>`_; the algorithm is the last one listed there).
 This algorithm samples from a discrete probability distribution, which is given by
-the stakes in a particular stake snapshot: the probability to sample a
-particular delegate is its stake in the snapshot over the total stake
-in that snapshot.
+the :ref:`stakes<active_stake_alpha>` of a specific cycle: the probability to sample a
+particular delegate is its stake in the cycle over the total stake
+in that cycle.
 
 Concretely, the delegates' rights at a given level are expressed in terms of
 the (quantity of) *slots* that the delegate owns at that level.
@@ -141,8 +142,7 @@ The owner of a slot is obtained by sampling using the algorithm
 mentioned above.
 More precisely, given a level and a slot (which is just a non-negative integer),
 the mentioned algorithm is invoked to assign a delegate to the given slot.
-Its input is the probability distribution given by the :ref:`stake
-snapshot<snapshots_alpha>` for the cycle to which the level belongs.
+Its input is the probability distribution given by the stakes retained for the cycle to which the level belongs.
 And whenever the algorithm needs to draw a random value, this is obtained using a
 simple procedure which has as its initial state: the level, the
 :ref:`random seed<random_seed_alpha>` for the cycle to which the
@@ -161,14 +161,13 @@ Proof-of-stake parameters
    * - Parameter name
      - Parameter value
    * - ``BLOCKS_PER_CYCLE``
-     - 16384 blocks
-   * - ``PRESERVED_CYCLES``
-     - 5 cycles
+     - 30720 blocks
+   * - ``CONSENSUS_RIGHTS_DELAY``
+     - 2 cycles
    * - ``MINIMAL_STAKE``
      - 6,000 ꜩ
-   * - ``BLOCKS_PER_STAKE_SNAPSHOT``
-     - 1024 blocks
-
+   * - ``MINIMAL_FROZEN_STAKE``
+     - 600 ꜩ
 
 Further External Resources
 --------------------------
@@ -177,7 +176,9 @@ The original design of the proof-of-stake mechanism in Tezos can be
 found in the `whitepaper
 <https://tezos.com/whitepaper.pdf>`_.
 
+
+The adaptive issuance feature :ref:`documentation <adaptive_issuance_alpha>`.
+
 Other presentations of the Tezos' proof-of-stake mechanism can be
-found in the `Tezos Agora wiki entry
-<https://wiki.tezosagora.org/learn/baking/proofofstake>`_ and
+found in the
 `Open Tezos entry <https://opentezos.com/tezos-basics/liquid-proof-of-stake/>`_.

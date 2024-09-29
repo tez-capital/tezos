@@ -410,6 +410,16 @@ let non_negative_parameter () = Tezos_clic.parameter non_negative_parser
 let non_negative_param ~name ~desc next =
   Tezos_clic.param ~name ~desc (non_negative_parameter ()) next
 
+let positive_int_parser (cctxt : #Client_context.io) s =
+  match int_of_string_opt s with
+  | Some i when i > 0 -> return i
+  | _ -> cctxt#error "Parameter should be a positive integer literal"
+
+let positive_int_parameter () = Tezos_clic.parameter positive_int_parser
+
+let positive_int_param ~name ~desc next =
+  Tezos_clic.param ~name ~desc (positive_int_parameter ()) next
+
 let fee_arg =
   Tezos_clic.arg
     ~long:"fee"
@@ -494,6 +504,16 @@ let default_gas_limit_arg =
     ~doc:
       "Set the default gas limit for each transaction instead of letting the \
        client decide based on a simulation"
+    gas_limit_kind
+
+let safety_guard_arg =
+  Tezos_clic.arg
+    ~long:"safety-guard"
+    ~placeholder:"extra_gas"
+    ~doc:
+      "Amount of gas to add to value computed by simulation. The gas safety \
+       guard allows operations that consume a little more gas than expected to \
+       be successful"
     gas_limit_kind
 
 let run_gas_limit_arg =
@@ -736,7 +756,7 @@ module Sc_rollup_params = struct
         [
           desc;
           "Can be an alias or a literal (autodetected in order).\n\
-           Use 'alias:name' or 'text:literal' to force.";
+           Use 'alias:<name>' or 'text:<literal>' to force.";
         ]
     in
     Tezos_clic.param ~name ~desc sc_rollup_address_parameter next
@@ -897,14 +917,15 @@ let fee_parameter_args =
            | None -> cctxt#error "Bad burn cap"))
   in
   Tezos_clic.map_arg
-    ~f:
-      (fun _cctxt
-           ( minimal_fees,
-             minimal_nanotez_per_byte,
-             minimal_nanotez_per_gas_unit,
-             force_low_fee,
-             fee_cap,
-             burn_cap ) ->
+    ~f:(fun
+        _cctxt
+        ( minimal_fees,
+          minimal_nanotez_per_byte,
+          minimal_nanotez_per_gas_unit,
+          force_low_fee,
+          fee_cap,
+          burn_cap )
+      ->
       return
         {
           Injection.minimal_fees;

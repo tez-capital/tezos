@@ -30,9 +30,11 @@
    Subject:      Checks if a protocol activation is well handled in the store
 *)
 
+let team = Tag.layer1
+
 let check_protocol_activation ~migrate_from ~migrate_to ~block client =
   let* migration_block =
-    RPC.Client.call client @@ RPC.get_chain_block_metadata ~block ()
+    Client.RPC.call client @@ RPC.get_chain_block_metadata ~block ()
   in
   Check.(
     (migration_block.protocol = Protocol.hash migrate_from)
@@ -74,7 +76,7 @@ let test_protocol_table_update ~migrate_from ~migrate_to =
   Test.register
     ~__FILE__
     ~title:"protocol activation"
-    ~tags:["protocol"; "table"; "update"]
+    ~tags:[team; "protocol"; "protocol_table"; "update"]
   @@ fun () ->
   let migration_level =
     (* NOTE: Migration to Tenderbake is only supported after the first
@@ -181,7 +183,7 @@ let test_branch_switch ~migrate_from ~migrate_to =
   Test.register
     ~__FILE__
     ~title:"protocol table"
-    ~tags:["protocol"; "table"; "branch"]
+    ~tags:[team; "protocol"; "protocol_table"; "branch"]
   @@ fun () ->
   let migration_level = 2 in
   let uau =
@@ -199,7 +201,7 @@ let test_branch_switch ~migrate_from ~migrate_to =
   let* () = Client.bake_for_and_wait client2 in
   let* _ = Node.wait_for_level node2 2 in
   let* () = Node.terminate node2 in
-  let () = Node.Config_file.update node2 uau in
+  let* () = Node.Config_file.update node2 uau in
   let* () = Node.run node2 [Synchronisation_threshold 0] in
   let* () = Node.wait_for_ready node2 in
   (* The block is invalid but is still accepted. *)

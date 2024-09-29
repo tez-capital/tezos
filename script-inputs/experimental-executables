@@ -1,8 +1,4 @@
-octez-evm-proxy-server
-octez-smart-rollup-sequencer-node
-octez-smart-rollup-node
-octez-dal-node
-octez-smart-rollup-node-alpha
-octez-smart-rollup-client-alpha
+octez-teztale-archiver
+octez-teztale-server
 octez-accuser-alpha
 octez-baker-alpha

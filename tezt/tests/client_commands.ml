@@ -30,6 +30,8 @@
    Subject:      Tests for the Tezos client
 *)
 
+let team = Tag.layer1
+
 module Helpers = struct
   let originate_fail_on_false protocol client =
     let* _alias, contract =
@@ -47,12 +49,11 @@ module Helpers = struct
     return contract
 
   let get_balance pkh client =
-    RPC.Client.call client
+    Client.RPC.call client
     @@ RPC.get_chain_block_context_contract_balance ~id:pkh ()
 
-  let supported_signature_schemes = function
-    | Protocol.Alpha | Oxford | Nairobi ->
-        ["ed25519"; "secp256k1"; "p256"; "bls"]
+  let supported_signature_schemes (_ : Protocol.t) =
+    ["ed25519"; "secp256k1"; "p256"; "bls"]
 
   let airdrop_and_reveal client accounts =
     Log.info "Airdrop 1000tz to each account" ;
@@ -150,14 +151,14 @@ module Simulation = struct
     Protocol.register_test
       ~__FILE__
       ~title:"Simulation of successful operation"
-      ~tags:["client"; "simulation"; "success"]
+      ~tags:[team; "client"; "simulation"; "success"]
     @@ transfer ~arg:"True" ~simulation:true Process.check
 
   let successful_multiple =
     Protocol.register_test
       ~__FILE__
       ~title:"Simulation of successful operation batch"
-      ~tags:["client"; "simulation"; "success"; "multiple"; "batch"]
+      ~tags:[team; "client"; "simulation"; "success"; "multiple"; "batch"]
     @@ multiple_transfers
          ~args:["True"; "True"; "True"]
          ~simulation:true
@@ -167,7 +168,7 @@ module Simulation = struct
     Protocol.register_test
       ~__FILE__
       ~title:"Simulation of failing operation"
-      ~tags:["client"; "simulation"; "failing"]
+      ~tags:[team; "client"; "simulation"; "failing"]
     @@ transfer ~arg:"False" ~simulation:true
     @@ Process.check_error ~exit_code:1 ~msg:(rex "with \"bang\"")
 
@@ -175,7 +176,7 @@ module Simulation = struct
     Protocol.register_test
       ~__FILE__
       ~title:"Simulation of failing operation with force"
-      ~tags:["client"; "simulation"; "failing"; "force"]
+      ~tags:[team; "client"; "simulation"; "failing"; "force"]
     @@ transfer ~arg:"False" ~simulation:true ~force:true
     @@ fun p ->
     let* stdout = Process.check_and_read_stdout ~expect_failure:false p in
@@ -187,7 +188,8 @@ module Simulation = struct
     Protocol.register_test
       ~__FILE__
       ~title:"Simulation of failing batch with force"
-      ~tags:["client"; "simulation"; "failing"; "multiple"; "batch"; "force"]
+      ~tags:
+        [team; "client"; "simulation"; "failing"; "multiple"; "batch"; "force"]
     @@ multiple_transfers
          ~args:["True"; "False"; "True"]
          ~simulation:true
@@ -206,7 +208,8 @@ module Simulation = struct
     Protocol.register_test
       ~__FILE__
       ~title:"Simulation of first failing operation in batch with force"
-      ~tags:["client"; "simulation"; "failing"; "multiple"; "batch"; "force"]
+      ~tags:
+        [team; "client"; "simulation"; "failing"; "multiple"; "batch"; "force"]
     @@ multiple_transfers
          ~args:["False"; "True"; "True"; "True"; "True"; "True"]
          ~simulation:true
@@ -225,7 +228,7 @@ module Simulation = struct
     Protocol.register_test
       ~__FILE__
       ~title:"Injecting of failing operation with force"
-      ~tags:["client"; "injection"; "failing"; "force"]
+      ~tags:[team; "client"; "injection"; "failing"; "force"]
     @@ transfer ~arg:"False" ~force:true
     @@ Process.check_error
          ~exit_code:1
@@ -235,7 +238,8 @@ module Simulation = struct
     Protocol.register_test
       ~__FILE__
       ~title:"Injecting of failing operations batch with force"
-      ~tags:["client"; "injection"; "failing"; "force"; "multiple"; "batch"]
+      ~tags:
+        [team; "client"; "injection"; "failing"; "force"; "multiple"; "batch"]
     @@ multiple_transfers ~args:["True"; "False"; "True"] ~force:true
     @@ fun Runnable.{value; _} ->
     Process.check_error
@@ -261,7 +265,7 @@ module Transfer = struct
     Protocol.register_test
       ~__FILE__
       ~title:"Transfer to public key hash alias"
-      ~tags:["client"; "alias"; "transfer"]
+      ~tags:[team; "client"; "alias"; "transfer"]
     @@ fun protocol ->
     let* node, client = Client.init_with_protocol `Client ~protocol () in
     let* client2 = Client.init ~endpoint:(Node node) () in
@@ -269,7 +273,10 @@ module Transfer = struct
     let* malicious = Client.gen_and_show_keys ~alias:"malicious" client2 in
     let malicious = {malicious with Account.alias = victim.public_key_hash} in
     Log.info "Importing malicious account whose alias is victim's public key" ;
-    let* () = Client.import_secret_key client malicious in
+    let* () =
+      let Account.{alias; secret_key; _} = malicious in
+      Client.import_secret_key client ~alias secret_key
+    in
     let amount = Tez.of_int 2 in
     Log.info
       "Transferring to victim's public key hash should not transfer to \
@@ -295,7 +302,7 @@ module Transfer = struct
     Protocol.register_test
       ~__FILE__
       ~title:"Transfer from public key hash alias"
-      ~tags:["client"; "alias"; "transfer"]
+      ~tags:[team; "client"; "alias"; "transfer"]
     @@ fun protocol ->
     let* node, client = Client.init_with_protocol `Client ~protocol () in
     let* client2 = Client.init ~endpoint:(Node node) () in
@@ -303,7 +310,10 @@ module Transfer = struct
     let* victim = Client.gen_and_show_keys ~alias:"victim" client2 in
     let victim = {victim with Account.alias = malicious.public_key_hash} in
     Log.info "Importing victim account whose alias is malicious's public key" ;
-    let* () = Client.import_secret_key client victim in
+    let* () =
+      let Account.{alias; secret_key; _} = victim in
+      Client.import_secret_key client ~alias secret_key
+    in
     Log.info "Giving some tokens to victim" ;
     let* () =
       Client.transfer
@@ -347,7 +357,7 @@ module Transfer = struct
     Protocol.register_test
       ~__FILE__
       ~title:"Transfer from and to accounts"
-      ~tags:["client"; "transfer"; "bls"; "tz4"]
+      ~tags:[team; "client"; "transfer"; "bls"; "tz4"]
     @@ fun protocol ->
     let* _node, client = Client.init_with_protocol `Client ~protocol () in
     Log.info "Generating new accounts" ;
@@ -393,7 +403,7 @@ module Transfer = struct
     Protocol.register_test
       ~__FILE__
       ~title:"Batch transfers"
-      ~tags:["client"; "batch"; "transfer"; "bls"; "tz4"]
+      ~tags:[team; "client"; "batch"; "transfer"; "bls"; "tz4"]
     @@ fun protocol ->
     let* _node, client = Client.init_with_protocol `Client ~protocol () in
     Log.info "Generating new accounts" ;
@@ -467,10 +477,13 @@ module Transfer = struct
     Protocol.register_test
       ~__FILE__
       ~title:"Set delegate forbidden on tz4"
-      ~tags:["client"; "set_delegate"; "bls"; "tz4"]
+      ~tags:[team; "client"; "set_delegate"; "bls"; "tz4"]
     @@ fun protocol ->
     let* _node, client = Client.init_with_protocol `Client ~protocol () in
-    let* () = Client.import_secret_key client Constant.tz4_account in
+    let* () =
+      let Account.{alias; secret_key; _} = Constant.tz4_account in
+      Client.import_secret_key client ~alias secret_key
+    in
     let* () = airdrop_and_reveal client [Constant.tz4_account] in
     let*? set_delegate_process =
       Client.set_delegate
@@ -487,7 +500,7 @@ module Transfer = struct
     Protocol.register_test
       ~__FILE__
       ~title:"Test transfer with too low balance"
-      ~tags:["client"; "transfer"]
+      ~tags:[team; "client"; "transfer"]
     @@ fun protocol ->
     let* _node, client = Client.init_with_protocol `Client ~protocol () in
     Log.info "Generating new accounts" ;
@@ -512,13 +525,13 @@ module Transfer = struct
     Protocol.register_test
       ~__FILE__
       ~title:"Simple transfer from bootstrap5 to bootstrap1"
-      ~tags:["client"; "transfer"]
+      ~tags:[team; "client"; "transfer"]
     @@ fun protocol ->
     let* _node, client = Client.init_with_protocol `Client ~protocol () in
     let check_balance_and_deposits ~__LOC__ (account : Account.key)
         expected_amount =
       let* all_deposits =
-        RPC.Client.call client
+        Client.RPC.call client
         @@ RPC.get_chain_block_context_delegate_frozen_deposits
              account.public_key_hash
       in
@@ -588,6 +601,51 @@ module Transfer = struct
     in
     unit
 
+  let safety_guard =
+    Protocol.register_test
+      ~__FILE__
+      ~title:"Gas safety guard for transfer"
+      ~tags:[team; "client"; "transfer"; "safety_guard"]
+    @@ fun protocol ->
+    let* _node, client = Client.init_with_protocol `Client ~protocol () in
+    let Account.{public_key_hash = bootstrap1_pkh; _} = Constant.bootstrap1 in
+    let Account.{public_key_hash = bootstrap2_pkh; _} = Constant.bootstrap2 in
+    let Account.{public_key_hash = bootstrap5_pkh; _} = Constant.bootstrap5 in
+    let amount = Tez.of_int 100 in
+    let* () =
+      Client.transfer
+        client
+        ~amount
+        ~safety_guard:0
+        ~giver:bootstrap5_pkh
+        ~receiver:bootstrap1_pkh
+    in
+    let* () =
+      Client.transfer
+        client
+        ~amount
+        ~safety_guard:300
+        ~giver:bootstrap2_pkh
+        ~receiver:bootstrap1_pkh
+    in
+    let* () = Client.bake_for_and_wait client in
+    let* operations =
+      Client.RPC.call client
+      @@ RPC.get_chain_block_operations_validation_pass ~validation_pass:3 ()
+    in
+    let ops =
+      JSON.as_list operations
+      |> List.map (fun op ->
+             let open JSON in
+             let op = op |-> "contents" |=> 0 in
+             (op |-> "source" |> as_string, op |-> "gas_limit" |> as_int))
+    in
+    let gas_limit0 = List.assoc bootstrap5_pkh ops in
+    let gas_limit300 = List.assoc bootstrap2_pkh ops in
+    Check.((gas_limit300 = gas_limit0 + 300) int)
+      ~error_msg:"Gas limit is %L but should be %R, i.e. 300 more" ;
+    unit
+
   let register protocols =
     alias_pkh_destination protocols ;
     alias_pkh_source protocols ;
@@ -595,7 +653,8 @@ module Transfer = struct
     batch_transfers_tz4 protocols ;
     forbidden_set_delegate_tz4 protocols ;
     balance_too_low protocols ;
-    transfers_bootstraps5_bootstrap1 protocols
+    transfers_bootstraps5_bootstrap1 protocols ;
+    safety_guard protocols
 end
 
 module Dry_run = struct
@@ -603,7 +662,7 @@ module Dry_run = struct
     Protocol.register_test
       ~__FILE__
       ~title:"Check consumed gas of origination dry run"
-      ~tags:["client"; "gas"; "estimation"; "dryrun"]
+      ~tags:[team; "client"; "gas"; "estimation"; "dryrun"]
     @@ fun protocol ->
     Log.info
       "This test checks that the consumed gas returned by the dry run of a \
@@ -707,7 +766,7 @@ module Signatures = struct
     Protocol.register_test
       ~__FILE__
       ~title:"Test client signatures and on chain check"
-      ~tags:["client"; "signature"; "check"; "bls"]
+      ~tags:[team; "client"; "signature"; "check"; "bls"]
     @@ fun protocol ->
     let* _node, client = Client.init_with_protocol `Client ~protocol () in
     let* contract, _hash =
@@ -744,7 +803,7 @@ module Signatures = struct
     in
     let* () = Lwt_list.iter_s test accounts in
     let* () = Client.bake_for_and_wait client in
-    let* block = RPC.Client.call client @@ RPC.get_chain_block () in
+    let* block = Client.RPC.call client @@ RPC.get_chain_block () in
     let ops = JSON.(block |-> "operations" |=> 3 |> as_list) in
     Check.(
       (List.length ops = List.length (supported_signature_schemes protocol)) int)
@@ -755,7 +814,7 @@ module Signatures = struct
     Protocol.register_test
       ~__FILE__
       ~title:"Test client message signatures"
-      ~tags:["client"; "signature"; "message"; "check"]
+      ~tags:[team; "client"; "signature"; "message"; "check"]
     @@ fun protocol ->
     let* _node, client = Client.init_with_protocol ~protocol `Client () in
     [
@@ -796,7 +855,7 @@ module Account_activation = struct
     Protocol.register_test
       ~__FILE__
       ~title:"Test account activation"
-      ~tags:["client"; "account"; "activation"]
+      ~tags:[team; "client"; "account"; "activation"]
     @@ fun protocol ->
     let parameter_file =
       Protocol.parameter_file ~constants:Constants_test protocol

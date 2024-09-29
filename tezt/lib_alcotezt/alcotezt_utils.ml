@@ -33,4 +33,7 @@ let is_proto_test file =
   | Some "016_PtMumbai" -> ["mumbai"]
   | Some "017_PtNairob" -> ["nairobi"]
   | Some "018_Proxford" -> ["oxford"]
+  | Some "019_PtParisB" -> ["parisb"]
+  | Some "020_PsParisC" -> ["parisc"]
+  | Some "021_PsquebeC" -> ["quebeca"]
   | Some _ -> assert false

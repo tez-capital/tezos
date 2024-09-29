@@ -24,80 +24,14 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-let info_of_point_info i =
-  let open P2p_point.Info in
-  let open P2p_point.State in
-  let state =
-    match P2p_point_state.get i with
-    | Requested _ -> Requested
-    | Accepted {current_peer_id; _} -> Accepted current_peer_id
-    | Running {current_peer_id; _} -> Running current_peer_id
-    | Disconnected -> Disconnected
-  in
-  P2p_point_state.Info.
-    {
-      trusted = trusted i;
-      state;
-      reconnection_time = reconnection_time i;
-      last_failed_connection = last_failed_connection i;
-      last_rejected_connection = last_rejected_connection i;
-      last_established_connection = last_established_connection i;
-      last_disconnection = last_disconnection i;
-      last_seen = last_seen i;
-      last_miss = last_miss i;
-      expected_peer_id = P2p_point_state.get_expected_peer_id i;
-    }
+let info_of_point_info = P2p_point_state.info_of_point_info
 
-let info_of_peer_info pool i =
-  let open P2p_peer.Info in
-  let open P2p_peer.State in
-  let state, id_point =
-    match P2p_peer_state.get i with
-    | Accepted {current_point; _} -> (Accepted, Some current_point)
-    | Running {current_point; _} -> (Running, Some current_point)
-    | Disconnected -> (Disconnected, None)
-  in
-  let peer_id = P2p_peer_state.Info.peer_id i in
-  let score = P2p_pool.Peers.get_score pool peer_id in
-  let conn_opt = P2p_pool.Connection.find_by_peer_id pool peer_id in
-  let stat =
-    match conn_opt with
-    | None -> P2p_stat.empty
-    | Some conn -> P2p_conn.stat conn
-  in
-  let meta_opt = Option.map P2p_conn.remote_metadata conn_opt in
-  P2p_peer_state.Info.
-    {
-      score;
-      trusted = trusted i;
-      conn_metadata = meta_opt;
-      peer_metadata = peer_metadata i;
-      state;
-      id_point;
-      stat;
-      last_failed_connection = last_failed_connection i;
-      last_rejected_connection = last_rejected_connection i;
-      last_established_connection = last_established_connection i;
-      last_disconnection = last_disconnection i;
-      last_seen = last_seen i;
-      last_miss = last_miss i;
-    }
+let info_of_peer_info = P2p_pool.Peers.info_of_peer_info
 
 let build_rpc_directory net =
   let open Lwt_result_syntax in
   let dir = Tezos_rpc.Directory.empty in
   (* Network : Global *)
-  (* DEPRECATED: use [version] from "lib_shell_services/version_services"
-     instead. *)
-  let dir =
-    Tezos_rpc.Directory.register0 dir P2p_services.S.version (fun () () ->
-        return (P2p.announced_version net))
-  in
-  let dir =
-    (* DEPRECATED: use [version] instead. *)
-    Tezos_rpc.Directory.register0 dir P2p_services.S.versions (fun () () ->
-        return [P2p.announced_version net])
-  in
   let dir =
     Tezos_rpc.Directory.register0 dir P2p_services.S.self (fun () () ->
         match P2p.pool net with
@@ -139,9 +73,9 @@ let build_rpc_directory net =
       (fun peer_id () () ->
         return
           (let open Option_syntax in
-          let* pool = P2p.pool net in
-          let+ conn = P2p_pool.Connection.find_by_peer_id pool peer_id in
-          P2p_conn.info conn))
+           let* pool = P2p.pool net in
+           let+ conn = P2p_pool.Connection.find_by_peer_id pool peer_id in
+           P2p_conn.info conn))
   in
   let dir =
     Tezos_rpc.Directory.lwt_register1
@@ -153,7 +87,8 @@ let build_rpc_directory net =
         | Some pool -> (
             match P2p_pool.Connection.find_by_peer_id pool peer_id with
             | None -> Lwt.return_unit
-            | Some conn -> P2p_conn.disconnect ~wait:q#wait conn))
+            | Some conn ->
+                P2p_conn.disconnect ~wait:q#wait ~reason:Explicit_RPC conn))
   in
   let dir =
     Tezos_rpc.Directory.register0
@@ -253,52 +188,6 @@ let build_rpc_directory net =
             @@ Option.map
                  (info_of_peer_info pool)
                  (P2p_pool.Peers.info pool peer_id))
-  in
-  let dir =
-    Tezos_rpc.Directory.gen_register1
-      dir
-      P2p_services.Peers.S.ban
-      (fun peer_id () () ->
-        let open Lwt_syntax in
-        match P2p.pool net with
-        | None -> Tezos_rpc.Answer.fail [P2p_errors.P2p_layer_disabled]
-        | Some pool ->
-            P2p_pool.Peers.untrust pool peer_id ;
-            let* () = P2p_pool.Peers.ban pool peer_id in
-            Tezos_rpc.Answer.return_unit)
-  in
-  let dir =
-    Tezos_rpc.Directory.gen_register1
-      dir
-      P2p_services.Peers.S.unban
-      (fun peer_id () () ->
-        match P2p.pool net with
-        | None -> Tezos_rpc.Answer.fail [P2p_errors.P2p_layer_disabled]
-        | Some pool ->
-            P2p_pool.Peers.unban pool peer_id ;
-            Tezos_rpc.Answer.return_unit)
-  in
-  let dir =
-    Tezos_rpc.Directory.gen_register1
-      dir
-      P2p_services.Peers.S.trust
-      (fun peer_id () () ->
-        match P2p.pool net with
-        | None -> Tezos_rpc.Answer.fail [P2p_errors.P2p_layer_disabled]
-        | Some pool ->
-            P2p_pool.Peers.trust pool peer_id ;
-            Tezos_rpc.Answer.return_unit)
-  in
-  let dir =
-    Tezos_rpc.Directory.gen_register1
-      dir
-      P2p_services.Peers.S.untrust
-      (fun peer_id () () ->
-        match P2p.pool net with
-        | None -> Tezos_rpc.Answer.fail [P2p_errors.P2p_layer_disabled]
-        | Some pool ->
-            P2p_pool.Peers.untrust pool peer_id ;
-            Tezos_rpc.Answer.return_unit)
   in
   let dir =
     Tezos_rpc.Directory.register1
@@ -410,52 +299,6 @@ let build_rpc_directory net =
   let dir =
     Tezos_rpc.Directory.gen_register1
       dir
-      P2p_services.Points.S.ban
-      (fun point () () ->
-        let open Lwt_syntax in
-        match P2p.pool net with
-        | None -> Tezos_rpc.Answer.fail [P2p_errors.P2p_layer_disabled]
-        | Some pool ->
-            P2p_pool.Points.untrust pool point ;
-            let* () = P2p_pool.Points.ban pool point in
-            Tezos_rpc.Answer.return_unit)
-  in
-  let dir =
-    Tezos_rpc.Directory.gen_register1
-      dir
-      P2p_services.Points.S.unban
-      (fun point () () ->
-        match P2p.pool net with
-        | None -> Tezos_rpc.Answer.fail [P2p_errors.P2p_layer_disabled]
-        | Some pool ->
-            P2p_pool.Points.unban pool point ;
-            Tezos_rpc.Answer.return_unit)
-  in
-  let dir =
-    Tezos_rpc.Directory.gen_register1
-      dir
-      P2p_services.Points.S.trust
-      (fun point () () ->
-        match P2p.pool net with
-        | None -> Tezos_rpc.Answer.fail [P2p_errors.P2p_layer_disabled]
-        | Some pool ->
-            P2p_pool.Points.trust pool point ;
-            Tezos_rpc.Answer.return_unit)
-  in
-  let dir =
-    Tezos_rpc.Directory.gen_register1
-      dir
-      P2p_services.Points.S.untrust
-      (fun point () () ->
-        match P2p.pool net with
-        | None -> Tezos_rpc.Answer.fail [P2p_errors.P2p_layer_disabled]
-        | Some pool ->
-            P2p_pool.Points.untrust pool point ;
-            Tezos_rpc.Answer.return_unit)
-  in
-  let dir =
-    Tezos_rpc.Directory.gen_register1
-      dir
       P2p_services.Points.S.banned
       (fun point () () ->
         match P2p.pool net with
@@ -482,20 +325,12 @@ let build_rpc_directory net =
   in
   (* Network : Greylist *)
   let dir =
-    Tezos_rpc.Directory.register0 dir P2p_services.ACL.S.clear (fun () () ->
-        match P2p.pool net with
-        | None -> tzfail P2p_errors.P2p_layer_disabled
-        | Some pool ->
-            P2p_pool.acl_clear pool ;
-            return_unit)
-  in
-  let dir =
     Tezos_rpc.Directory.register0
       dir
       P2p_services.ACL.S.clear_delete
       (fun () () ->
         match P2p.pool net with
-        | None -> failwith "The P2P layer is disabled."
+        | None -> tzfail P2p_errors.P2p_layer_disabled
         | Some pool ->
             P2p_pool.acl_clear pool ;
             return_unit)

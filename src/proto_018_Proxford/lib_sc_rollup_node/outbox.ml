@@ -2,6 +2,7 @@
 (*                                                                           *)
 (* Open Source License                                                       *)
 (* Copyright (c) 2022 Nomadic Labs, <contact@nomadic-labs.com>               *)
+(* Copyright (c) 2023 TriliTech, <contact@trili.tech>                        *)
 (*                                                                           *)
 (* Permission is hereby granted, free of charge, to any person obtaining a   *)
 (* copy of this software and associated documentation files (the "Software"),*)
@@ -24,6 +25,8 @@
 (*****************************************************************************)
 
 open Node_context
+open Context_sigs
+open Context_wrapper.Irmin
 
 let get_state_of_lcc node_ctxt =
   let open Lwt_result_syntax in
@@ -46,7 +49,12 @@ let proof_of_output node_ctxt output =
       failwith "Error producing outbox proof (no cemented state in the node)"
   | Some state -> (
       let module PVM = (val Pvm.of_kind node_ctxt.kind) in
-      let*! proof = PVM.produce_output_proof node_ctxt.context state output in
+      let*! proof =
+        PVM.produce_output_proof
+          (of_node_context node_ctxt.context).index
+          (of_node_pvmstate state)
+          output
+      in
       match proof with
       | Ok proof ->
           let serialized_proof =
@@ -58,3 +66,23 @@ let proof_of_output node_ctxt output =
             "Error producing outbox proof (%a)"
             Environment.Error_monad.pp
             err)
+
+let proof_of_output_simple node_ctxt ~outbox_level ~message_index =
+  let open Lwt_result_syntax in
+  let outbox_level = Protocol.Alpha_context.Raw_level.to_int32 outbox_level in
+  let* state = get_state_of_lcc node_ctxt in
+  let lcc = Reference.get node_ctxt.lcc in
+  match state with
+  | None ->
+      (* This case should never happen as origination creates an LCC which
+         must have been considered by the rollup node at startup time. *)
+      failwith "Error producing outbox proof (no cemented state in the node)"
+  | Some state ->
+      let+ proof =
+        Pvm_plugin.produce_serialized_output_proof
+          node_ctxt
+          state
+          ~outbox_level
+          ~message_index
+      in
+      (lcc.commitment, proof)

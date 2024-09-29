@@ -46,6 +46,7 @@ type simulate_input = {
   messages : string list;
   reveal_pages : string list option;
   insight_requests : insight_request list;
+  log_kernel_debug_file : string option;
 }
 
 type commitment_info = {
@@ -115,11 +116,11 @@ module Encodings = struct
 
   let simulate_input =
     conv
-      (fun {messages; reveal_pages; insight_requests} ->
-        (messages, reveal_pages, insight_requests))
-      (fun (messages, reveal_pages, insight_requests) ->
-        {messages; reveal_pages; insight_requests})
-    @@ obj3
+      (fun {messages; reveal_pages; insight_requests; log_kernel_debug_file} ->
+        (messages, reveal_pages, insight_requests, log_kernel_debug_file))
+      (fun (messages, reveal_pages, insight_requests, log_kernel_debug_file) ->
+        {messages; reveal_pages; insight_requests; log_kernel_debug_file})
+    @@ obj4
          (req
             "messages"
             (list hex_string)
@@ -133,6 +134,13 @@ module Encodings = struct
             (list insight_request)
             []
             ~description:"Paths in the PVM to inspect after the simulation")
+         (opt
+            "log_kernel_debug_file"
+            string
+            ~description:
+              "File in which to emit kernel logs. This file will be created in \
+               <data-dir>/simulation_kernel_logs/, where <data-dir> is the \
+               data directory of the rollup node.")
 
   let commitment_info =
     conv
@@ -164,47 +172,6 @@ module Encodings = struct
 end
 
 module Query = struct
-  let outbox_proof_query =
-    let open Tezos_rpc.Query in
-    let open Sc_rollup in
-    let invalid_message e =
-      raise
-        (Invalid
-           (Format.asprintf
-              "Invalid message (%a)"
-              Environment.Error_monad.pp_trace
-              e))
-    in
-    query (fun outbox_level message_index serialized_outbox_message ->
-        let req name f = function
-          | None ->
-              raise
-                (Invalid (Format.sprintf "Query parameter %s is required" name))
-          | Some arg -> f arg
-        in
-        let outbox_level =
-          req "outbox_level" Raw_level.of_int32_exn outbox_level
-        in
-        let message_index = req "message_index" Z.of_int64 message_index in
-        let message =
-          req
-            "serialized_outbox_message"
-            (fun s -> Outbox.Message.(unsafe_of_string s |> deserialize))
-            serialized_outbox_message
-        in
-        match message with
-        | Error e -> invalid_message e
-        | Ok message -> {outbox_level; message_index; message})
-    |+ opt_field "outbox_level" Tezos_rpc.Arg.int32 (fun o ->
-           Some (Raw_level.to_int32 o.outbox_level))
-    |+ opt_field "message_index" Tezos_rpc.Arg.int64 (fun o ->
-           Some (Z.to_int64 o.message_index))
-    |+ opt_field "serialized_outbox_message" Tezos_rpc.Arg.string (fun o ->
-           match Outbox.Message.serialize o.message with
-           | Ok message -> Some (Outbox.Message.unsafe_to_string message)
-           | Error e -> invalid_message e)
-    |> seal
-
   type key_query = {key : string}
 
   let key_query : key_query Tezos_rpc.Query.t =
@@ -226,15 +193,34 @@ module Query = struct
     |+ opt_field "outbox_level" Tezos_rpc.Arg.int32 (fun o ->
            Some (Raw_level.to_int32 o))
     |> seal
+
+  let message_index_query =
+    let open Tezos_rpc.Query in
+    query (fun message_index ->
+        let req name f = function
+          | None ->
+              raise
+                (Invalid (Format.sprintf "Query parameter %s is required" name))
+          | Some arg -> f arg
+        in
+        req "index" (fun o -> o) message_index)
+    |+ opt_field "index" Tezos_rpc.Arg.uint (fun o -> Some o)
+    |> seal
+
+  type simulate_query = {fuel : int64 option}
+
+  let simulate_query : simulate_query Tezos_rpc.Query.t =
+    let open Tezos_rpc.Query in
+    query (fun fuel -> {fuel})
+    |+ opt_field "fuel" Tezos_rpc.Arg.int64 (fun t -> t.fuel)
+    |> seal
+
+  let outbox_query : bool Tezos_rpc.Query.t =
+    let open Tezos_rpc.Query in
+    query (fun b -> b)
+    |+ field "outbox" Tezos_rpc.Arg.bool false (fun b -> b)
+    |> seal
 end
-
-type simulate_query = {fuel : int64 option}
-
-let simulate_query : simulate_query Tezos_rpc.Query.t =
-  let open Tezos_rpc.Query in
-  query (fun fuel -> {fuel})
-  |+ opt_field "fuel" Tezos_rpc.Arg.int64 (fun t -> t.fuel)
-  |> seal
 
 module Block = struct
   open Tezos_rpc.Path
@@ -250,7 +236,7 @@ module Block = struct
       ~description:
         "Layer-2 block of the layer-2 chain with respect to a Layer 1 block \
          identifier"
-      ~query:Tezos_rpc.Query.empty
+      ~query:Query.outbox_query
       ~output:Sc_rollup_block.full_encoding
       path
 
@@ -414,15 +400,17 @@ module Block = struct
 
     let path = path / "helpers"
 
-    let outbox_proof =
+    let outbox_proof_simple =
       Tezos_rpc.Service.get_service
-        ~description:"Generate serialized output proof for some outbox message"
-        ~query:Query.outbox_proof_query
+        ~description:
+          "Generate serialized output proof for some outbox message at level \
+           and index"
+        ~query:Query.message_index_query
         ~output:
           Data_encoding.(
             obj2
               (req "commitment" Sc_rollup.Commitment.Hash.encoding)
               (req "proof" Encodings.hex_string))
-        (path / "proofs" / "outbox")
+        (path / "proofs" / "outbox" /: level_param / "messages")
   end
 end

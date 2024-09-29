@@ -61,7 +61,7 @@ type t
 
 type operation := t
 
-type consensus_kind = Attestation | Preattestation
+type consensus_kind = Attestation of {with_dal : bool} | Preattestation
 
 (** The kind is necessary because it determines the watermark of an
    operation which is necessary for signing an operation. This type
@@ -111,11 +111,29 @@ val sign :
 (** [hash t client] returns the hash of the operation  *)
 val hash : t -> Client.t -> [`OpHash of string] Lwt.t
 
-(** [inject ?(request=`Inject) ?(force=false) ?(signature=None)
+(** Returns the size (in bytes) of the operation.
+
+    @param protocol Allows using the operation encoding rather than
+    using the [forge_operations] RPC to compute the hexadecimal
+    representation of the operation.
+
+    @param signature Allows to manually set the signature of the
+    operation. When omitted, the operation is correctly signed using {!sign}. *)
+val byte_size :
+  ?protocol:Protocol.t ->
+  ?signature:Tezos_crypto.Signature.t ->
+  t ->
+  Client.t ->
+  int Lwt.t
+
+(** [inject dont_wait ?(request=`Inject) ?(force=false) ?(signature=None)
    ?(error=None) t] injects an operation into the node. The node is
    extracted from the [Client]. If a node cannot be extracted, the
    injection fails. If the injection succeeds, the hash of the
    operation is returned.
+
+   @param dont_wait If [true], the operation is injected without waiting
+   on some node event. Making [request] ignore. Default is [false].
 
    @param request If [`Inject], we do not wait the [prevalidator] to
    classify the operation. This can create some flakyness in the test
@@ -138,6 +156,7 @@ val hash : t -> Client.t -> [`OpHash of string] Lwt.t
    @param error If the injection is expecting to fail, allows to
    specify the expected error.  *)
 val inject :
+  ?dont_wait:bool ->
   ?request:[`Inject | `Notify] ->
   ?force:bool ->
   ?protocol:Protocol.t ->
@@ -155,6 +174,16 @@ val spawn_inject :
   t ->
   Client.t ->
   JSON.t Runnable.process Lwt.t
+
+(** Run [spawn_inject] then capture one group on stderr with [rex]. *)
+val inject_and_capture1_stderr :
+  rex:rex ->
+  ?force:bool ->
+  ?protocol:Protocol.t ->
+  ?signature:Tezos_crypto.Signature.t ->
+  t ->
+  Client.t ->
+  string Lwt.t
 
 (** Run [spawn_inject] then capture two groups on stderr with [rex]. *)
 val inject_and_capture2_stderr :
@@ -215,19 +244,10 @@ module Consensus : sig
   (** A representation of a consensus operation. *)
   type t
 
-  (** [dal_attestation ~attestation ~level] crafts a slot attestation
-     operation to attest at [level] slot headers published at level
-     [level - attestation_lag].  For each slot, the value of the
-     booleans indicates whether the data is deemed available. *)
-  val dal_attestation : attestation:bool array -> level:int -> t
-
-  (** [consensus ~kind ~use_legacy_name ~level ~round ~slot ~block_payload_hash]
+  (** [consensus ~kind ~level ~round ~slot ~block_payload_hash]
       crafts a consensus operation with the [kind] at [level] on the [round]
-      with the [slot] and [block_payload_hash]. If [use_legacy_name] is set, the
-      [kind] field in the crafted JSON will be "(pre)endorsement" instead of
-      "(pre)attestation". *)
+      with the [slot] and [block_payload_hash]. *)
   val consensus :
-    use_legacy_name:bool ->
     kind:consensus_kind ->
     slot:int ->
     level:int ->
@@ -235,35 +255,28 @@ module Consensus : sig
     block_payload_hash:string ->
     t
 
-  (** [preattestation ?use_legacy_name ~level ~round ~slot ~block_payload_hash]
+  (** [preattestation ~level ~round ~slot ~block_payload_hash]
       crafts a preattestation operation at [level] on the [round] with the
-      [slot] and [block_payload_hash]. If [use_legacy_name] is set, the [kind]
-      field in the crafted JSON will be "preendorsement" instead of
-      "preattestation". *)
+      [slot] and [block_payload_hash]. *)
   val preattestation :
-    use_legacy_name:bool ->
-    slot:int ->
-    level:int ->
-    round:int ->
-    block_payload_hash:string ->
-    t
+    slot:int -> level:int -> round:int -> block_payload_hash:string -> t
 
-  (** [attestation ?use_legacy_name ~level ~round ~slot ~block_payload_hash]
-      crafts an attestation operation at [level] on the [round] with the [slot]
-      and [block_payload_hash]. If [use_legacy_name] is set, the [kind] field in
-      the crafted JSON will be "endorsement" instead of "attestation". *)
+  (** [attestation ~level ~round ~slot ~block_payload_hash
+      ?dal_attestation ()] crafts an attestation operation at the given [level]
+      on the given [round] with the given [slot] and [block_payload_hash] and
+      optionally the given [dal_attestation]. *)
   val attestation :
-    use_legacy_name:bool ->
     slot:int ->
     level:int ->
     round:int ->
     block_payload_hash:string ->
+    ?dal_attestation:bool array ->
+    unit ->
     t
 
-  (** [kind_to_string kind use_legacy_name] return the name of the [kind]. If
-      [use_legacy_name] is set, the name corresponding to the [kind] will be
-      "(pre)endorsement" instead of "(pre)attestation". *)
-  val kind_to_string : consensus_kind -> bool -> string
+  (** [kind_to_string kind ] returns the name of the
+      [kind]. *)
+  val kind_to_string : consensus_kind -> string
 
   (** [operation] constructs an operation from a consensus
      operation. the [client] is used to fetch the branch and the
@@ -290,6 +303,21 @@ module Consensus : sig
     t ->
     Client.t ->
     [`OpHash of string] Lwt.t
+
+  (** Retrieves the attestation slots at [level] by calling the [GET
+      /chains/<chain>/blocks/<block>/helpers/validators] RPC. *)
+  val get_slots : level:int -> Client.t -> JSON.t Lwt.t
+
+  (** Returns the first slot of the provided delegate in the
+      [slots_json] that describes all attestation rights at some
+      level.
+
+      Causes the test to fail if the delegate is not found. *)
+  val first_slot : slots_json:JSON.t -> Account.key -> int
+
+  (** Calls the [GET /chains/<chain>/blocks/<block>/header] RPC and
+      extracts the head block's payload hash from the result. *)
+  val get_block_payload_hash : ?block:string -> Client.t -> string Lwt.t
 end
 
 module Anonymous : sig
@@ -300,43 +328,34 @@ module Anonymous : sig
     | Double_attestation_evidence
     | Double_preattestation_evidence
 
-  (** [double_consensus_evidence ~kind ~use_legacy_name op1 op2] crafts a double
+  (** [double_consensus_evidence ~kind op1 op2] crafts a double
       consensus evidence operation with the [kind], [op1] and [op2]. Both
       operations should be of the same kind and the same as the one expected by
-      [kind]. If [use_legacy_name] is set, the [kind] field in the crafted JSON
-      will be "(pre)endorsement" instead of "(pre)attestation". *)
+      [kind]. *)
   val double_consensus_evidence :
     kind:double_consensus_evidence_kind ->
-    use_legacy_name:bool ->
     operation * Tezos_crypto.Signature.t ->
     operation * Tezos_crypto.Signature.t ->
     t
 
-  (** [double_attestation_evidence ~use_legacy_name op1 op2] crafts a double
+  (** [double_attestation_evidence op1 op2] crafts a double
       attestation evidence operation with op1 and op2. Both operations should be
-      attestations. If [use_legacy_name] is set, the [kind] field in the crafted
-      JSON will be "endorsement" instead of "attestation". *)
+      attestations. *)
   val double_attestation_evidence :
-    use_legacy_name:bool ->
     operation * Tezos_crypto.Signature.t ->
     operation * Tezos_crypto.Signature.t ->
     t
 
-  (** [double_preattestation_evidence ~use_legacy_name op1 op2] crafts a double
-      attestation evidence operation with op1 and op2. Both operations should be
-      preattestations. If [use_legacy_name] is set, the [kind] field in the
-      crafted JSON will be "preendorsement" instead of "preattestation". *)
+  (** [double_preattestation_evidence op1 op2] crafts a double
+      preattestation evidence operation with op1 and op2. Both operations should be
+      preattestations. *)
   val double_preattestation_evidence :
-    use_legacy_name:bool ->
     operation * Tezos_crypto.Signature.t ->
     operation * Tezos_crypto.Signature.t ->
     t
 
-  (** [kind_to_string kind use_legacy_name] return the name of the [kind]. If
-      [use_legacy_name] is set, the name corresponding to the [kind] will be
-      "double_(pre)endorsement_evidence" instead of
-      "double_(pre)attestation_evidence". *)
-  val kind_to_string : double_consensus_evidence_kind -> bool -> string
+  (** [kind_to_string kind] return the name of the [kind]. *)
+  val kind_to_string : double_consensus_evidence_kind -> string
 
   (** [operation] constructs an operation from an anonymous operation. the
       [client] is used to fetch the branch and the [chain_id]. *)
@@ -353,6 +372,22 @@ module Anonymous : sig
     t ->
     Client.t ->
     [`OpHash of string] Lwt.t
+
+  (** Crafts two (pre)attestations that only differ in their block
+      payload hash, then a well-formed double (pre)attestation
+      evidence operation on them.
+
+      The denounced (pre)attestations have the specified
+      [misbehaviour_level] and [misbehaviour_round], the first slot of
+      [culprit], and two constant and distinct block payload
+      hashes. They are signed by [culprit]. *)
+  val make_double_consensus_evidence_with_distinct_bph :
+    kind:double_consensus_evidence_kind ->
+    misbehaviour_level:int ->
+    misbehaviour_round:int ->
+    culprit:Account.key ->
+    Client.t ->
+    t Lwt.t
 end
 
 (** Voting operations (validation pass [1]): [proposals] and [ballot].
@@ -447,10 +482,10 @@ module Manager : sig
     unit ->
     payload
 
-  (** [dal_publish_slot_header ~level ~index ~header] builds an
+  (** [dal_publish_commitment ~level ~index ~header] builds an
      operation for the data-availability layer that publishes a
      slot. *)
-  val dal_publish_slot_header :
+  val dal_publish_commitment :
     index:int ->
     commitment:Tezos_crypto_dal.Cryptobox.commitment ->
     proof:Tezos_crypto_dal.Cryptobox.commitment_proof ->
@@ -555,6 +590,7 @@ module Manager : sig
      recovered via RPCs. Mainly those are the [branch] and the
      [counter]. *)
   val inject :
+    ?dont_wait:bool ->
     ?request:[`Inject | `Notify] ->
     ?force:bool ->
     ?branch:string ->
@@ -570,6 +606,41 @@ module Manager : sig
       Tenderbake.
   *)
   val get_branch : ?chain:string -> ?offset:int -> Client.t -> string Lwt.t
+
+  (** A wrapper for {!val-operation} on a list consisting in a single
+      {!val-transfer}. See both functions for details and default
+      values of arguments. *)
+  val mk_single_transfer :
+    ?source:Account.key ->
+    ?counter:int ->
+    ?fee:int ->
+    ?gas_limit:int ->
+    ?storage_limit:int ->
+    ?dest:Account.key ->
+    ?amount:int ->
+    ?branch:string ->
+    ?signer:Account.key ->
+    Client.t ->
+    operation Lwt.t
+
+  (** A wrapper for {!inject}ing a batch consisting in a single
+      transfer. See {!transfer}, {!make_batch}, and {!inject} for the
+      descriptions and default values of the arguments. *)
+  val inject_single_transfer :
+    ?source:Account.key ->
+    ?counter:int ->
+    ?fee:int ->
+    ?gas_limit:int ->
+    ?storage_limit:int ->
+    ?dest:Account.key ->
+    ?amount:int ->
+    ?request:[< `Arrived | `Flush | `Inject | `Notify > `Inject] ->
+    ?force:bool ->
+    ?branch:string ->
+    ?signer:Account.key ->
+    ?error:rex ->
+    Client.t ->
+    [`OpHash of string] Lwt.t
 end
 
 (** Regular expressions for specific error messages.
@@ -591,8 +662,58 @@ val gas_limit_exceeded : rex
 val conflict_error_with_needed_fee : rex
 
 (** Matches the message produced by
+    [Operation_conflict {new_hash; needed_fee_in_mutez = None}]
+    from [src/lib_shell_services/validation_errors].
+
+    Captures [new_hash]. *)
+val conflict_error_no_possible_fee : rex
+
+(** Matches the message produced by
     [Rejected_by_full_mempool {hash; needed_fee_in_mutez = Some fee}]
     from [src/lib_shell_services/validation_errors].
 
     Captures [hash] and [fee]. *)
 val rejected_by_full_mempool_with_needed_fee : rex
+
+(** Matches the message produced by
+    [Rejected_by_full_mempool {hash; needed_fee_in_mutez = None}]
+    from [src/lib_shell_services/validation_errors].
+
+    Captures [hash]. *)
+val rejected_by_full_mempool_no_possible_fee : rex
+
+(** Matches the message produced by
+    [Dal_data_availibility_attester_not_in_committee {attester; level; slot}]
+    from [src/proto_alpha/lib_protocol/dal_errors_repr].
+
+    Captures [attester], [level], and [slot]. *)
+val dal_data_availibility_attester_not_in_committee : rex
+
+(** Calls {!inject_and_capture2_stderr} and checks that the second
+    captured group is [expected_fee].
+
+    Intended to be used with {!conflict_error_with_needed_fee} or
+    {!rejected_by_full_mempool_with_needed_fee} as [rex]. *)
+val inject_error_check_recommended_fee :
+  loc:string -> rex:rex -> expected_fee:int -> t -> Client.t -> unit Lwt.t
+
+(** Matches the message produced by
+    [Already_denounced {kind; delegate; level}]
+    from [src/proto_xxx/lib_protocol/validate_errors].
+
+    Captures [delegate], [level], [kind]. *)
+val already_denounced : rex
+
+(** Matches the message produced by
+    [Outdated_denunciation {kind; level; last_cycle}]
+    from [src/proto_xxx/lib_protocol/validate_errors].
+
+    Captures [kind], [last_cycle], [level]. *)
+val outdated_denunciation : rex
+
+(** Matches the message
+    [Operation %a is branched on either:]
+    from [src/lib_shell/prevalidator.ml].
+
+    Captures [hash]. *)
+val injection_error_unknown_branch : rex

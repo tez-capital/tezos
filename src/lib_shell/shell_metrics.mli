@@ -60,18 +60,44 @@ module Distributed_db : sig
   val init : kind:string -> entry_type:string -> t
 
   val update : t -> length:int -> unit
+
+  module Messages : sig
+    val on_received_msg :
+      (Distributed_db_message.t, 'peer_meta, 'conn_meta) P2p.connection ->
+      Distributed_db_message.t ->
+      unit
+
+    val on_sent_msg :
+      (Distributed_db_message.t, 'peer_meta, 'conn_meta) P2p.connection ->
+      Distributed_db_message.t ->
+      unit
+
+    val on_broadcasted_msg :
+      (Distributed_db_message.t, 'peer_meta, 'conn_meta) P2p.connection
+      P2p_peer.Table.t ->
+      ?except:
+        ((Distributed_db_message.t, 'peer_meta, 'conn_meta) P2p.connection ->
+        bool) ->
+      ?alt:
+        ((Distributed_db_message.t, 'peer_meta, 'conn_meta) P2p.connection ->
+        bool)
+        * Distributed_db_message.t ->
+      Distributed_db_message.t ->
+      unit
+  end
 end
 
 module Block_validator : sig
   type t = {
     already_commited_blocks_count : Prometheus.Counter.t;
-    outdated_blocks_count : Prometheus.Counter.t;
+    already_known_invalid_blocks_count : Prometheus.Counter.t;
     validated_blocks_count : Prometheus.Counter.t;
     validation_errors_count : Prometheus.Counter.t;
+    commit_block_failed_count : Prometheus.Counter.t;
     preapplied_blocks_count : Prometheus.Counter.t;
     preapplication_errors_count : Prometheus.Counter.t;
-    validation_errors_after_precheck_count : Prometheus.Counter.t;
-    precheck_failed_count : Prometheus.Counter.t;
+    application_errors_after_validation_count : Prometheus.Counter.t;
+    validation_failed_count : Prometheus.Counter.t;
     worker_timestamps : Worker.timestamps;
     worker_counters : Worker.counters;
   }
@@ -112,7 +138,7 @@ end
 module Version : sig
   val init :
     version:string ->
-    commit_info:Node_version.commit_info ->
+    commit_info:Octez_node_version.commit_info ->
     ('a, 'b, 'c) P2p.t ->
     unit
 end

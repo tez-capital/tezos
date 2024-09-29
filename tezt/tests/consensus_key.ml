@@ -32,11 +32,18 @@
                  on the baker.
 *)
 
+let team = Tag.layer1
+
 let hooks = Tezos_regression.hooks
 
 let blocks_per_cycle = 4
 
-let preserved_cycles = 1
+let consensus_rights_delay = 1
+
+let manual_staking (_ : Protocol.t) =
+  (* Currently all protocols use autostaking by default; this will
+     probably change if and when AI gets activated on mainnet. *)
+  false
 
 module Helpers = struct
   let level_type : RPC.level Check.typ =
@@ -47,21 +54,13 @@ module Helpers = struct
       Check.(tuple5 int int int int bool)
 
   let get_current_level client =
-    RPC.Client.call client @@ RPC.get_chain_block_helper_current_level ()
+    Client.RPC.call client @@ RPC.get_chain_block_helper_current_level ()
 
   let check_current_level client expected_level =
     let* level = get_current_level client in
     Check.((level = expected_level) level_type)
       ~error_msg:"expected current_period = %R, got %L" ;
     unit
-
-  let bake_and_wait_block node client =
-    let level = Node.get_level node in
-    let* () =
-      Client.bake_for ~context_path:(Node.data_dir node // "context") client
-    in
-    let* _i = Node.wait_for_level node (level + 1) in
-    Lwt.return_unit
 
   let bake_n_cycles ?keys n client =
     let rec loop n =
@@ -93,16 +92,18 @@ let test_update_consensus_key =
   Protocol.register_test
     ~__FILE__
     ~title:"update consensus key"
-    ~tags:["consensus_key"]
+    ~tags:[team; "consensus_key"]
   @@ fun protocol ->
-  let manual_staking = Protocol.(protocol > Nairobi) in
+  let manual_staking = manual_staking protocol in
   let parameters =
     (* we update paramaters for faster testing: no need to wait
        5 cycles for the consensus key to activate. *)
     [
       (["blocks_per_cycle"], `Int blocks_per_cycle);
       (["nonce_revelation_threshold"], `Int 2);
-      (["preserved_cycles"], `Int preserved_cycles);
+      (["consensus_rights_delay"], `Int consensus_rights_delay);
+      (["cache_sampler_state_cycles"], `Int (consensus_rights_delay + 3));
+      (["cache_stake_distribution_cycles"], `Int (consensus_rights_delay + 3));
     ]
   in
   let* parameter_file =
@@ -218,7 +219,10 @@ let test_update_consensus_key =
 
   Log.info "Bake until the end of the next cycle with bootstrap1..." ;
   let* () =
-    bake_n_cycles preserved_cycles ~keys:[Constant.bootstrap1.alias] client
+    bake_n_cycles
+      consensus_rights_delay
+      ~keys:[Constant.bootstrap1.alias]
+      client
   in
 
   Log.info "Bootstrap1 should not be able to bake anymore..." ;
@@ -241,7 +245,10 @@ let test_update_consensus_key =
 
   Log.info "Bake until the end of the next cycle, again." ;
   let* () =
-    bake_n_cycles preserved_cycles ~keys:[Constant.bootstrap2.alias] client
+    bake_n_cycles
+      consensus_rights_delay
+      ~keys:[Constant.bootstrap2.alias]
+      client
   in
 
   Log.info "`key_c` is now able to bake as well." ;
@@ -259,7 +266,9 @@ let test_update_consensus_key =
   in
 
   Log.info "Bake until the end of the next cycle..." ;
-  let* () = bake_n_cycles (preserved_cycles + 1) ~keys:[key_a.alias] client in
+  let* () =
+    bake_n_cycles (consensus_rights_delay + 1) ~keys:[key_a.alias] client
+  in
 
   Log.info "We are not able to bake with `key_a` nor `key_c` anymore..." ;
   let* () = Client.bake_for ~expect_failure:true ~keys:[key_a.alias] client in
@@ -288,7 +297,7 @@ let test_update_consensus_key =
   Log.info "Bake until the end of the next cycle..." ;
   let* () =
     bake_n_cycles
-      (preserved_cycles + 1)
+      (consensus_rights_delay + 1)
       ~keys:[Constant.bootstrap1.alias]
       client
   in
@@ -364,15 +373,16 @@ let test_update_consensus_key =
   in
   Log.info
     "Check that after a drain, the mempool rejects a manager operation from \
-     the same manager..." ;
-  let* () =
-    Client.transfer
-      ~expect_failure:true
-      ~burn_cap:Tez.one
-      ~amount:(Tez.of_int 1)
-      ~giver:Constant.bootstrap4.alias
-      ~receiver:Constant.bootstrap5.alias
-      client
+     the same manager (without a recommended fee to make the injection \
+     succeed, since no possible fees would allow it)" ;
+  let* (`OpHash _) =
+    let* op =
+      Operation.Manager.mk_single_transfer
+        ~source:Constant.bootstrap4
+        ~dest:Constant.bootstrap5
+        client
+    in
+    Operation.inject ~error:Operation.conflict_error_no_possible_fee op client
   in
   Log.info "Bake and check the effects of the valid drain..." ;
   let* old_balance = Client.get_balance_for ~account:destination.alias client in
@@ -407,7 +417,7 @@ let test_update_consensus_key =
   in
   let* () =
     let* json =
-      RPC.get_chain_mempool_pending_operations () |> RPC.Client.call client
+      RPC.get_chain_mempool_pending_operations () |> Client.RPC.call client
     in
     let replaced_op = JSON.(json |-> "branch_delayed" |> geti 0) in
     let replaced_op_kind =
@@ -463,17 +473,17 @@ let update_consensus_key ?(expect_failure = false)
       client
   in
   let* _ =
-    RPC.Client.call ~hooks client
+    Client.RPC.call ~hooks client
     @@ RPC.get_chain_block_context_delegate src.public_key_hash
   in
   let* () = Client.bake_for_and_wait ~keys:[baker] client in
   let* _ =
-    RPC.Client.call ~hooks client
+    Client.RPC.call ~hooks client
     @@ RPC.get_chain_block_context_delegate src.public_key_hash
   in
-  let* () = bake_n_cycles (preserved_cycles + 1) client in
+  let* () = bake_n_cycles (consensus_rights_delay + 1) client in
   let* _ =
-    RPC.Client.call ~hooks client
+    Client.RPC.call ~hooks client
     @@ RPC.get_chain_block_context_delegate src.public_key_hash
   in
   unit
@@ -481,7 +491,7 @@ let update_consensus_key ?(expect_failure = false)
 let test_consensus_key_update ?(expect_failure = false)
     ?(baker = Constant.bootstrap1.alias) ~(src : Account.key)
     ~(consensus_key : Account.key) client =
-  (* Update the consensus key and go past [preserved_cycles + 1] *)
+  (* Update the consensus key and go past [consensus_rights_delay + 1] *)
   let* () =
     update_consensus_key ~expect_failure ~baker ~src ~consensus_key client
   in
@@ -516,17 +526,17 @@ let consensus_key_typ : consensus_key Check.typ =
       (tuple2 string (list (tuple2 int string))))
 
 let get_consensus_key client (delegate : Account.key) : consensus_key Lwt.t =
-  let* delegate_json =
-    RPC.Client.call client
-    @@ RPC.get_chain_block_context_delegate delegate.public_key_hash
+  let* json =
+    Client.RPC.call client
+    @@ RPC.get_chain_block_context_delegate_consensus_key
+         delegate.public_key_hash
   in
   return
     JSON.
       {
-        active_consensus_key =
-          delegate_json |-> "active_consensus_key" |> as_string;
+        active_consensus_key = json |-> "active" |-> "pkh" |> as_string;
         pending_consensus_keys =
-          delegate_json |-> "pending_consensus_keys" |> as_list
+          json |-> "pendings" |> as_list
           |> List.map (fun pending_key ->
                  ( pending_key |-> "cycle" |> as_int,
                    pending_key |-> "pkh" |> as_string ));
@@ -554,9 +564,9 @@ let check_consensus_key ~__LOC__ delegate ?(expected_active = delegate)
 
 let register_key_as_delegate ?(expect_failure = false)
     ?(baker = Constant.bootstrap1.alias) ~(owner : Account.key)
-    ~(consensus_key : Account.key) client =
+    ~(consensus_key : Account.key) ~manual_staking client =
   let* _ =
-    RPC.Client.call ~hooks client
+    Client.RPC.call ~hooks client
     @@ RPC.get_chain_block_context_contract ~id:consensus_key.public_key_hash ()
   in
   let* () =
@@ -569,19 +579,39 @@ let register_key_as_delegate ?(expect_failure = false)
   in
   let* () = Client.bake_for_and_wait ~keys:[baker] client in
   let* _ =
-    RPC.Client.call ~hooks client
+    Client.RPC.call ~hooks client
     @@ RPC.get_chain_block_context_delegate owner.public_key_hash
   in
   let* _ =
-    RPC.Client.call ~hooks client
+    Client.RPC.call ~hooks client
     @@ RPC.get_chain_block_context_contract ~id:consensus_key.public_key_hash ()
   in
+
+  (* To get rights at the same time in manual staking and auto staking
+     cases, we call the stake manual pseudo-operation at cycle switch,
+     which is (as close as possible to) the level at which autostaking
+     would do it. *)
+  let* () = bake_n_cycles 1 client in
+  let* () =
+    if manual_staking then
+      Client.transfer
+        ~entrypoint:"stake"
+        ~burn_cap:Tez.one
+        ~amount:(Tez.of_int 500_000)
+        ~giver:owner.alias
+        ~receiver:owner.alias
+        client
+    else unit
+  in
+
   (* Wait for consensus key to be active *)
-  let* () = bake_n_cycles (preserved_cycles + 1) client in
+  let* () = bake_n_cycles consensus_rights_delay client in
   let* _ =
-    RPC.Client.call ~hooks client
+    Client.RPC.call ~hooks client
     @@ RPC.get_chain_block_context_delegate owner.public_key_hash
   in
+  (* Wait for consensus key to have rights *)
+  let* () = bake_n_cycles 1 client in
   unit
 
 let transfer ?hooks ?(expect_failure = false)
@@ -602,7 +632,7 @@ let register ?(regression = true) title test =
   Protocol.(if regression then register_regression_test else register_test)
     ~__FILE__
     ~title
-    ~tags:["consensus_key"]
+    ~tags:[team; "consensus_key"]
   @@ fun protocol ->
   let parameters =
     (* we update paramaters for faster testing: no need to wait
@@ -610,7 +640,9 @@ let register ?(regression = true) title test =
     [
       (["blocks_per_cycle"], `Int blocks_per_cycle);
       (["nonce_revelation_threshold"], `Int 2);
-      (["preserved_cycles"], `Int preserved_cycles);
+      (["consensus_rights_delay"], `Int consensus_rights_delay);
+      (["cache_sampler_state_cycles"], `Int (consensus_rights_delay + 3));
+      (["cache_stake_distribution_cycles"], `Int (consensus_rights_delay + 3));
     ]
   in
   let* parameter_file =
@@ -623,7 +655,7 @@ let register ?(regression = true) title test =
   let baker_1 = Constant.bootstrap2 in
   let* account_0 = Client.gen_and_show_keys ~alias:"dummy_account_0" client in
   let* account_1 = Client.gen_and_show_keys ~alias:"dummy_account_1" client in
-  let manual_staking = Protocol.(protocol > Nairobi) in
+  let manual_staking = manual_staking protocol in
   test ~manual_staking client baker_0 baker_1 account_0 account_1
 
 let test_register_delegate_with_consensus_key ~manual_staking
@@ -643,6 +675,7 @@ let test_register_delegate_with_consensus_key ~manual_staking
       ~owner:new_delegate
       ~consensus_key:new_consensus_key
       ~baker
+      ~manual_staking
       client
   in
   let* () = Client.bake_for_and_wait client in
@@ -663,7 +696,7 @@ let test_register_delegate_with_consensus_key ~manual_staking
       in
 
       Log.info "Bake until the end of the next cycle with `baker`..." ;
-      bake_n_cycles (preserved_cycles + 1) ~keys:[baker] client)
+      bake_n_cycles (consensus_rights_delay + 1) ~keys:[baker] client)
     else return ()
   in
 
@@ -677,7 +710,8 @@ let test_register_delegate_with_consensus_key ~manual_staking
    does not store a regression trace. Instead, it [Check]s that the new
    consensus key is as expected. *)
 let register_key_as_delegate_no_reg ?(baker = Constant.bootstrap1.alias)
-    ~(owner : Account.key) ~(consensus_key : Account.key) client =
+    ~(owner : Account.key) ~(consensus_key : Account.key) ~manual_staking client
+    =
   let* () =
     Client.register_key ~consensus:consensus_key.alias owner.alias client
   in
@@ -688,12 +722,35 @@ let register_key_as_delegate_no_reg ?(baker = Constant.bootstrap1.alias)
       ~__LOC__
       owner
       ~expected_pending:
-        [(level_information.cycle + preserved_cycles + 1, consensus_key)]
+        [(level_information.cycle + consensus_rights_delay + 1, consensus_key)]
       client
   in
+
+  (* To get rights at the same time in manual staking and auto staking
+     cases, we call the stake manual pseudo-operation at cycle switch,
+     which is (as close as possible to) the level at which autostaking
+     would do it. *)
+  let* () = bake_n_cycles 1 client in
+  let* () =
+    if manual_staking then
+      Client.transfer
+        ~entrypoint:"stake"
+        ~burn_cap:Tez.one
+        ~amount:(Tez.of_int 500_000)
+        ~giver:owner.alias
+        ~receiver:owner.alias
+        client
+    else unit
+  in
+
   (* Wait for consensus key to be active *)
-  let* () = bake_n_cycles (preserved_cycles + 1) client in
-  check_consensus_key ~__LOC__ owner ~expected_active:consensus_key client
+  let* () = bake_n_cycles consensus_rights_delay client in
+  let* () =
+    check_consensus_key ~__LOC__ owner ~expected_active:consensus_key client
+  in
+  (* Wait for consensus key to have rights *)
+  let* () = bake_n_cycles 1 client in
+  unit
 
 (* Like [update_consensus_key] this function updates the consensus key
    of [src] to [consensus_key] and bakes until the new [consensus_key]
@@ -714,10 +771,10 @@ let update_consensus_key_no_reg ?(baker = Constant.bootstrap1.alias)
       src
       ~expected_active
       ~expected_pending:
-        [(level_information.cycle + preserved_cycles + 1, consensus_key)]
+        [(level_information.cycle + consensus_rights_delay + 1, consensus_key)]
       client
   in
-  let* () = bake_n_cycles (preserved_cycles + 1) client in
+  let* () = bake_n_cycles (consensus_rights_delay + 1) client in
   check_consensus_key
     ~__LOC__
     consensus_key
@@ -743,29 +800,10 @@ let test_revert_to_unique_consensus_key ~manual_staking
       ~owner:new_delegate
       ~consensus_key:new_consensus_key
       ~baker
+      ~manual_staking
       client
   in
   let* () = Client.bake_for_and_wait client in
-
-  let* () =
-    if manual_staking then (
-      Log.info
-        "Add stake for `new_delegate` so that `new_consensus_key` can bake \
-         later on." ;
-      let* () =
-        Client.transfer
-          ~entrypoint:"stake"
-          ~burn_cap:Tez.one
-          ~amount:(Tez.of_int 500_000)
-          ~giver:new_delegate.alias
-          ~receiver:new_delegate.alias
-          client
-      in
-
-      Log.info "Bake until the end of the next cycle with `baker`..." ;
-      bake_n_cycles (preserved_cycles + 1) ~keys:[baker] client)
-    else return ()
-  in
 
   let* () =
     Log.info "Check that the new consensus key can bake" ;
@@ -792,23 +830,23 @@ let test_drain_delegate_1 ?(baker = Constant.bootstrap1.alias)
     update_consensus_key ~baker ~src:delegate ~consensus_key:consensus client
   in
   let* _ =
-    RPC.Client.call ~hooks client
+    Client.RPC.call ~hooks client
     @@ RPC.get_chain_block_context_delegate delegate.public_key_hash
   in
   let* _ =
-    RPC.Client.call ~hooks client
+    Client.RPC.call ~hooks client
     @@ RPC.get_chain_block_context_contract_balance
          ~id:delegate.public_key_hash
          ()
   in
   let* _ =
-    RPC.Client.call ~hooks client
+    Client.RPC.call ~hooks client
     @@ RPC.get_chain_block_context_contract_balance
          ~id:consensus.public_key_hash
          ()
   in
   let* _ =
-    RPC.Client.call ~hooks client
+    Client.RPC.call ~hooks client
     @@ RPC.get_chain_block_context_contract_balance
          ~id:destination.public_key_hash
          ()
@@ -824,23 +862,23 @@ let test_drain_delegate_1 ?(baker = Constant.bootstrap1.alias)
       client
   in
   let* _ =
-    RPC.Client.call ~hooks client
+    Client.RPC.call ~hooks client
     @@ RPC.get_chain_block_context_delegate delegate.public_key_hash
   in
   let* _ =
-    RPC.Client.call ~hooks client
+    Client.RPC.call ~hooks client
     @@ RPC.get_chain_block_context_contract_balance
          ~id:delegate.public_key_hash
          ()
   in
   let* _ =
-    RPC.Client.call ~hooks client
+    Client.RPC.call ~hooks client
     @@ RPC.get_chain_block_context_contract_balance
          ~id:consensus.public_key_hash
          ()
   in
   let* _ =
-    RPC.Client.call ~hooks client
+    Client.RPC.call ~hooks client
     @@ RPC.get_chain_block_context_contract_balance
          ~id:destination.public_key_hash
          ()

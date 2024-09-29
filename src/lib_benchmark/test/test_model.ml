@@ -42,6 +42,8 @@ let test_synthesize () =
 
       let name = Namespace.of_string "x"
 
+      let takes_saturation_reprs = false
+
       module Def (X : Costlang.S) = struct
         open X
 
@@ -63,6 +65,8 @@ let test_synthesize () =
       type arg_type = int * (int * unit)
 
       let name = Namespace.of_string "y"
+
+      let takes_saturation_reprs = false
 
       module Def (X : Costlang.S) = struct
         open X
@@ -92,10 +96,9 @@ let test_synthesize () =
 
   let module Pp = Synthesized.Def (Costlang.Pp) in
   let expected =
-    "fun size1 -> fun size2 -> "
-    ^ "let x = ((fun size1 -> fun size2 -> (size1 * size2)) size1) size2 in "
-    ^ "let y = ((fun size1 -> fun size2 -> (max size1 size2)) size1) size2 in "
-    ^ "(x + y)"
+    "fun size1 -> fun size2 -> let x = ((((fun size1 -> fun size2 -> (size1 * \
+     size2)) size1)) size2) in let y = ((((fun size1 -> fun size2 -> (max \
+     size1 size2)) size1)) size2) in (x + y)"
   in
   Pp.model = expected
 

@@ -24,7 +24,9 @@
 (*****************************************************************************)
 
 (** Protocols we may want to test with. *)
-type t = Nairobi | Oxford | Alpha
+type t = Quebeca | ParisC | Alpha
+
+val encoding : t Data_encoding.t
 
 (** Protocol parameters.
 
@@ -81,14 +83,10 @@ val protocol_zero_hash : string
 val parameter_file : ?constants:constants -> t -> string
 
 (** Get the path of the accuser of a protocol, such as ["./octez-accuser-alpha"]. *)
-val accuser : t -> string
+val accuser : t -> Uses.t
 
 (** Get the path of the baker of a protocol, such as ["./octez-baker-alpha"]. *)
-val baker : t -> string
-
-(** Get the path of the smart rollup client of a protocol, such as
-    ["./octez-smart-rollup-client-alpha"]. *)
-val sc_rollup_client : t -> string
+val baker : t -> Uses.t
 
 (** Get the part of the daemon name that is specific to a protocol (e.g. ["PtEdo2Zk"]).
 
@@ -114,6 +112,7 @@ type bootstrap_smart_rollup = {
   pvm_kind : string;
   boot_sector : string;
   parameters_ty : Ezjsonm.value;
+  whitelist : string list option;
 }
 
 type bootstrap_contract = {
@@ -122,6 +121,9 @@ type bootstrap_contract = {
   script : Ezjsonm.value;
   hash : string option;
 }
+
+(** The value is the same as the one in src/proto_alpha/lib_parameters/default_parameters.ml. *)
+val default_bootstrap_balance : int
 
 (** Write a protocol parameter file.
 
@@ -142,23 +144,18 @@ type bootstrap_contract = {
       from the start. Default [balance] is 4000000 tez.
     - [bootstrap_smart_rollups] when given.
     - [bootstrap_contracts] when given.
+    - [output_file] the path where to write the protocol parameter file,
+      a [Temp.file] temporary file "parameters.json" by default.
 *)
 val write_parameter_file :
   ?bootstrap_accounts:(Account.key * int option) list ->
   ?additional_bootstrap_accounts:(Account.key * int option * bool) list ->
   ?bootstrap_smart_rollups:bootstrap_smart_rollup list ->
   ?bootstrap_contracts:bootstrap_contract list ->
+  ?output_file:string ->
   base:(string, t * constants option) Either.t ->
   parameter_overrides ->
   string Lwt.t
-
-(** Get the successor of a protocol.
-
-    WARNING: use of this function is discouraged, because:
-    - a protocol may have several possible successors;
-    - it prevents the type-checker from telling you that your test can no longer
-      run when removing a protocol. *)
-val next_protocol : t -> t option
 
 (** Get the predecessor of a protocol.
 
@@ -187,6 +184,11 @@ val all : t list
     - [Until_protocol n]: the test can run on protocols [p] such that [number p <= n].
     - [Between_protocols (a, b)]: the test can run on protocols [p]
       such that [a <= number p <= b].
+    - [Has_predecessor]: the test can run on protocols which have a predecessor
+      according to [previous_protocol].
+    - [And l]: all predicates of [l] hold.
+    - [Or l]: at least one predicate of [l] hold.
+    - [Not p]: predicate [p] does not hold.
 
     Always write the number itself, do not compute it.
     For instance, writing [Until_protocol (number Alpha)] would make your test
@@ -200,6 +202,10 @@ type supported_protocols =
   | From_protocol of int
   | Until_protocol of int
   | Between_protocols of int * int
+  | Has_predecessor
+  | And of supported_protocols list
+  | Or of supported_protocols list
+  | Not of supported_protocols
 
 (** Register a test that uses the protocol.
 
@@ -221,7 +227,12 @@ val register_test :
   __FILE__:string ->
   title:string ->
   tags:string list ->
+  ?uses:(t -> Uses.t list) ->
+  ?uses_node:bool ->
+  ?uses_client:bool ->
+  ?uses_admin_client:bool ->
   ?supports:supported_protocols ->
+  ?additional_tags:(t -> string list) ->
   (t -> unit Lwt.t) ->
   t list ->
   unit
@@ -234,10 +245,15 @@ val register_long_test :
   __FILE__:string ->
   title:string ->
   tags:string list ->
+  ?uses:(t -> Uses.t list) ->
+  ?uses_node:bool ->
+  ?uses_client:bool ->
+  ?uses_admin_client:bool ->
   ?supports:supported_protocols ->
-  ?team:string ->
+  team:string ->
   executors:Long_test.executor list ->
   timeout:Long_test.timeout ->
+  ?additional_tags:(t -> string list) ->
   (t -> unit Lwt.t) ->
   t list ->
   unit
@@ -251,7 +267,29 @@ val register_regression_test :
   __FILE__:string ->
   title:string ->
   tags:string list ->
+  ?uses:(t -> Uses.t list) ->
+  ?uses_node:bool ->
+  ?uses_client:bool ->
+  ?uses_admin_client:bool ->
   ?supports:supported_protocols ->
+  ?additional_tags:(t -> string list) ->
   (t -> unit Lwt.t) ->
   t list ->
   unit
+
+(** Convert a function that expects two successive protocols
+    into a function that expects only one.
+
+    The resulting function causes the test to fail if called on a protocol
+    which does not have a predecessor. Use [~supports:Has_predecessor]
+    to prevent this.
+
+    Typical usage:
+    {[
+      Protocol.register_test ...
+        ~supports:Has_predecessor
+      @@ Protocol.with_predecessor
+      @@ fun ~previous_protocol ~protocol ->
+      ...
+    ]}*)
+val with_predecessor : (previous_protocol:t -> protocol:t -> 'a) -> t -> 'a

@@ -37,30 +37,46 @@ let create () =
   let open Lwt_result_syntax in
   let*? accounts = Account.generate_accounts 2 in
   let a1, a2 = match accounts with [a1; a2] -> (a1, a2) | _ -> assert false in
-  let* ctxt = Block.alpha_context (Account.make_bootstrap_accounts accounts) in
+  let* ctxt =
+    Block.alpha_context
+    (* TODO: https://gitlab.com/tezos/tezos/-/issues/7072
+       Adapt the tests to work with the default value of
+       [consensus_rights_delay]. *)
+      ~consensus_rights_delay:3
+      (Account.make_bootstrap_accounts accounts)
+  in
   return (Alpha_context.Internal_for_tests.to_raw ctxt, a1, a2)
 
 module Consensus_key = struct
   let active_key ctxt pkh =
-    Delegate_consensus_key.active_key ctxt pkh >|= Environment.wrap_tzresult
+    let open Lwt_result_wrap_syntax in
+    let*@ result = Delegate_consensus_key.active_key ctxt pkh in
+    return result
 
   let active_pubkey ctxt pkh =
-    Delegate_consensus_key.active_pubkey ctxt pkh >|= Environment.wrap_tzresult
+    let open Lwt_result_wrap_syntax in
+    let*@ result = Delegate_consensus_key.active_pubkey ctxt pkh in
+    return result
 
   let active_pubkey_for_cycle ctxt pkh cycle =
-    Delegate_consensus_key.active_pubkey_for_cycle
-      ctxt
-      pkh
-      (Cycle_repr.of_int32_exn (Int32.of_int cycle))
-    >|= Environment.wrap_tzresult
+    let open Lwt_result_wrap_syntax in
+    let*@ result =
+      Delegate_consensus_key.active_pubkey_for_cycle
+        ctxt
+        pkh
+        (Cycle_repr.of_int32_exn (Int32.of_int cycle))
+    in
+    return result
 
   let pending_updates ctxt pkh =
-    Delegate_consensus_key.pending_updates ctxt pkh
-    >|= Environment.wrap_tzresult
+    let open Lwt_result_wrap_syntax in
+    let*@ result = Delegate_consensus_key.pending_updates ctxt pkh in
+    return result
 
   let register_update ctxt pkh pk =
-    Delegate_consensus_key.register_update ctxt pkh pk
-    >|= Environment.wrap_tzresult
+    let open Lwt_result_wrap_syntax in
+    let*@ result = Delegate_consensus_key.register_update ctxt pkh pk in
+    return result
 
   let activate ctxt ~new_cycle = Delegate_consensus_key.activate ctxt ~new_cycle
 end
@@ -98,11 +114,12 @@ module Assert = struct
 end
 
 let rec add_cycles ctxt n =
+  let open Lwt_result_syntax in
   if n <= 0 then return ctxt
   else
     let current_level = Raw_context.current_level ctxt in
     let new_cycle = Cycle_repr.succ current_level.cycle in
-    let* ctxt = Consensus_key.activate ctxt ~new_cycle in
+    let*! ctxt = Consensus_key.activate ctxt ~new_cycle in
     let ctxt = Raw_context.Internal_for_tests.add_cycles ctxt 1 in
     add_cycles ctxt (n - 1)
 
@@ -111,8 +128,10 @@ let test_consensus_key_storage () =
   let* ctxt, del1, del2 = create () in
   let a1 = Account.new_account () in
   let a2 = Account.new_account () in
-  let preserved_cycles = Constants_storage.preserved_cycles ctxt in
-  let* () = Assert.equal_int ~loc:__LOC__ preserved_cycles 3 in
+  let consensus_key_activation_delay =
+    Constants_storage.consensus_key_activation_delay ctxt
+  in
+  let* () = Assert.equal_int ~loc:__LOC__ consensus_key_activation_delay 3 in
   let* () =
     let* active_pkh = Consensus_key.active_key ctxt del1.pkh in
     Assert.equal_pkh ~__LOC__ active_pkh.consensus_pkh del1.pkh
@@ -231,7 +250,7 @@ let test_consensus_key_storage () =
     let* active_pkh = Consensus_key.active_key ctxt del1.pkh in
     Assert.equal_pkh ~__LOC__ active_pkh.consensus_pkh a1.pkh
   in
-  return ()
+  return_unit
 
 let tests =
   [Tztest.tztest "consensus_key_storage" `Quick test_consensus_key_storage]

@@ -25,7 +25,13 @@
 
 (** Extention of the open type [error] with the errors that could be raised by
     the DAL node. *)
-type error += Decoding_failed of Types.kind | Profile_incompatibility
+type error +=
+  | Decoding_failed of Types.Store.kind
+  | Profile_incompatibility
+  | Invalid_slot_index of {slot_index : int; number_of_slots : int}
+  | Cryptobox_initialisation_failed of string
+  | Not_enough_history of {stored_levels : int; minimal_levels : int}
+  | Not_enough_l1_history of {stored_cycles : int; minimal_cycles : int}
 
 (* TODO: https://gitlab.com/tezos/tezos/-/issues/4622
 
@@ -42,8 +48,8 @@ let () =
       Format.fprintf
         ppf
         "Error while decoding a %s value"
-        (Types.kind_to_string data_kind))
-    Data_encoding.(obj1 (req "data_kind" Types.kind_encoding))
+        (Types.Store.to_string data_kind))
+    Data_encoding.(obj1 (req "data_kind" Types.Store.encoding))
     (function Decoding_failed data_kind -> Some data_kind | _ -> None)
     (fun data_kind -> Decoding_failed data_kind) ;
   register_error_kind
@@ -56,19 +62,95 @@ let () =
        profiles."
     Data_encoding.empty
     (function Profile_incompatibility -> Some () | _ -> None)
-    (fun () -> Profile_incompatibility)
+    (fun () -> Profile_incompatibility) ;
+  register_error_kind
+    `Permanent
+    ~id:"dal.node.invalid_slot_index"
+    ~title:"Invalid slot index"
+    ~description:"Invalid slot index provided for the producer profile"
+    ~pp:(fun ppf (slot_index, number_of_slots) ->
+      Format.fprintf
+        ppf
+        "The slot index (%d) should be smaller than the number of slots (%d)"
+        slot_index
+        number_of_slots)
+    Data_encoding.(obj2 (req "slot_index" int16) (req "number_of_slots" int16))
+    (function
+      | Invalid_slot_index {slot_index; number_of_slots} ->
+          Some (slot_index, number_of_slots)
+      | _ -> None)
+    (fun (slot_index, number_of_slots) ->
+      Invalid_slot_index {slot_index; number_of_slots}) ;
+  register_error_kind
+    `Permanent
+    ~id:"dal.node.cryptobox.initialisation_failed"
+    ~title:"Cryptobox initialisation failed"
+    ~description:"Unable to initialise the cryptobox parameters"
+    ~pp:(fun ppf msg ->
+      Format.fprintf
+        ppf
+        "Unable to initialise the cryptobox parameters. Reason: %s"
+        msg)
+    Data_encoding.(obj1 (req "error" string))
+    (function Cryptobox_initialisation_failed str -> Some str | _ -> None)
+    (fun str -> Cryptobox_initialisation_failed str) ;
+  register_error_kind
+    `Permanent
+    ~id:"dal.node.not_enough_history"
+    ~title:"Not enough history"
+    ~description:"The node does not store sufficiently many levels"
+    ~pp:(fun ppf (stored_levels, minimal_levels) ->
+      Format.fprintf
+        ppf
+        "The node's history mode specifies that data for %d levels should be \
+         stored, but the minimum required is %d levels."
+        stored_levels
+        minimal_levels)
+    Data_encoding.(
+      obj2 (req "stored_levels" int31) (req "minimal_levels" int31))
+    (function
+      | Not_enough_history {stored_levels; minimal_levels} ->
+          Some (stored_levels, minimal_levels)
+      | _ -> None)
+    (fun (stored_levels, minimal_levels) ->
+      Not_enough_history {stored_levels; minimal_levels}) ;
+  register_error_kind
+    `Permanent
+    ~id:"dal.node.not_enough_l1_history"
+    ~title:"Not enough L1 history"
+    ~description:"The L1 node does not store sufficiently many cycles"
+    ~pp:(fun ppf (stored_cycles, minimal_cycles) ->
+      Format.fprintf
+        ppf
+        "The L1 node's history mode stores block data for %d cycles, but the \
+         minimum required by the DAL node is %d cycles. Increase the number of \
+         cycles the L1 node stores using the CLI argument `--history-mode \
+         rolling:%d`."
+        stored_cycles
+        minimal_cycles
+        minimal_cycles)
+    Data_encoding.(
+      obj2 (req "stored_cycles" int31) (req "minimal_cycles" int31))
+    (function
+      | Not_enough_l1_history {stored_cycles; minimal_cycles} ->
+          Some (stored_cycles, minimal_cycles)
+      | _ -> None)
+    (fun (stored_cycles, minimal_cycles) ->
+      Not_enough_l1_history {stored_cycles; minimal_cycles})
 
 (** This part defines and handles more elaborate errors for the DAL node. *)
 
 (* Specialized errors defined as polymorphic variants. *)
 
-type decoding = [`Decoding_failed of Types.kind * tztrace]
-
 type not_found = [`Not_found]
 
 type other = [`Other of tztrace]
 
+let not_found = `Not_found
+
 (* Helpers to wrap values and tzresult errors in [`Other]. *)
+
+let decoding_failed kind trace = `Other (Decoding_failed kind :: trace)
 
 let other v = `Other v
 
@@ -85,28 +167,15 @@ let other_lwt_result v =
 
 let error_to_tzresult e =
   let open Lwt_result_syntax in
-  match e with
-  | `Decoding_failed (kind, tztrace) ->
-      let*! () = Event.(emit decoding_data_failed kind) in
-      fail (Decoding_failed kind :: tztrace)
-  | `Other e -> fail e
-  | `Not_found ->
-      (* TODO: https://gitlab.com/tezos/tezos/-/issues/4622
+  match e with `Other e -> fail e
 
-         Move to a defined Not_found error in #4622?
-         Currently, using something like
-         [tzfail @@ Shard_store.Resource_not_found ""] is
-         not well suited as [Resource_not_found]'s arg is understood as
-         a path.
-      *)
-      failwith "Not_found"
-
-let to_option_tzresult ?(none = fun _e -> false) r =
+let to_option_tzresult r =
   let open Lwt_result_syntax in
   let*! r in
   match r with
   | Ok s -> return_some s
-  | Error err -> if none err then return_none else error_to_tzresult err
+  | Error `Not_found -> return_none
+  | Error (`Other _ as err) -> error_to_tzresult err
 
 let to_tzresult r =
   let open Lwt_result_syntax in

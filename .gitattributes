@@ -1,3 +1,6 @@
+CHANGES.rst merge=union
+etherlink/CHANGES*.md merge=union
+
 _coverage_output export-ignore
 .gitignore export-ignore
 .gitattributes export-ignore

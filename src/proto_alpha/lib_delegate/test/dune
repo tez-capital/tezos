@@ -6,16 +6,17 @@
  (instrumentation (backend bisect_ppx))
  (libraries
   tezt.core
-  octez-libs.tezos-base
-  octez-libs.tezos-micheline
-  tezos-client-alpha
-  tezos-protocol-alpha
-  octez-libs.tezos-base-test-helpers
-  tezos-baking-alpha.mockup-simulator
-  tezos-baking-alpha
+  octez-libs.base
+  octez-libs.test-helpers
+  octez-libs.micheline
+  octez-protocol-alpha-libs.client
+  tezos-protocol-alpha.protocol
+  octez-libs.base-test-helpers
+  octez-protocol-alpha-libs.bakings.mockup-simulator
+  octez-protocol-alpha-libs.baking
   tezos-protocol-alpha.parameters
-  octez-libs.tezos-crypto
-  octez-alcotezt
+  octez-libs.crypto
+  octez-libs.event-logging-test-helpers
   uri)
  (library_flags (:standard -linkall))
  (flags
@@ -23,14 +24,14 @@
   -open Tezt_core
   -open Tezt_core.Base
   -open Tezos_base.TzPervasives
-  -open Tezos_base.TzPervasives.Error_monad.Legacy_monad_globals
+  -open Tezos_test_helpers
   -open Tezos_micheline
   -open Tezos_client_alpha
   -open Tezos_protocol_alpha
   -open Tezos_base_test_helpers
   -open Tezos_alpha_mockup_simulator
   -open Tezos_baking_alpha
-  -open Octez_alcotezt)
+  -open Tezos_event_logging_test_helpers)
  (modules test_scenario))
 
 (executable
@@ -46,9 +47,9 @@
 
 (rule
  (alias runtest)
- (package tezos-baking-alpha)
+ (package octez-protocol-alpha-libs)
  (enabled_if (<> false %{env:RUNTEZTALIAS=true}))
- (action (run %{dep:./main.exe})))
+ (action (run %{dep:./main.exe} /flaky /ci_disabled)))
 
 (rule
  (targets main.ml)

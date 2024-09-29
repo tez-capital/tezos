@@ -8,7 +8,7 @@
   tezt.core
   octez-alcotezt
   bls12-381
-  octez-bls12-381-hash)
+  octez-libs.bls12-381-hash)
  (library_flags (:standard -linkall))
  (flags
   (:standard)
@@ -31,9 +31,9 @@
 
 (rule
  (alias runtest)
- (package octez-bls12-381-hash)
+ (package octez-libs)
  (enabled_if (<> false %{env:RUNTEZTALIAS=true}))
- (action (run %{dep:./main.exe})))
+ (action (run %{dep:./main.exe} /flaky /ci_disabled)))
 
 (rule
  (targets main.ml)

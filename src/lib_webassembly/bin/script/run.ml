@@ -6,11 +6,8 @@ open Source
 (* Errors & Tracing *)
 
 module Script = Error.Make ()
-
 module Abort = Error.Make ()
-
 module Assert = Error.Make ()
-
 module IO = Error.Make ()
 
 exception Abort = Abort.Error
@@ -118,7 +115,7 @@ let input_from get_script run =
       | Abort (at, msg) -> error at "unexpected error" msg
       | Lazy_map.UnexpectedAccess ->
           error no_region "unexpected access" "Unexpected access in lazy map"
-      | exn -> raise exn)
+      | exn -> Lwt.reraise exn)
 
 let input_script start name lexbuf run =
   input_from (fun _ -> Parse.parse name lexbuf start) run
@@ -346,7 +343,7 @@ let lookup category map x_opt at =
     IO.error
       at
       (if key = "" then "no " ^ category ^ " defined"
-      else "unknown " ^ category ^ " " ^ key)
+       else "unknown " ^ category ^ " " ^ key)
 
 let lookup_script = lookup "script" scripts
 
@@ -362,8 +359,8 @@ let lookup_instance name at =
           IO.error
             at
             (if key = "" then "no " ^ category ^ " defined"
-            else "unknown " ^ category ^ " " ^ key)
-      | exn -> raise exn)
+             else "unknown " ^ category ^ " " ^ key)
+      | exn -> Lwt.reraise exn)
 
 let lookup_registry module_name item_name =
   let+ value = Instance.export (Map.find module_name !registry) item_name in
@@ -510,7 +507,7 @@ let run_assertion ass : unit Lwt.t =
         (function
           | Decode.Code (_, msg) -> assert_message ass.at "decoding" msg re
           | Parse.Syntax (_, msg) -> assert_message ass.at "parsing" msg re
-          | exn -> raise exn)
+          | exn -> Lwt.reraise exn)
   | AssertInvalid (def, re) ->
       let* () = trace_lwt "Asserting invalid..." in
       Lwt.try_bind
@@ -520,7 +517,7 @@ let run_assertion ass : unit Lwt.t =
         (fun _ -> Assert.error ass.at "expected validation error")
         (function
           | Valid.Invalid (_, msg) -> assert_message ass.at "validation" msg re
-          | exn -> raise exn)
+          | exn -> Lwt.reraise exn)
   | AssertUnlinkable (def, re) ->
       let* () = trace_lwt "Asserting unlinkable..." in
       let* m = run_definition def in
@@ -535,7 +532,7 @@ let run_assertion ass : unit Lwt.t =
         (function
           | Import.Unknown (_, msg) | Eval.Link (_, msg) ->
               assert_message ass.at "linking" msg re
-          | exn -> raise exn)
+          | exn -> Lwt.reraise exn)
   | AssertUninstantiable (def, re) ->
       let* () = trace_lwt "Asserting trap..." in
       let* m = run_definition def in
@@ -549,7 +546,7 @@ let run_assertion ass : unit Lwt.t =
         (fun _ -> Assert.error ass.at "expected instantiation error")
         (function
           | Eval.Trap (_, msg) -> assert_message ass.at "instantiation" msg re
-          | exn -> raise exn)
+          | exn -> Lwt.reraise exn)
   | AssertReturn (act, rs) ->
       let* () = trace_lwt "Asserting return..." in
       let+ got_vs = run_action act in
@@ -562,7 +559,7 @@ let run_assertion ass : unit Lwt.t =
         (fun _ -> Assert.error ass.at "expected runtime error")
         (function
           | Eval.Trap (_, msg) -> assert_message ass.at "runtime" msg re
-          | exn -> raise exn)
+          | exn -> Lwt.reraise exn)
   | AssertExhaustion (act, re) ->
       let* () = trace_lwt "Asserting exhaustion..." in
       Lwt.try_bind
@@ -571,7 +568,7 @@ let run_assertion ass : unit Lwt.t =
         (function
           | Eval.Exhaustion (_, msg) ->
               assert_message ass.at "exhaustion" msg re
-          | exn -> raise exn)
+          | exn -> Lwt.reraise exn)
 
 let rec run_command cmd : unit Lwt.t =
   match cmd.it with
@@ -626,7 +623,8 @@ and run_meta cmd =
           (fun () ->
             let+ res = input_file file run_quote_script in
             if not res then Abort.error cmd.at "aborting")
-          (function Sys_error msg -> IO.error cmd.at msg | exn -> raise exn)
+          (function
+            | Sys_error msg -> IO.error cmd.at msg | exn -> Lwt.reraise exn)
       in
       bind scripts x_opt (lookup_script None cmd.at) ;
       if x_opt <> None then (
@@ -643,11 +641,13 @@ and run_meta cmd =
             file
             (fun () -> lookup_script x_opt cmd.at)
             (fun () -> lookup_module x_opt cmd.at))
-        (function Sys_error msg -> IO.error cmd.at msg | exn -> raise exn)
+        (function
+          | Sys_error msg -> IO.error cmd.at msg | exn -> Lwt.reraise exn)
   | Output (x_opt, None) ->
       Lwt.catch
         (fun () -> output_stdout (fun () -> lookup_module x_opt cmd.at))
-        (function Sys_error msg -> IO.error cmd.at msg | exn -> raise exn)
+        (function
+          | Sys_error msg -> IO.error cmd.at msg | exn -> Lwt.reraise exn)
 
 and run_script script = TzStdLib.List.iter_s run_command script
 

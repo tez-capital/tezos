@@ -17,7 +17,7 @@ The CPMM maintains a balance of ``a`` tez and ``b`` `tzBTC <https://tzbtc.io/>`_
 To implement this contract, we use a fork of the open source code base used by `version two <https://gitlab.com/dexter2tz/dexter2tz>`_ of the "Dexter" project. The implementation of this contract has been `formally verified <https://gitlab.com/dexter2tz/dexter2tz#audits-and-formal-verification-external-resources>`_ against its functional specification. The contract code is modified in the following way:
 
 1. The fee is set to 0.1% only (the fee in Dexter v2 is set to 0.3%). Rationale: given the subsidy it is not necessary to charge a large fee and better to improve liquidity.
-2. An additional 0.1% of every trade is burned by being transferred to the null implicit account. Rationale: this mechanism offsets inflation from the subsidy. The inflation is exactly balanced at a daily trade volume of 7.2 million tez.
+2. An additional 0.1% of every trade is burned by being transferred to the null user account. Rationale: this mechanism offsets inflation from the subsidy. The inflation is exactly balanced at a daily trade volume of 7.2 million tez.
 3. The ability to set a delegate has been removed. Rationale: the subsidy means there is no need for a baker for that contract and having one would create an imbalance.
 4. The ability to set a manager has been removed. Rationale: the only privilege of the Dexter manager is to set Dexter's delegate so this role is now unnecessary.
 
@@ -26,7 +26,12 @@ The LIGO and Michelson code for these contracts, as well as detailed documentati
 Subsidy
 ~~~~~~~
 
-At every block in the chain, a small amount of tez is minted and credited to the CPMM contract, and the CPMM's ``%default`` entrypoint is called to update the ``xtz_pool`` balance in its storage. The amount that is minted and sent to the CPMM contract is 1/16th of the rewards for a block of round 0 with all attestations; currently these rewards are 20 tez per block so the amount that is sent to the CPMM contract is 1.25 tez per block.
+At every block in the chain, a small amount of tez is minted and credited to the
+CPMM contract, and the CPMM's ``%default`` entrypoint is called to update the
+``xtz_pool`` balance in its storage. The amount that is minted and sent to the
+CPMM contract is 1/16th of the rewards for a block of round 0 with all
+attestations; currently these rewards are 13.33 tez per block so the amount that is
+sent to the CPMM contract is 0.83 tez per block.
 
 So the credits to the CPMM contract can be accounted for by indexers, they are included in block metadata as a balance update with a new constructor for ``update_origin``, ``Subsidy``.
 
@@ -60,7 +65,7 @@ For indicative purposes, if among the non-abstaining blocks a fraction
 reached after roughly ``2*(log(1-1/(2f)) / log(0.999))``
 non-abstaining blocks, about 1386 blocks if everyone signals, 1963
 blocks if 80% do, 3583 blocks if 60% do etc. Recall for comparison
-that assuming four blocks per minute there are 5760 blocks per day.
+that assuming six blocks per minute there are 8640 blocks per day.
 
 When producing blocks using Octez baking daemon ``octez-baker``, there
 are two command-line options affecting toggle vote. The

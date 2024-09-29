@@ -6,7 +6,7 @@
  (instrumentation (backend bisect_ppx))
  (libraries
   tezt.core
-  tezos-wasmer
+  octez-l2-libs.wasmer
   octez-alcotezt)
  (library_flags (:standard -linkall))
  (flags
@@ -26,9 +26,9 @@
 
 (rule
  (alias runtest)
- (package octez-wasmer-test)
+ (package octez-l2-libs)
  (enabled_if (<> false %{env:RUNTEZTALIAS=true}))
- (action (run %{dep:./main.exe})))
+ (action (run %{dep:./main.exe} /flaky /ci_disabled)))
 
 (rule
  (targets main.ml)

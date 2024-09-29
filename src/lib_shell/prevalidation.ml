@@ -86,6 +86,12 @@ module type T = sig
 
   val remove_operation : t -> Operation_hash.t -> t
 
+  val get_context :
+    chain_store ->
+    predecessor:Store.Block.t ->
+    timestamp:Time.Protocol.t ->
+    Tezos_protocol_environment.Context.t tzresult Lwt.t
+
   module Internal_for_tests : sig
     val get_mempool_operations : t -> protocol_operation Operation_hash.Map.t
 
@@ -177,15 +183,21 @@ module MakeAbstract
 
   let pre_filter state (filter_config, (_ : Prevalidator_bounding.config)) op =
     let open Lwt_syntax in
-    let* status = Proto.Plugin.syntactic_check op.protocol in
-    match status with
-    | `Ill_formed ->
-        Lwt.return
-          (`Refused
-            (Error_monad.TzTrace.make
-               (Error_monad.error_of_fmt "Ill-formed operation filtered")))
-    | `Well_formed ->
-        Proto.Plugin.pre_filter state.plugin_info filter_config op.protocol
+    let* result =
+      Proto.Plugin.pre_filter state.plugin_info filter_config op.protocol
+    in
+    match result with
+    | `Passed_prefilter `High ->
+        return (`Passed_prefilter Prevalidator_pending_operations.High)
+    | `Passed_prefilter `Medium ->
+        return (`Passed_prefilter Prevalidator_pending_operations.Medium)
+    | `Passed_prefilter (`Low q) ->
+        return (`Passed_prefilter (Prevalidator_pending_operations.Low q))
+    | ( `Branch_delayed _err
+      | `Branch_refused _err
+      | `Outdated _err
+      | `Refused _err ) as err ->
+        return err
 
   type error_classification = Prevalidator_classification.error_classification
 
@@ -375,6 +387,24 @@ module MakeAbstract
     let mempool = Proto.Mempool.remove_operation state.mempool oph in
     let bounding_state = Bounding.remove_operation state.bounding_state oph in
     {state with mempool; bounding_state}
+
+  let get_context chain_store ~predecessor ~timestamp =
+    let open Lwt_result_syntax in
+    let* context = Chain_store.context chain_store predecessor in
+    let chain_id = Chain_store.chain_id chain_store in
+    let predecessor_hash = Store.Block.hash predecessor in
+    let predecessor = (Store.Block.header predecessor).shell in
+    let* value_of_key =
+      Proto.value_of_key
+        ~chain_id
+        ~predecessor_context:context
+        ~predecessor_timestamp:predecessor.Block_header.timestamp
+        ~predecessor_level:predecessor.level
+        ~predecessor_fitness:predecessor.fitness
+        ~predecessor:predecessor_hash
+        ~timestamp
+    in
+    Context.load_cache predecessor_hash context `Lazy value_of_key
 
   module Internal_for_tests = struct
     let get_mempool_operations {mempool; _} = Proto.Mempool.operations mempool

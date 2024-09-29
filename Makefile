@@ -1,5 +1,5 @@
 PACKAGES_SUBPROJECT:=$(patsubst %.opam,%,$(notdir $(shell find src vendors -name \*.opam -print)))
-PACKAGES:=$(patsubst %.opam,%,$(notdir $(shell find opam -name \*.opam -print)))
+PACKAGES:=$(patsubst %.opam,%,$(notdir $(wildcard opam/*.opam)))
 
 define directory_of_version
 src/proto_$(shell echo $1 | tr -- - _)
@@ -13,20 +13,8 @@ endif
 
 include scripts/version.sh
 
-DOCKER_IMAGE_NAME := tezos
-DOCKER_IMAGE_VERSION := latest
-DOCKER_BUILD_IMAGE_NAME := $(DOCKER_IMAGE_NAME)_build
-DOCKER_BUILD_IMAGE_VERSION := latest
-DOCKER_BARE_IMAGE_NAME := $(DOCKER_IMAGE_NAME)-bare
-DOCKER_BARE_IMAGE_VERSION := latest
-DOCKER_DEBUG_IMAGE_NAME := $(DOCKER_IMAGE_NAME)-debug
-DOCKER_DEBUG_IMAGE_VERSION := latest
-DOCKER_DEPS_IMAGE_NAME := registry.gitlab.com/tezos/opam-repository
-DOCKER_DEPS_IMAGE_VERSION := runtime-build-dependencies--${opam_repository_tag}
-DOCKER_DEPS_MINIMAL_IMAGE_VERSION := runtime-dependencies--${opam_repository_tag}
 COVERAGE_REPORT := _coverage_report
 COBERTURA_REPORT := _coverage_report/cobertura.xml
-CODE_QUALITY_REPORT := _reports/gl-code-quality-report.json
 PROFILE?=dev
 VALID_PROFILES=dev release static
 
@@ -42,16 +30,22 @@ DEV_EXECUTABLES := $(shell cat script-inputs/dev-executables)
 
 ALL_EXECUTABLES := $(RELEASED_EXECUTABLES) $(EXPERIMENTAL_EXECUTABLES) $(DEV_EXECUTABLES)
 
+#Define octez only executables by excluding the EVM-node and teztale tools.
+OCTEZ_ONLY_EXECUTABLES := $(filter-out octez-evm-node octez-teztale-archiver octez-teztale-server,${ALL_EXECUTABLES})
+
+#Define octez layer1 only executables by excluding the EVM-node and teztale tools.
+OCTEZ_ONLY_LAYER1_EXECUTABLES := $(filter-out octez-evm-node octez-teztale-archiver octez-teztale-server octez-smart-rollup-wasm-debugger octez-smart-rollup-node octez-dac-client octez-dac-node octez-dal-node,$(RELEASED_EXECUTABLES) $(EXPERIMENTAL_EXECUTABLES))
+
 # Set of Dune targets to build, in addition to OCTEZ_EXECUTABLES, in
 # the `build` target's Dune invocation. This is used in the CI to
-# build the TPS evaluation tool and the Tezt test suite in the
+# build the TPS evaluation tool, Octogram and the Tezt test suite in the
 # 'build_x86_64-dev-exp-misc' job.
 BUILD_EXTRA ?=
 
 # See first mention of TEZOS_WITHOUT_OPAM.
 ifndef TEZOS_WITHOUT_OPAM
-ifeq ($(filter ${opam_version}.%,${current_opam_version}),)
-$(error Unexpected opam version (found: ${current_opam_version}, expected: ${opam_version}.*))
+ifeq ($(filter ${opam_version_major}.%,${current_opam_version}),)
+$(error Unexpected opam version (found: ${current_opam_version}, expected: ${opam_version_major}.*))
 endif
 endif
 
@@ -104,9 +98,25 @@ all:
 release:
 	@$(MAKE) build PROFILE=release OCTEZ_EXECUTABLES?="$(RELEASED_EXECUTABLES)"
 
+.PHONY: octez
+octez:
+	@$(MAKE) build PROFILE=release OCTEZ_EXECUTABLES?="$(OCTEZ_ONLY_EXECUTABLES)"
+
+.PHONY: octez-layer1
+octez-layer1:
+	@$(MAKE) build OCTEZ_EXECUTABLES?="$(OCTEZ_ONLY_LAYER1_EXECUTABLES)"
+
+.PHONY: teztale
+teztale:
+	@$(MAKE) build OCTEZ_EXECUTABLES?="octez-teztale-archiver octez-teztale-server"
+
 .PHONY: experimental-release
 experimental-release:
 	@$(MAKE) build PROFILE=release OCTEZ_EXECUTABLES?="$(RELEASED_EXECUTABLES) $(EXPERIMENTAL_EXECUTABLES)"
+
+.PHONY: build-additional-tezt-test-dependency-executables
+build-additional-tezt-test-dependency-executables:
+	@dune build contrib/octez_injector_server/octez_injector_server.exe
 
 .PHONY: strip
 strip: all
@@ -123,9 +133,55 @@ build-parameters:
 	@dune build --profile=$(PROFILE) $(COVERAGE_OPTIONS) @copy-parameters
 
 .PHONY: $(ALL_EXECUTABLES)
-$(ALL_EXECUTABLES):
+$(ALL_EXECUTABLES): check-slim-mode check-custom-flags
 	dune build $(COVERAGE_OPTIONS) --profile=$(PROFILE) _build/install/default/bin/$@
 	cp -f _build/install/default/bin/$@ ./
+
+# If slim mode is active, kaitai updates should fail, as some protocol encoding
+# will be missing.
+# This check is disabled if file scripts/slim-mode.sh is not available,
+# which may be the case in Docker images or tarballs for instance.
+.PHONY: kaitai-fail-slim-mode
+kaitai-fail-slim-mode:
+	@if [ -f scripts/slim-mode.sh ]; then scripts/slim-mode.sh fail; fi || (echo "Cannot check kaitai struct files, slim mode is active."; exit 1)
+
+.PHONY: kaitai-struct-files-update
+kaitai-struct-files-update: kaitai-fail-slim-mode
+	@dune exe client-libs/bin_codec_kaitai/codec.exe dump kaitai specs in client-libs/kaitai-struct-files/files
+
+.PHONY: kaitai-struct-files
+kaitai-struct-files: kaitai-fail-slim-mode
+	@$(MAKE) kaitai-struct-files-update
+	@$(MAKE) -C client-libs/kaitai-struct-files/
+
+.PHONY: check-kaitai-struct-files
+check-kaitai-struct-files: kaitai-fail-slim-mode
+	@git diff --exit-code HEAD -- client-libs/kaitai-struct-files/files || (echo "Cannot check kaitai struct files, some changes are uncommitted"; exit 1)
+	@dune build client-libs/bin_codec_kaitai/codec.exe
+	@rm client-libs/kaitai-struct-files/files/*.ksy
+	@_build/default/client-libs/bin_codec_kaitai/codec.exe dump kaitai specs in client-libs/kaitai-struct-files/files 2>/dev/null
+	@git add client-libs/kaitai-struct-files/files/*.ksy
+	@git diff --exit-code HEAD -- client-libs/kaitai-struct-files/files/ || (echo "Kaitai struct files mismatch. Update the files with `make kaitai-struct-files-update`."; exit 1)
+
+.PHONY: validate-kaitai-struct-files
+validate-kaitai-struct-files: kaitai-fail-slim-mode
+	@$(MAKE) check-kaitai-struct-files
+	@./client-libs/kaitai-struct-files/scripts/kaitai_e2e.sh client-libs/kaitai-struct-files/files 2>/dev/null || \
+	 (echo "To see the full log run: \"./client-libs/kaitai-struct-files/scripts/kaitai_e2e.sh client-libs/kaitai-struct-files/files client-libs/kaitai-struct-files/input\""; exit 1)
+
+# If slim mode is active, print a message before building anything.
+# This check is disabled if file scripts/slim-mode.sh is not available,
+# which may be the case in Docker images or tarballs for instance.
+.PHONY: check-slim-mode
+check-slim-mode:
+	@if [ -f scripts/slim-mode.sh ]; then scripts/slim-mode.sh check; fi
+
+# If custom flags are active, print a message before building anything.
+# This check is disabled if file scripts/custom-flags.sh is not available,
+# which may be the case in Docker images or tarballs for instance.
+.PHONY: check-custom-flags
+check-custom-flags:
+	@if [ -f scripts/custom-flags.sh ]; then scripts/custom-flags.sh check; fi
 
 # Remove the old names of executables.
 # Depending on the commit you are updating from (v14.0, v15 or some version of master),
@@ -143,20 +199,18 @@ clean-old-names:
 	@rm -f tezos-codec
 	@rm -f tezos-protocol-compiler
 	@rm -f tezos-proxy-server
+	@rm -f octez-proxy-server
 	@rm -f tezos-baker-012-Psithaca
 	@rm -f tezos-accuser-012-Psithaca
 	@rm -f tezos-baker-013-PtJakart
 	@rm -f tezos-accuser-013-PtJakart
 	@rm -f tezos-tx-rollup-node-013-PtJakart
-	@rm -f tezos-tx-rollup-client-013-PtJakart
 	@rm -f tezos-baker-015-PtLimaPt
 	@rm -f tezos-accuser-015-PtLimaPt
 	@rm -f tezos-tx-rollup-node-015-PtLimaPt
-	@rm -f tezos-tx-rollup-client-015-PtLimaPt
 	@rm -f tezos-baker-alpha
 	@rm -f tezos-accuser-alpha
 	@rm -f tezos-smart-rollup-node-alpha
-	@rm -f tezos-smart-rollup-client-alpha
 	@rm -f tezos-snoop
 	@rm -f tezos-dal-node
 # octez-validator should stay in this list for Octez 16.0 because we
@@ -167,16 +221,18 @@ clean-old-names:
 	@rm -f octez-baker-013-PtJakart
 	@rm -f octez-accuser-013-PtJakart
 	@rm -f octez-tx-rollup-node-013-PtJakart
-	@rm -f octez-tx-rollup-client-013-PtJakart
 	@rm -f octez-baker-015-PtLimaPt
 	@rm -f octez-accuser-015-PtLimaPt
 	@rm -f octez-tx-rollup-node-015-PtLimaPt
-	@rm -f octez-tx-rollup-client-015-PtLimaPt
+	@rm -f octez-smart-rollup-node-PtMumbai
+	@rm -f octez-smart-rollup-node-PtNairob
+	@rm -f octez-smart-rollup-node-Proxford
+	@rm -f octez-smart-rollup-node-alpha
 
 # See comment of clean-old-names for an explanation regarding why we do not try
 # to generate the symbolic links from *_EXECUTABLES.
 .PHONY: build
-build: clean-old-names
+build: check-slim-mode check-custom-flags clean-old-names
 ifneq (${current_ocaml_version},${ocaml_version})
 	$(error Unexpected ocaml version (found: ${current_ocaml_version}, expected: ${ocaml_version}))
 endif
@@ -238,6 +294,7 @@ test-protocol-compile:
 
 PROTO_DIRS := $(shell find src/ -maxdepth 1 -type d -path "src/proto_*" 2>/dev/null | LC_COLLATE=C sort)
 NONPROTO_DIRS := $(shell find src/ -maxdepth 1 -mindepth 1 -type d -not -path "src/proto_*" 2>/dev/null | LC_COLLATE=C sort)
+OTHER_DIRS := $(shell find contrib/ ci/ client-libs/ -maxdepth 1 -mindepth 1 -type d 2>/dev/null | LC_COLLATE=C sort)
 
 .PHONY: test-proto-unit
 test-proto-unit:
@@ -265,41 +322,49 @@ test-nonproto-unit:
 		scripts/test_wrapper.sh test-nonproto-unit \
 		$(addprefix @, $(addsuffix /runtest,$(NONPROTO_DIRS)))
 
+.PHONY: test-other-unit
+test-other-unit:
+	DUNE_PROFILE=$(PROFILE) \
+		COVERAGE_OPTIONS="$(COVERAGE_OPTIONS)" \
+		scripts/test_wrapper.sh test-other-unit \
+		$(addprefix @, $(addsuffix /runtest,$(OTHER_DIRS)))
+
 .PHONY: test-unit
-test-unit: test-nonproto-unit test-proto-unit
+test-unit: test-nonproto-unit test-proto-unit test-other-unit
 
 .PHONY: test-unit-alpha
 test-unit-alpha:
 	@dune build --profile=$(PROFILE) @src/proto_alpha/lib_protocol/runtest
 
-# TODO: https://gitlab.com/tezos/tezos/-/issues/5377
-# Running the runtest_js targets intermittently hangs.
-.PHONY: test-js
-test-js:
-	@dune build --error-reporting=twice @runtest_js
-
 .PHONY: build-tezt
 build-tezt:
 	@dune build tezt
 
+.PHONY: build-simulation-scenario
+build-simulation-scenario:
+	@dune build devtools/testnet_experiment_tools/
+	@mkdir -p $(OCTEZ_BIN_DIR)/
+	@cp -f _build/default/devtools/testnet_experiment_tools/simulation_scenario.exe $(OCTEZ_BIN_DIR)/simulation-scenario
+	@cp -f _build/default/devtools/testnet_experiment_tools/safety_checker.exe $(OCTEZ_BIN_DIR)/safety-checker
+
 .PHONY: test-tezt
-test-tezt:
+test-tezt: build-additional-tezt-test-dependency-executables
 	@dune exec --profile=$(PROFILE) $(COVERAGE_OPTIONS) tezt/tests/main.exe
 
 .PHONY: test-tezt-i
-test-tezt-i:
+test-tezt-i: build-additional-tezt-test-dependency-executables
 	@dune exec --profile=$(PROFILE) $(COVERAGE_OPTIONS) tezt/tests/main.exe -- --info
 
 .PHONY: test-tezt-c
-test-tezt-c:
+test-tezt-c: build-additional-tezt-test-dependency-executables
 	@dune exec --profile=$(PROFILE) $(COVERAGE_OPTIONS) tezt/tests/main.exe -- --commands
 
 .PHONY: test-tezt-v
-test-tezt-v:
+test-tezt-v: build-additional-tezt-test-dependency-executables
 	@dune exec --profile=$(PROFILE) $(COVERAGE_OPTIONS) tezt/tests/main.exe -- --verbose
 
 .PHONY: test-tezt-coverage
-test-tezt-coverage:
+test-tezt-coverage: build-additional-tezt-test-dependency-executables
 	@dune exec --profile=$(PROFILE) $(COVERAGE_OPTIONS) tezt/tests/main.exe -- --keep-going --test-timeout 1800
 
 .PHONY: test-code
@@ -327,52 +392,25 @@ lint-opam-dune:
 	@dune build --profile=$(PROFILE) @runtest_dune_template
 
 # Ensure that all unit tests are restricted to their opam package
-# (change 'tezos-test-helpers' to one the most elementary packages of
-# the repo if you add "internal" dependencies to tezos-test-helpers)
+# (change 'octez-distributed-internal' to one the most elementary packages of
+# the repo if you add "internal" dependencies to octez-distributed-internal)
 .PHONY: lint-tests-pkg
 lint-tests-pkg:
-	@(dune build -p tezos-test-helpers @runtest @runtest_js) || \
+	@(dune build -p octez-distributed-internal @runtest) || \
 	{ echo "You have probably defined some tests in dune files without specifying to which 'package' they belong."; exit 1; }
 
 
 TEST_DIRS := $(shell find src -name "test" -type d -print -o -name "test-*" -type d -print)
 EXCLUDE_TEST_DIRS := $(addprefix --exclude-file ,$(addsuffix /,${TEST_DIRS}))
 
-.PHONY: lint-ometrics
-lint-ometrics:
-	@echo "Running ometrics analysis in your changes"
-	@ometrics check ${EXCLUDE_TEST_DIRS} \
-        --exclude-file "src/proto_alpha/lib_protocol/alpha_context.mli" \
-        --exclude-file "src/proto_alpha/lib_protocol/alpha_context.ml" \
-        --exclude-file "tezt/tests/" \
-        --exclude-entry-re "pp\|pp_.+" \
-        --exclude-entry-re "encoding\|encoding_.+\|.+_encoding" \
-        --exclude-entry-re "compare\|compare_.+\|.+_compare"
-
-.PHONY: lint-ometrics-gitlab
-lint-ometrics-gitlab:
-	@echo "Running ometrics analysis in your changes."
-	@mkdir -p _reports
-	@ometrics check-clone ${OMETRICS_GIT} --branch ${OMETRICS_BRANCH} \
-        ${EXCLUDE_TEST_DIRS} \
-        --exclude-file "src/proto_alpha/lib_protocol/alpha_context.mli" \
-        --exclude-file "src/proto_alpha/lib_protocol/alpha_context.ml" \
-        --exclude-file "tezt/tests/" \
-        --exclude-entry-re "pp\|pp_.+" \
-        --exclude-entry-re "encoding\|encoding_.+\|.+_encoding" \
-        --exclude-entry-re "compare\|compare_.+\|.+_compare" \
-        --gitlab --output ${CODE_QUALITY_REPORT}
-	@echo "Report should be available in file://$(shell pwd)/${CODE_QUALITY_REPORT}"
-
 .PHONY: test
 test: test-code
 
-.PHONY: check-linting check-python-linting check-ocaml-linting
+.PHONY: check-linting check-python-linting check-ocaml-linting check-opam-linting
 
 check-linting:
 	@scripts/lint.sh --check-scripts
 	@scripts/lint.sh --check-ocamlformat
-	@scripts/lint.sh --check-coq-attributes
 	@scripts/lint.sh --check-rust-toolchain
 	@dune build --profile=$(PROFILE) @fmt
 
@@ -385,14 +423,38 @@ check-python-typecheck:
 check-ocaml-linting:
 	@./scripts/semgrep/lint-all-ocaml-sources.sh
 
+check-opam-linting:
+	@find . ! -path "./_opam/*" -name "*.opam" -exec opam lint {} +
+
 .PHONY: fmt fmt-ocaml fmt-python
-fmt: fmt-ocaml fmt-python
+fmt: fmt-ocaml fmt-python fmt-shell
+
+fmt-shell:
+	scripts/lint.sh --format-shell
 
 fmt-ocaml:
 	@dune build --profile=$(PROFILE) @fmt --auto-promote
 
 fmt-python:
 	@$(MAKE) -C docs fmt
+
+.PHONY: dpkg-A
+dpkg-A:	all
+	@./scripts/dpkg/make_dpkg.sh scripts/dpkg/A
+
+.PHONY: dpkg-B
+dpkg-B:	all
+	@./scripts/dpkg/make_dpkg.sh scripts/dpkg/B
+
+.PHONY: dpkg
+dpkg:	all dpkg-A dpkg-B
+
+.PHONY: rpm-A
+rpm-A: all
+	@./scripts/rpm/make_rpm.sh
+
+.PHONY: rpm
+rpm: all rpm-A
 
 .PHONY: build-deps
 build-deps:
@@ -419,55 +481,35 @@ build-tps: lift-protocol-limits-patch all build-tezt
 	@cp -f ./src/bin_tps_evaluation/tezos-tps-evaluation-estimate-average-block .
 	@cp -f ./src/bin_tps_evaluation/tezos-tps-evaluation-gas-tps .
 
+.PHONY: build-octogram
+build-octogram: all
+	@dune build ./src/bin_octogram
+	@cp -f ./_build/default/src/bin_octogram/octogram_main.exe octogram
+
 .PHONY: build-unreleased
 build-unreleased: all
 	@echo 'Note: "make build-unreleased" is deprecated. Just use "make".'
 
 .PHONY: docker-image-build
 docker-image-build:
-	@docker build \
-		-t $(DOCKER_BUILD_IMAGE_NAME):$(DOCKER_BUILD_IMAGE_VERSION) \
-		-f build.Dockerfile \
-		--build-arg BASE_IMAGE=$(DOCKER_DEPS_IMAGE_NAME) \
-		--build-arg BASE_IMAGE_VERSION=$(DOCKER_DEPS_IMAGE_VERSION) \
-		.
+	# Setting '--variants ""' creates only the build image.
+	@./scripts/create_docker_image.sh --variants ""
 
 .PHONY: docker-image-debug
 docker-image-debug:
-	docker build \
-		-t $(DOCKER_DEBUG_IMAGE_NAME):$(DOCKER_DEBUG_IMAGE_VERSION) \
-		--build-arg BASE_IMAGE=$(DOCKER_DEPS_IMAGE_NAME) \
-		--build-arg BASE_IMAGE_VERSION=$(DOCKER_DEPS_MINIMAL_IMAGE_VERSION) \
-		--build-arg BUILD_IMAGE=$(DOCKER_BUILD_IMAGE_NAME) \
-		--build-arg BUILD_IMAGE_VERSION=$(DOCKER_BUILD_IMAGE_VERSION) \
-		--target=debug \
-		.
+	@./scripts/create_docker_image.sh --variants "debug"
 
 .PHONY: docker-image-bare
 docker-image-bare:
-	@docker build \
-		-t $(DOCKER_BARE_IMAGE_NAME):$(DOCKER_BARE_IMAGE_VERSION) \
-		--build-arg=BASE_IMAGE=$(DOCKER_DEPS_IMAGE_NAME) \
-		--build-arg=BASE_IMAGE_VERSION=$(DOCKER_DEPS_MINIMAL_IMAGE_VERSION) \
-		--build-arg=BASE_IMAGE_VERSION_NON_MIN=$(DOCKER_DEPS_IMAGE_VERSION) \
-		--build-arg BUILD_IMAGE=$(DOCKER_BUILD_IMAGE_NAME) \
-		--build-arg BUILD_IMAGE_VERSION=$(DOCKER_BUILD_IMAGE_VERSION) \
-		--target=bare \
-		.
+	@./scripts/create_docker_image.sh --variants "bare"
 
 .PHONY: docker-image-minimal
 docker-image-minimal:
-	@docker build \
-		-t $(DOCKER_IMAGE_NAME):$(DOCKER_IMAGE_VERSION) \
-		--build-arg=BASE_IMAGE=$(DOCKER_DEPS_IMAGE_NAME) \
-		--build-arg=BASE_IMAGE_VERSION=$(DOCKER_DEPS_MINIMAL_IMAGE_VERSION) \
-		--build-arg=BASE_IMAGE_VERSION_NON_MIN=$(DOCKER_DEPS_IMAGE_VERSION) \
-		--build-arg BUILD_IMAGE=$(DOCKER_BUILD_IMAGE_NAME) \
-		--build-arg BUILD_IMAGE_VERSION=$(DOCKER_BUILD_IMAGE_VERSION) \
-		.
+	@./scripts/create_docker_image.sh --variants "minimal"
 
 .PHONY: docker-image
-docker-image: docker-image-build docker-image-debug docker-image-bare docker-image-minimal
+docker-image:
+	@./scripts/create_docker_image.sh
 
 .PHONY: install
 install:
@@ -482,8 +524,20 @@ uninstall:
 coverage-clean:
 	@-rm -Rf ${COVERAGE_OUTPUT}/*.coverage ${COVERAGE_REPORT}
 
+.PHONY: pkg-common-clean
+pkg-common-clean:
+	@-rm -rf scripts/pkg-common/{baker,client,smartrollup}-binaries
+
+.PHONY: dpkg-clean
+dpkg-clean: pkg-common-clean
+	@-rm -rf _dpkgstage *.deb
+
+.PHONY: rpm-clean
+rpm-clean: pkg-common-clean
+	@-rm -rf _rpmbuild *.rpm
+
 .PHONY: clean
-clean: coverage-clean clean-old-names
+clean: coverage-clean clean-old-names dpkg-clean rpm-clean
 	@-dune clean
 	@-rm -f ${ALL_EXECUTABLES}
 	@-${MAKE} -C docs clean
@@ -491,24 +545,35 @@ clean: coverage-clean clean-old-names
 
 .PHONY: build-kernels-deps
 build-kernels-deps:
-	make -f kernels.mk build-deps
+	$(MAKE) -f kernels.mk build-deps
+	$(MAKE) -f etherlink.mk build-deps
+	$(MAKE) -C src/riscv build-deps
 
 .PHONY: build-kernels-dev-deps
 build-kernels-dev-deps:
-	make -f kernels.mk build-dev-deps
+	$(MAKE) -f kernels.mk build-dev-deps
+	$(MAKE) -f etherlink.mk build-dev-deps
 
 .PHONY: build-kernels
 build-kernels:
-	make -f kernels.mk build
+	$(MAKE) -f kernels.mk build
+	$(MAKE) -f etherlink.mk build
+	$(MAKE) -C src/riscv build
 
 .PHONY: check-kernels
 check-kernels:
-	make -f kernels.mk check
+	$(MAKE) -f kernels.mk check
+	$(MAKE) -f etherlink.mk check
+	$(MAKE) -C src/riscv check
 
 .PHONY: test-kernels
 test-kernels:
-	make -f kernels.mk test
+	$(MAKE) -f kernels.mk test
+	$(MAKE) -f etherlink.mk test
+	$(MAKE) -C src/riscv test
 
 .PHONY: clean-kernels
 clean-kernels:
-	make -f kernels.mk clean
+	$(MAKE) -f kernels.mk clean
+	$(MAKE) -f etherlink.mk clean
+	$(MAKE) -C src/riscv clean

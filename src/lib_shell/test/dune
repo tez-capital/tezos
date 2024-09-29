@@ -6,26 +6,27 @@
  (instrumentation (backend bisect_ppx))
  (libraries
   tezt.core
-  octez-libs.tezos-base
-  octez-libs.tezos-base-test-helpers
-  tezos-store
-  tezos-store.shared
+  octez-libs.base
+  octez-libs.base-test-helpers
+  octez-shell-libs.store
+  octez-shell-libs.store.shared
   octez-libs.tezos-context
-  tezos-context-ops
-  tezos-shell-context
-  tezos-protocol-updater
-  octez-libs.tezos-p2p
+  octez-shell-libs.context-ops
+  octez-shell-libs.shell-context
+  octez-shell-libs.protocol-updater
+  octez-shell-libs.p2p
   octez-libs.tezos-p2p-services
-  tezos-requester
-  tezos-shell
-  octez-libs.tezos-shell-services
-  tezos-embedded-protocol-demo-noops
-  octez-libs.tezos-stdlib-unix
-  tezos-validation
-  octez-libs.tezos-event-logging-test-helpers
-  tezos-test-helpers
+  octez-libs.requester
+  octez-shell-libs.shell
+  octez-shell-libs.shell-services
+  tezos-protocol-demo-noops.embedded-protocol
+  octez-libs.stdlib-unix
+  octez-shell-libs.validation
+  octez-libs.event-logging-test-helpers
+  octez-libs.test-helpers
   octez-alcotezt
-  tezos-version.value)
+  octez-version.value
+  src_lib_requester_test_tezt_lib)
  (library_flags (:standard -linkall))
  (flags
   (:standard)
@@ -47,7 +48,8 @@
   -open Tezos_validation
   -open Tezos_event_logging_test_helpers
   -open Tezos_test_helpers
-  -open Octez_alcotezt)
+  -open Octez_alcotezt
+  -open Src_lib_requester_test_tezt_lib)
  (modules
   generators
   generators_tree
@@ -55,6 +57,7 @@
   test_consensus_heuristic
   test_node
   test_peer_validator
+  test_prevalidator
   test_prevalidation
   test_prevalidator_bounding
   test_prevalidator_classification
@@ -79,9 +82,9 @@
 
 (rule
  (alias runtest)
- (package tezos-shell)
+ (package octez-shell-tests)
  (enabled_if (<> false %{env:RUNTEZTALIAS=true}))
- (action (run %{dep:./main.exe})))
+ (action (run %{dep:./main.exe} /flaky /ci_disabled)))
 
 (rule
  (targets main.ml)

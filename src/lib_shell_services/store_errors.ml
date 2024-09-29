@@ -170,6 +170,15 @@ let () =
     (fun (checkpoint_level, given_head) ->
       Invalid_head_switch {checkpoint_level; given_head}) ;
   register_error_kind
+    `Temporary
+    ~id:"store.inconsistent_store_state"
+    ~title:"Inconsistent store state"
+    ~description:"Inconsistent store state"
+    ~pp:(fun ppf msg -> Format.fprintf ppf "Inconsistent store state: %s" msg)
+    Data_encoding.(obj1 (req "msg" string))
+    (function Inconsistent_store_state msg -> Some msg | _ -> None)
+    (fun msg -> Inconsistent_store_state msg) ;
+  register_error_kind
     `Permanent
     ~id:"snapshots.inconsistent_operation_hashes"
     ~title:"Inconsistent operation hashes"
@@ -284,8 +293,8 @@ type store_block_error =
       operations_lengths : string;
       operations_data_lengths : string;
     }
-  | Invalid_last_allowed_fork_level of {
-      last_allowed_fork_level : int32;
+  | Invalid_last_preserved_block_level of {
+      last_preserved_block_level : int32;
       genesis_level : int32;
     }
 
@@ -347,7 +356,7 @@ type error +=
   | Temporary_cemented_file_exists of string
   | Inconsistent_cemented_file of string * string
   | Inconsistent_cemented_store of cemented_store_inconsistency
-  | Missing_last_allowed_fork_level_block
+  | Missing_last_preserved_block
   | Inconsistent_block_hash of {
       level : Int32.t;
       expected_hash : Block_hash.t;
@@ -632,19 +641,19 @@ let () =
     (fun csi -> Inconsistent_cemented_store csi) ;
   Error_monad.register_error_kind
     `Temporary
-    ~id:"store.missing_last_allowed_fork_level_block"
-    ~title:"Missing last allowed fork level block"
+    ~id:"store.missing_last_preserved_block"
+    ~title:"Missing last preserved block"
     ~description:
-      "Current head's last allowed fork level block (or its associated \
-       metadata) cannot be found in the store."
+      "Current head's last preserved block (or its associated metadata) cannot \
+       be found in the store."
     ~pp:(fun ppf () ->
       Format.fprintf
         ppf
-        "Current head's last allowed fork level block or (its associated \
-         metadata) cannot be found in the store.")
+        "Current head's last preserved block or (its associated metadata) \
+         cannot be found in the store.")
     Data_encoding.empty
-    (function Missing_last_allowed_fork_level_block -> Some () | _ -> None)
-    (fun () -> Missing_last_allowed_fork_level_block) ;
+    (function Missing_last_preserved_block -> Some () | _ -> None)
+    (fun () -> Missing_last_preserved_block) ;
   Error_monad.register_error_kind
     `Temporary
     ~id:"store.inconsistent_block_hash"
@@ -745,12 +754,12 @@ let () =
               "inconsistent operations (%s) and operations_data (%s) lengths"
               operations_lengths
               operations_data_lengths
-        | Invalid_last_allowed_fork_level
-            {last_allowed_fork_level; genesis_level} ->
+        | Invalid_last_preserved_block_level
+            {last_preserved_block_level; genesis_level} ->
             Format.sprintf
-              "block's last allowed fork level (%ld) is below the genesis \
-               level (%ld)"
-              last_allowed_fork_level
+              "block's last preserved level (%ld) is below the genesis level \
+               (%ld)"
+              last_preserved_block_level
               genesis_level))
     Data_encoding.(
       obj2
@@ -973,8 +982,16 @@ let () =
 
 (* Consistency errors: *)
 type error +=
-  | Unexpected_missing_block of {block_name : string}
-  | Unexpected_missing_block_metadata of {block_name : string}
+  | Unexpected_missing_block of {
+      block_name : string;
+      level : Int32.t;
+      hash : Block_hash.t;
+    }
+  | Unexpected_missing_block_metadata of {
+      block_name : string;
+      level : Int32.t;
+      hash : Block_hash.t;
+    }
   | Unexpected_missing_activation_block of {
       block : Block_hash.t;
       protocol : Protocol_hash.t;
@@ -1001,30 +1018,50 @@ let () =
     ~id:"store.unexpected_missing_block"
     ~title:"Unexpected missing block"
     ~description:"A block is unexpectedly missing from the store."
-    ~pp:(fun ppf block_name ->
+    ~pp:(fun ppf (block_name, level, hash) ->
       Format.fprintf
         ppf
-        "The block '%s' is unexpectedly missing from the store."
-        block_name)
-    Data_encoding.(obj1 (req "missing_block" string))
+        "The block '%s' (%ld, %a) is unexpectedly missing from the store."
+        block_name
+        level
+        Block_hash.pp_short
+        hash)
+    Data_encoding.(
+      obj3
+        (req "missing_block" string)
+        (req "level" int32)
+        (req "hash" Block_hash.encoding))
     (function
-      | Unexpected_missing_block {block_name} -> Some block_name | _ -> None)
-    (fun block_name -> Unexpected_missing_block {block_name}) ;
+      | Unexpected_missing_block {block_name; level; hash} ->
+          Some (block_name, level, hash)
+      | _ -> None)
+    (fun (block_name, level, hash) ->
+      Unexpected_missing_block {block_name; level; hash}) ;
   register_error_kind
     `Permanent
     ~id:"store.unexpected_missing_block_metadata"
     ~title:"Unexpected missing block metadata"
     ~description:"A block's metadata is unexpectedly missing from the store."
-    ~pp:(fun ppf block_name ->
+    ~pp:(fun ppf (block_name, level, hash) ->
       Format.fprintf
         ppf
-        "The block '%s' metadata is unexpectedly missing from the store."
-        block_name)
-    Data_encoding.(obj1 (req "missing_block_metadata" string))
+        "The block '%s' (%ld, %a) metadata is unexpectedly missing from the \
+         store."
+        block_name
+        level
+        Block_hash.pp_short
+        hash)
+    Data_encoding.(
+      obj3
+        (req "missing_block_metadata" string)
+        (req "level" int32)
+        (req "hash" Block_hash.encoding))
     (function
-      | Unexpected_missing_block_metadata {block_name} -> Some block_name
+      | Unexpected_missing_block_metadata {block_name; level; hash} ->
+          Some (block_name, level, hash)
       | _ -> None)
-    (fun block_name -> Unexpected_missing_block_metadata {block_name}) ;
+    (fun (block_name, level, hash) ->
+      Unexpected_missing_block_metadata {block_name; level; hash}) ;
   register_error_kind
     `Permanent
     ~id:"store.unexpected_missing_activation_block"
@@ -1126,14 +1163,10 @@ let () =
     ~id:"store.bad_ordering_invariant"
     ~title:"Bad ordering invariant"
     ~description:"The ordering invariant does not hold"
-    ~pp:
-      (fun ppf
-           ( genesis,
-             caboose,
-             savepoint,
-             cementing_highwatermark,
-             checkpoint,
-             head ) ->
+    ~pp:(fun
+        ppf
+        (genesis, caboose, savepoint, cementing_highwatermark, checkpoint, head)
+      ->
       Format.fprintf
         ppf
         "Invariant '%ld (genesis) ≤ %ld (caboose) ≤ %ld (savepoint) ≤ %a \
@@ -1175,8 +1208,7 @@ let () =
               checkpoint,
               head )
       | _ -> None)
-    (fun (genesis, caboose, savepoint, cementing_highwatermark, checkpoint, head)
-         ->
+    (fun (genesis, caboose, savepoint, cementing_highwatermark, checkpoint, head) ->
       Bad_ordering_invariant
         {genesis; caboose; savepoint; cementing_highwatermark; checkpoint; head})
 
@@ -1298,13 +1330,7 @@ let () =
     (fun k -> Corrupted_store k)
 
 (* Store upgrade errors *)
-type error +=
-  | Cannot_find_chain_dir of string
-  | V_3_0_upgrade_missing_floating_block of {
-      block_hash : Block_hash.t;
-      block_level : Int32.t;
-      floating_kind : string;
-    }
+type error += Cannot_find_chain_dir of string
 
 let () =
   Error_monad.register_error_kind
@@ -1321,31 +1347,4 @@ let () =
         path)
     Data_encoding.(obj1 (req "path" string))
     (function Cannot_find_chain_dir p -> Some p | _ -> None)
-    (fun p -> Cannot_find_chain_dir p) ;
-  register_error_kind
-    `Permanent
-    ~id:"block_store.v_3_0_upgrade_missing_floating_block"
-    ~title:"V.3.0 upgrade missing floating block"
-    ~description:"Failed to upgrade the floating store"
-    ~pp:(fun ppf (block_hash, block_level, floating_kind) ->
-      Format.fprintf
-        ppf
-        "Failed to upgrade block %a (level %ld) for %s floating store: block \
-         not found in the index."
-        Block_hash.pp
-        block_hash
-        block_level
-        floating_kind)
-    Data_encoding.(
-      obj3
-        (req "block_hash" Block_hash.encoding)
-        (req "block_level" int32)
-        (req "floating_kind" string))
-    (function
-      | V_3_0_upgrade_missing_floating_block
-          {block_hash; block_level; floating_kind} ->
-          Some (block_hash, block_level, floating_kind)
-      | _ -> None)
-    (fun (block_hash, block_level, floating_kind) ->
-      V_3_0_upgrade_missing_floating_block
-        {block_hash; block_level; floating_kind})
+    (fun p -> Cannot_find_chain_dir p)

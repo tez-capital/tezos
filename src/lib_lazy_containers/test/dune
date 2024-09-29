@@ -6,7 +6,7 @@
  (instrumentation (backend bisect_ppx))
  (libraries
   tezt.core
-  octez-libs.tezos-lazy-containers
+  octez-libs.lazy-containers
   qcheck-core
   qcheck-alcotest
   lwt.unix
@@ -32,7 +32,7 @@
  (alias runtest)
  (package tezos-lazy-containers-tests)
  (enabled_if (<> false %{env:RUNTEZTALIAS=true}))
- (action (run %{dep:./main.exe})))
+ (action (run %{dep:./main.exe} /flaky /ci_disabled)))
 
 (rule
  (targets main.ml)

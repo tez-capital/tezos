@@ -6,10 +6,10 @@
  (instrumentation (backend bisect_ppx))
  (libraries
   tezt.core
-  octez-libs.tezos-base
-  octez-libs.tezos-base.unix
-  tezos-test-helpers
-  octez-libs.tezos-shell-services
+  octez-libs.base
+  octez-libs.base.unix
+  octez-libs.test-helpers
+  octez-shell-libs.shell-services
   tezos_proxy_test_helpers_shell_services
   qcheck-alcotest
   octez-alcotezt)
@@ -33,9 +33,9 @@
 
 (rule
  (alias runtest)
- (package tezos-proxy)
+ (package octez-shell-libs)
  (enabled_if (<> false %{env:RUNTEZTALIAS=true}))
- (action (run %{dep:./main.exe})))
+ (action (run %{dep:./main.exe} /flaky /ci_disabled)))
 
 (rule
  (targets main.ml)

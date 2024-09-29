@@ -3,21 +3,21 @@
 
 (library
  (name tezos_client_012_Psithaca)
- (public_name tezos-client-012-Psithaca)
+ (public_name octez-protocol-012-Psithaca-libs.client)
  (instrumentation (backend bisect_ppx))
  (libraries
-  octez-libs.tezos-base
-  tezos-clic
-  octez-libs.tezos-shell-services
-  tezos-client-base
-  tezos-protocol-012-Psithaca
-  tezos-protocol-012-Psithaca.lifted
-  tezos-mockup-registration
-  tezos-proxy
-  tezos-signer-backends
-  tezos-protocol-plugin-012-Psithaca
+  octez-libs.base
+  octez-libs.clic
+  octez-shell-libs.shell-services
+  octez-shell-libs.client-base
+  tezos-protocol-012-Psithaca.protocol
+  tezos-protocol-012-Psithaca.protocol.lifted
+  octez-shell-libs.mockup-registration
+  octez-shell-libs.proxy
+  octez-shell-libs.signer-backends
+  octez-protocol-012-Psithaca-libs.plugin
   tezos-protocol-012-Psithaca.parameters
-  octez-libs.tezos-rpc
+  octez-libs.rpc
   uri)
  (inline_tests (flags -verbose) (modes native))
  (preprocess (pps ppx_expect))
@@ -25,7 +25,7 @@
  (flags
   (:standard)
   -open Tezos_base.TzPervasives
-  -open Tezos_base.TzPervasives.Error_monad.Legacy_monad_globals
+  -open Tezos_base.TzPervasives.Error_monad_legacy
   -open Tezos_shell_services
   -open Tezos_client_base
   -open Tezos_protocol_012_Psithaca

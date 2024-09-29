@@ -56,11 +56,14 @@ type error +=
     }
   | Missing_PVM_state of Block_hash.t * Int32.t
   | Cannot_checkout_context of Block_hash.t * Smart_rollup_context_hash.t option
+  | Cannot_checkout_l2_header
   | No_batcher
+  | No_dal_injector
   | No_publisher
   | Refutation_player_failed_to_start
   | No_refutation_coordinator
   | Could_not_acquire_lock of string
+  | Patch_durable_storage_on_commitment of int32
 
 type error +=
   | Could_not_open_preimage_file of String.t
@@ -72,9 +75,36 @@ type error +=
   | Invalid_genesis_state of {
       expected : Commitment.Hash.t;
       actual : Commitment.Hash.t;
+      actual_state_hash : State_hash.t;
     }
 
 type error += Operator_not_in_whitelist
+
+type error +=
+  | Cannot_patch_pvm_of_public_rollup
+  | Needs_apply_unsafe_flag of Pvm_patches.unsafe_patch list
+
+type error += Operator_has_no_staked
+
+type error += Exit_bond_recovered_bailout_mode
+
+type error +=
+  | Access_below_first_available_level of {
+      first_available_level : int32;
+      accessed_level : int32;
+    }
+
+type error +=
+  | Unexpected_rollup of {
+      rollup_address : Octez_smart_rollup.Address.t;
+      saved_address : Octez_smart_rollup.Address.t;
+    }
+
+type error +=
+  | Disagree_with_commitment of {
+      our_commitment : Octez_smart_rollup.Commitment.t;
+      their_commitment : Octez_smart_rollup.Commitment.t;
+    }
 
 let () =
   register_error_kind
@@ -250,6 +280,17 @@ let () =
 
   register_error_kind
     `Permanent
+    ~id:"internal.cannot_checkout_l2_header"
+    ~title:"Internal error: Cannot checkout L2 header"
+    ~description:
+      "The rollup node cannot checkout the l2 header registered for the block."
+    ~pp:(fun ppf () -> Format.fprintf ppf "The l2 header cannot be checkouted")
+    Data_encoding.unit
+    (function Cannot_checkout_l2_header -> Some () | _ -> None)
+    (fun () -> Cannot_checkout_l2_header) ;
+
+  register_error_kind
+    `Permanent
     ~id:"sc_rollup.node.lost_game"
     ~title:"Lost refutation game"
     ~description:"The rollup node lost a refutation game."
@@ -279,25 +320,31 @@ let () =
     ~title:"Invalid genesis state"
     ~description:
       "The rollup node computed an invalid genesis state, it cannot continue."
-    ~pp:(fun ppf (expected, actual) ->
+    ~pp:(fun ppf (expected, actual, actual_state_hash) ->
       Format.fprintf
         ppf
-        "Genesis commitment computed (%a) is not equal to the rollup genesis \
-         (%a) commitment. The rollup node cannot continue. If you used the \
-         argument `--boot-sector-file` you probably provided the wrong boot \
-         sector. If not, please report the bug."
+        "Computed genesis commitment hash %a is not equal to the rollup \
+         genesis commitment hash %a which commits state hash %a. The rollup \
+         node cannot continue. If you used the argument `--boot-sector-file` \
+         you probably provided the wrong boot sector. If not, please report \
+         the bug."
         Commitment.Hash.pp
         expected
         Commitment.Hash.pp
-        actual)
+        actual
+        State_hash.pp
+        actual_state_hash)
     Data_encoding.(
-      obj2
+      obj3
         (req "expected" Commitment.Hash.encoding)
-        (req "actual" Commitment.Hash.encoding))
+        (req "actual" Commitment.Hash.encoding)
+        (req "actual_state_hash" State_hash.encoding))
     (function
-      | Invalid_genesis_state {expected; actual} -> Some (expected, actual)
+      | Invalid_genesis_state {expected; actual; actual_state_hash} ->
+          Some (expected, actual, actual_state_hash)
       | _ -> None)
-    (fun (expected, actual) -> Invalid_genesis_state {expected; actual}) ;
+    (fun (expected, actual, actual_state_hash) ->
+      Invalid_genesis_state {expected; actual; actual_state_hash}) ;
 
   register_error_kind
     ~id:"sc_rollup.node.no_batcher"
@@ -309,6 +356,17 @@ let () =
     Data_encoding.unit
     (function No_batcher -> Some () | _ -> None)
     (fun () -> No_batcher) ;
+
+  register_error_kind
+    ~id:"sc_rollup.node.no_dal_injector"
+    ~title:"No dal injector for this node"
+    ~description:"This node does not have a ADL injector"
+    ~pp:(fun ppf () ->
+      Format.fprintf ppf "This rollup node does not have DAL injector.")
+    `Permanent
+    Data_encoding.unit
+    (function No_dal_injector -> Some () | _ -> None)
+    (fun () -> No_dal_injector) ;
 
   register_error_kind
     ~id:"sc_rollup.node.no_publisher"
@@ -395,8 +453,160 @@ let () =
     ~title:"The operator is not in the whitelist"
     ~description:"The operator is not in the whitelist."
     ~pp:(fun ppf () ->
-      Format.pp_print_string ppf "The operator is not in the whitelist")
+      Format.pp_print_string
+        ppf
+        "The operator is not in the whitelist. Please restart the rollup node \
+         in bailout mode if you still have stakes.")
     `Permanent
     Data_encoding.unit
     (function Operator_not_in_whitelist -> Some () | _ -> None)
-    (fun () -> Operator_not_in_whitelist)
+    (fun () -> Operator_not_in_whitelist) ;
+
+  register_error_kind
+    ~id:"sc_rollup.node.cannot_patch_pvm_of_public_rollup"
+    ~title:"Cannot patch PVM of public rollup"
+    ~description:"Unsafe PVM patches can only be applied in private rollups."
+    ~pp:(fun ppf () ->
+      Format.pp_print_string
+        ppf
+        "Unsafe PVM patches can only be applied in private rollups, i.e. in \
+         non publicly refutable settings.")
+    `Permanent
+    Data_encoding.unit
+    (function Cannot_patch_pvm_of_public_rollup -> Some () | _ -> None)
+    (fun () -> Cannot_patch_pvm_of_public_rollup) ;
+
+  register_error_kind
+    ~id:"sc_rollup.node.needs_apply_unsafe_flag"
+    ~title:"Needs --apply-unsafe-patches flag for this rollup"
+    ~description:"Needs --apply-unsafe-patches flag for this rollup."
+    ~pp:(fun ppf patches ->
+      Format.fprintf
+        ppf
+        "This rollup requires the application of the following unsafe PVM \
+         patches: @[<v 2>%a.@,\
+         @]The rollup node must be started with option --apply-unsafe-patches \
+         to allow the application of these patches."
+        (Format.pp_print_list Pvm_patches.pp_unsafe_patch)
+        patches)
+    `Permanent
+    Data_encoding.(
+      obj1 (req "patches" (list Pvm_patches.unsafe_patch_encoding)))
+    (function Needs_apply_unsafe_flag p -> Some p | _ -> None)
+    (fun p -> Needs_apply_unsafe_flag p) ;
+
+  register_error_kind
+    ~id:"sc_rollup.node.operator_has_no_staked"
+    ~title:"The operator does not has any stake"
+    ~description:"The operator does not has any stake."
+    ~pp:(fun ppf () ->
+      Format.pp_print_string ppf "The operator does not has any stake.")
+    `Permanent
+    Data_encoding.unit
+    (function Operator_has_no_staked -> Some () | _ -> None)
+    (fun () -> Operator_has_no_staked) ;
+
+  register_error_kind
+    ~id:"sc_rollup.node.exiting_bailout_mode"
+    ~title:"The rollup node is exiting."
+    ~description:
+      "The rollup node is exiting after recovering the bond of the operator."
+    ~pp:(fun ppf () ->
+      Format.pp_print_string
+        ppf
+        "The rollup node is exiting after bailout mode.")
+    `Permanent
+    Data_encoding.unit
+    (function Exit_bond_recovered_bailout_mode -> Some () | _ -> None)
+    (fun () -> Exit_bond_recovered_bailout_mode) ;
+
+  register_error_kind
+    `Permanent
+    ~id:"sc_rollup.node.access_below_first_available_level"
+    ~title:"Rollup node access data that is garbage collected"
+    ~description:
+      "The rollup node attempts to access data that is garbage collected."
+    ~pp:(fun ppf (first, access) ->
+      Format.fprintf
+        ppf
+        "Attempting to access data for level %ld, which is before the first \
+         available level %ld"
+        access
+        first)
+    Data_encoding.(
+      obj2 (req "first_available_level" int32) (req "accessed_level" int32))
+    (function
+      | Access_below_first_available_level
+          {first_available_level; accessed_level} ->
+          Some (first_available_level, accessed_level)
+      | _ -> None)
+    (fun (first_available_level, accessed_level) ->
+      Access_below_first_available_level {first_available_level; accessed_level}) ;
+
+  register_error_kind
+    ~id:"sc_rollup.node.unexpected_rollup"
+    ~title:"Unexpected rollup for rollup node"
+    ~description:"This rollup node is already set up for another rollup."
+    ~pp:(fun ppf (rollup_address, saved_address) ->
+      Format.fprintf
+        ppf
+        "This rollup node was already set up for rollup %a, it cannot be run \
+         for a different rollup %a."
+        Address.pp
+        saved_address
+        Address.pp
+        rollup_address)
+    `Permanent
+    Data_encoding.(
+      obj2
+        (req "rollup_address" Address.encoding)
+        (req "saved_address" Address.encoding))
+    (function
+      | Unexpected_rollup {rollup_address; saved_address} ->
+          Some (rollup_address, saved_address)
+      | _ -> None)
+    (fun (rollup_address, saved_address) ->
+      Unexpected_rollup {rollup_address; saved_address}) ;
+
+  register_error_kind
+    ~id:"sc_rollup.node.disagree_with_commitment"
+    ~title:"Rollup node disagrees with commitment"
+    ~description:
+      "The rollup node disagrees with a commitment but cannot refute it."
+    ~pp:(fun ppf (our_commitment, their_commitment) ->
+      Format.fprintf
+        ppf
+        "The rollup node has computed commitment %a, but it disagrees with the \
+         commitment %a which it cannot refute."
+        Commitment.pp
+        our_commitment
+        Commitment.pp
+        their_commitment)
+    `Permanent
+    Data_encoding.(
+      obj2
+        (req "our_commitment" Commitment.encoding)
+        (req "their_commitment" Commitment.encoding))
+    (function
+      | Disagree_with_commitment {our_commitment; their_commitment} ->
+          Some (our_commitment, their_commitment)
+      | _ -> None)
+    (fun (our_commitment, their_commitment) ->
+      Disagree_with_commitment {our_commitment; their_commitment}) ;
+
+  register_error_kind
+    ~id:"sc_rollup.node.patch_durable_storage_on_commitment"
+    ~title:"Patch durable storage on commitment"
+    ~description:
+      "The command patch durable storage was run on a level with a commitment."
+    ~pp:(fun ppf level ->
+      Format.fprintf
+        ppf
+        "The command patch durable storage cannot be run on a level with a \
+         commitment, current level %ld has one. Please try in the next block."
+        level)
+    `Permanent
+    Data_encoding.(obj1 (req "level" int32))
+    (function
+      | Patch_durable_storage_on_commitment level -> Some level | _ -> None)
+    (fun level -> Patch_durable_storage_on_commitment level)

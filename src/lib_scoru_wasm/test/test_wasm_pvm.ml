@@ -481,7 +481,27 @@ let try_availability_above_v1_only ~version import_name import_params
   let predicate state =
     match version with
     | Wasm_pvm_state.V0 -> is_stuck state
-    | V1 | V2 | V3 -> not (is_stuck state)
+    | V1 | V2 | V3 | V4 | V5 | V6 -> not (is_stuck state)
+  in
+  assert (predicate state) ;
+  Lwt_result_syntax.return_unit
+
+let try_availability_above_v6_only ~version import_name import_params
+    import_results () =
+  let open Lwt_syntax in
+  let* tree =
+    initial_tree
+      ~version
+      ~from_binary:false
+      (nop_module import_name import_params import_results)
+  in
+  let* tree = set_empty_inbox_step 0l tree in
+  let* tree = eval_until_input_or_reveal_requested tree in
+  let* state = Wasm.Internal_for_tests.get_tick_state tree in
+  let predicate state =
+    match version with
+    | V0 | V1 | V2 | V3 | V4 | V5 -> is_stuck state
+    | V6 -> not (is_stuck state)
   in
   assert (predicate state) ;
   Lwt_result_syntax.return_unit
@@ -505,6 +525,13 @@ let try_run_store_create ~version =
     ~version
     "store_create"
     ["i32"; "i32"; "i32"]
+    ["i32"]
+
+let try_run_ec_pairing_check ~version =
+  try_availability_above_v6_only
+    ~version
+    "ec_pairing_check_bls12_381"
+    ["i32"; "i32"; "i32"; "i32"]
     ["i32"]
 
 let test_modify_read_only_storage_kernel ~version () =
@@ -878,8 +905,15 @@ let test_bulk_noops ~version () =
   let* base_tree = set_empty_inbox_step 0l base_tree in
 
   let rec goto_snapshot ticks tree_slow =
-    let* tree_fast, _ = Wasm.compute_step_many ~max_steps:ticks base_tree in
-    let* tree_slow = Wasm.compute_step tree_slow in
+    let* tree_fast, _ =
+      Wasm.compute_step_many
+        ~wasm_entrypoint:Constants.wasm_entrypoint
+        ~max_steps:ticks
+        base_tree
+    in
+    let* tree_slow =
+      Wasm.compute_step ~wasm_entrypoint:Constants.wasm_entrypoint tree_slow
+    in
     assert (Context_hash.(Encodings_util.Tree.(hash tree_fast = hash tree_slow))) ;
 
     let* stuck_flag = has_stuck_flag tree_fast in
@@ -1566,14 +1600,53 @@ let test_inbox_cleanup ~version () =
   (* Before executing: EOL, Info_per_level and SOL. *)
   let* () = check_messages_count tree 3 in
   (* Go to the very last [Padding] state. *)
-  let* tree, _ = Wasm.compute_step_many ~max_steps:Int64.(pred max_tick) tree in
+  let* tree, _ =
+    Wasm.compute_step_many
+      ~wasm_entrypoint:Constants.wasm_entrypoint
+      ~max_steps:Int64.(pred max_tick)
+      tree
+  in
   (* Before yielding: EOL, Info_per_level and SOL still, since the module does
      not read the content of the inbox. *)
   let* () = check_messages_count tree 3 in
   (* Yield with one more step. *)
-  let* tree = Wasm.compute_step tree in
+  let* tree =
+    Wasm.compute_step ~wasm_entrypoint:Constants.wasm_entrypoint tree
+  in
   (* After yielding, the inbox has been cleared. *)
   let* () = check_messages_count tree 0 in
+  Lwt_result_syntax.return_unit
+
+let test_wasm_entrypoint ~version () =
+  let open Lwt_syntax in
+  let module_ =
+    {|
+      (module
+        (memory 0)
+        (export "mem" (memory 0))
+        (func (export "foo")
+          (nop)
+        )
+      )
+    |}
+  in
+  let max_tick = 1000L in
+  let* tree =
+    initial_tree
+      ~version
+      ~ticks_per_snapshot:max_tick
+      ~from_binary:false
+      module_
+  in
+  let* tree = set_empty_inbox_step 0l tree in
+  let* tree, _ =
+    Wasm.compute_step_many
+      ~wasm_entrypoint:"foo"
+      ~max_steps:Int64.(pred max_tick)
+      tree
+  in
+  let* status = Wasm.Internal_for_tests.get_tick_state tree in
+  assert (not @@ is_stuck status) ;
   Lwt_result_syntax.return_unit
 
 let test_scheduling_multiple_inboxes ~version input_numbers =
@@ -1743,6 +1816,7 @@ let tests =
         try_run_store_get_hash );
       ("Test store_delete_value available", `Quick, try_run_store_delete_value);
       ("Test store_create available", `Quick, try_run_store_create);
+      ("Test ec_pairing_check available", `Quick, try_run_ec_pairing_check);
       ( "Test unreachable kernel (tick per tick)",
         `Quick,
         fun ~version ->
@@ -1819,6 +1893,9 @@ let tests =
       ( "Test outbox validity period clean-up",
         `Quick,
         test_outbox_validity_period );
+      ( "Test can execute arbitrary WASM entrypoint",
+        `Quick,
+        test_wasm_entrypoint );
     ]
 
 let () =

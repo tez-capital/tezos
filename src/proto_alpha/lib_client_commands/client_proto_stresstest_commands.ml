@@ -26,6 +26,7 @@
 open Protocol
 open Alpha_context
 module Smart_contracts = Client_proto_stresstest_contracts
+module Alpha_services = Plugin.Alpha_services
 
 type transfer_strategy =
   | Fixed_amount of {mutez : Tez.t}  (** Amount to transfer *)
@@ -494,7 +495,7 @@ let rec sample_transfer (cctxt : Protocol_client_context.full) chain block
 let inject_contents (cctxt : Protocol_client_context.full) branch sk contents =
   let bytes =
     Data_encoding.Binary.to_bytes_exn
-      Operation.unsigned_encoding_with_legacy_attestation_name
+      Operation.unsigned_encoding
       ({branch}, Contents_list contents)
   in
   let signature =
@@ -504,9 +505,7 @@ let inject_contents (cctxt : Protocol_client_context.full) branch sk contents =
     {shell = {branch}; protocol_data = {contents; signature}}
   in
   let bytes =
-    Data_encoding.Binary.to_bytes_exn
-      Operation.encoding_with_legacy_attestation_name
-      (Operation.pack op)
+    Data_encoding.Binary.to_bytes_exn Operation.encoding (Operation.pack op)
   in
   Shell_services.Injection.operation cctxt bytes
 
@@ -745,8 +744,8 @@ let stat_on_exit (cctxt : Protocol_client_context.full) state =
          included). Note that the operations injected during the last block \
          are ignored because they should not be currently included."
         (if Int.equal injected_ops_count 0 then "N/A"
-        else
-          Format.sprintf "%d%%" (included_ops_count * 100 / injected_ops_count))
+         else
+           Format.sprintf "%d%%" (included_ops_count * 100 / injected_ops_count))
         injected_ops_count
         included_ops_count
     in
@@ -802,7 +801,7 @@ let launch (cctxt : Protocol_client_context.full) (parameters : parameters)
       let*! () = save_injected_operations cctxt state in
       stat_on_exit cctxt state
     else
-      let start = Mtime_clock.elapsed () in
+      let start = Mtime_clock.counter () in
       let*! () =
         log Debug (fun () ->
             cctxt#message "launch.loop: invoke sample_transfer")
@@ -816,8 +815,7 @@ let launch (cctxt : Protocol_client_context.full) (parameters : parameters)
       in
       let* () = inject_transfer cctxt parameters state transfer in
       incr injected ;
-      let stop = Mtime_clock.elapsed () in
-      let elapsed = Mtime.Span.(to_s stop -. to_s start) in
+      let elapsed = Time.Monotonic.Span.to_float_s (Mtime_clock.count start) in
       let remaining = dt -. elapsed in
       let*! () =
         if remaining <= 0.0 then
@@ -1929,4 +1927,12 @@ let commands =
   ]
 
 let commands network () =
-  match network with Some `Mainnet -> [] | Some `Testnet | None -> commands
+  (* Stresstest should not be used on mainnet. If the client is running with
+     the yes-crypto activated, operations won't be considered valid and should
+     not endanger the network nor the users funds. *)
+  match Sys.getenv_opt Tezos_crypto.Helpers.yes_crypto_environment_variable with
+  | Some _ -> commands
+  | None -> (
+      match network with
+      | Some `Mainnet -> []
+      | Some `Testnet | None -> commands)

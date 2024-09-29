@@ -100,6 +100,20 @@ val arg :
   ('a, 'ctx) parameter ->
   ('a option, 'ctx) arg
 
+(** [multiple_arg ~doc ~long ?short converter] creates an argument to
+    a command.  The [~long] argument is the long format, without the
+    double dashes. The [?short] argument is the optional one letter
+    shortcut. If the argument is not provided, [None] is
+    returned. Multiple occurrence of the argument is allowed in the
+    command. *)
+val multiple_arg :
+  doc:string ->
+  ?short:char ->
+  long:string ->
+  placeholder:string ->
+  ('a, 'ctx) parameter ->
+  ('a list option, 'ctx) arg
+
 (** Create an argument that will contain the [~default] value if it is not provided. *)
 val default_arg :
   doc:string ->
@@ -135,6 +149,10 @@ val args1 : ('a, 'ctx) arg -> ('a, 'ctx) options
 
 (** Include 2 optional parameters *)
 val args2 : ('a, 'ctx) arg -> ('b, 'ctx) arg -> ('a * 'b, 'ctx) options
+
+(** Merge optional parameters  *)
+val merge_options :
+  ('a, 'ctx) options -> ('b, 'ctx) options -> ('a * 'b, 'ctx) options
 
 (** Include 3 optional parameters *)
 val args3 :
@@ -451,6 +469,306 @@ val args19 :
     * 'q
     * 'r
     * 's,
+    'ctx )
+  options
+
+(** Include 20 optional parameters *)
+val args20 :
+  ('a, 'ctx) arg ->
+  ('b, 'ctx) arg ->
+  ('c, 'ctx) arg ->
+  ('d, 'ctx) arg ->
+  ('e, 'ctx) arg ->
+  ('f, 'ctx) arg ->
+  ('g, 'ctx) arg ->
+  ('h, 'ctx) arg ->
+  ('i, 'ctx) arg ->
+  ('j, 'ctx) arg ->
+  ('k, 'ctx) arg ->
+  ('l, 'ctx) arg ->
+  ('m, 'ctx) arg ->
+  ('n, 'ctx) arg ->
+  ('o, 'ctx) arg ->
+  ('p, 'ctx) arg ->
+  ('q, 'ctx) arg ->
+  ('r, 'ctx) arg ->
+  ('s, 'ctx) arg ->
+  ('t, 'ctx) arg ->
+  ( 'a
+    * 'b
+    * 'c
+    * 'd
+    * 'e
+    * 'f
+    * 'g
+    * 'h
+    * 'i
+    * 'j
+    * 'k
+    * 'l
+    * 'm
+    * 'n
+    * 'o
+    * 'p
+    * 'q
+    * 'r
+    * 's
+    * 't,
+    'ctx )
+  options
+
+(** Include 21 optional parameters *)
+val args21 :
+  ('a, 'ctx) arg ->
+  ('b, 'ctx) arg ->
+  ('c, 'ctx) arg ->
+  ('d, 'ctx) arg ->
+  ('e, 'ctx) arg ->
+  ('f, 'ctx) arg ->
+  ('g, 'ctx) arg ->
+  ('h, 'ctx) arg ->
+  ('i, 'ctx) arg ->
+  ('j, 'ctx) arg ->
+  ('k, 'ctx) arg ->
+  ('l, 'ctx) arg ->
+  ('m, 'ctx) arg ->
+  ('n, 'ctx) arg ->
+  ('o, 'ctx) arg ->
+  ('p, 'ctx) arg ->
+  ('q, 'ctx) arg ->
+  ('r, 'ctx) arg ->
+  ('s, 'ctx) arg ->
+  ('t, 'ctx) arg ->
+  ('u, 'ctx) arg ->
+  ( 'a
+    * 'b
+    * 'c
+    * 'd
+    * 'e
+    * 'f
+    * 'g
+    * 'h
+    * 'i
+    * 'j
+    * 'k
+    * 'l
+    * 'm
+    * 'n
+    * 'o
+    * 'p
+    * 'q
+    * 'r
+    * 's
+    * 't
+    * 'u,
+    'ctx )
+  options
+
+(** Include 22 optional parameters *)
+val args22 :
+  ('a, 'ctx) arg ->
+  ('b, 'ctx) arg ->
+  ('c, 'ctx) arg ->
+  ('d, 'ctx) arg ->
+  ('e, 'ctx) arg ->
+  ('f, 'ctx) arg ->
+  ('g, 'ctx) arg ->
+  ('h, 'ctx) arg ->
+  ('i, 'ctx) arg ->
+  ('j, 'ctx) arg ->
+  ('k, 'ctx) arg ->
+  ('l, 'ctx) arg ->
+  ('m, 'ctx) arg ->
+  ('n, 'ctx) arg ->
+  ('o, 'ctx) arg ->
+  ('p, 'ctx) arg ->
+  ('q, 'ctx) arg ->
+  ('r, 'ctx) arg ->
+  ('s, 'ctx) arg ->
+  ('t, 'ctx) arg ->
+  ('u, 'ctx) arg ->
+  ('v, 'ctx) arg ->
+  ( 'a
+    * 'b
+    * 'c
+    * 'd
+    * 'e
+    * 'f
+    * 'g
+    * 'h
+    * 'i
+    * 'j
+    * 'k
+    * 'l
+    * 'm
+    * 'n
+    * 'o
+    * 'p
+    * 'q
+    * 'r
+    * 's
+    * 't
+    * 'u
+    * 'v,
+    'ctx )
+  options
+
+(** Include 23 optional parameters *)
+val args23 :
+  ('a, 'ctx) arg ->
+  ('b, 'ctx) arg ->
+  ('c, 'ctx) arg ->
+  ('d, 'ctx) arg ->
+  ('e, 'ctx) arg ->
+  ('f, 'ctx) arg ->
+  ('g, 'ctx) arg ->
+  ('h, 'ctx) arg ->
+  ('i, 'ctx) arg ->
+  ('j, 'ctx) arg ->
+  ('k, 'ctx) arg ->
+  ('l, 'ctx) arg ->
+  ('m, 'ctx) arg ->
+  ('n, 'ctx) arg ->
+  ('o, 'ctx) arg ->
+  ('p, 'ctx) arg ->
+  ('q, 'ctx) arg ->
+  ('r, 'ctx) arg ->
+  ('s, 'ctx) arg ->
+  ('t, 'ctx) arg ->
+  ('u, 'ctx) arg ->
+  ('v, 'ctx) arg ->
+  ('w, 'ctx) arg ->
+  ( 'a
+    * 'b
+    * 'c
+    * 'd
+    * 'e
+    * 'f
+    * 'g
+    * 'h
+    * 'i
+    * 'j
+    * 'k
+    * 'l
+    * 'm
+    * 'n
+    * 'o
+    * 'p
+    * 'q
+    * 'r
+    * 's
+    * 't
+    * 'u
+    * 'v
+    * 'w,
+    'ctx )
+  options
+
+(** Include 24 optional parameters *)
+val args24 :
+  ('a, 'ctx) arg ->
+  ('b, 'ctx) arg ->
+  ('c, 'ctx) arg ->
+  ('d, 'ctx) arg ->
+  ('e, 'ctx) arg ->
+  ('f, 'ctx) arg ->
+  ('g, 'ctx) arg ->
+  ('h, 'ctx) arg ->
+  ('i, 'ctx) arg ->
+  ('j, 'ctx) arg ->
+  ('k, 'ctx) arg ->
+  ('l, 'ctx) arg ->
+  ('m, 'ctx) arg ->
+  ('n, 'ctx) arg ->
+  ('o, 'ctx) arg ->
+  ('p, 'ctx) arg ->
+  ('q, 'ctx) arg ->
+  ('r, 'ctx) arg ->
+  ('s, 'ctx) arg ->
+  ('t, 'ctx) arg ->
+  ('u, 'ctx) arg ->
+  ('v, 'ctx) arg ->
+  ('w, 'ctx) arg ->
+  ('x, 'ctx) arg ->
+  ( 'a
+    * 'b
+    * 'c
+    * 'd
+    * 'e
+    * 'f
+    * 'g
+    * 'h
+    * 'i
+    * 'j
+    * 'k
+    * 'l
+    * 'm
+    * 'n
+    * 'o
+    * 'p
+    * 'q
+    * 'r
+    * 's
+    * 't
+    * 'u
+    * 'v
+    * 'w
+    * 'x,
+    'ctx )
+  options
+
+(** Include 25 optional parameters *)
+val args25 :
+  ('a, 'ctx) arg ->
+  ('b, 'ctx) arg ->
+  ('c, 'ctx) arg ->
+  ('d, 'ctx) arg ->
+  ('e, 'ctx) arg ->
+  ('f, 'ctx) arg ->
+  ('g, 'ctx) arg ->
+  ('h, 'ctx) arg ->
+  ('i, 'ctx) arg ->
+  ('j, 'ctx) arg ->
+  ('k, 'ctx) arg ->
+  ('l, 'ctx) arg ->
+  ('m, 'ctx) arg ->
+  ('n, 'ctx) arg ->
+  ('o, 'ctx) arg ->
+  ('p, 'ctx) arg ->
+  ('q, 'ctx) arg ->
+  ('r, 'ctx) arg ->
+  ('s, 'ctx) arg ->
+  ('t, 'ctx) arg ->
+  ('u, 'ctx) arg ->
+  ('v, 'ctx) arg ->
+  ('w, 'ctx) arg ->
+  ('x, 'ctx) arg ->
+  ('y, 'ctx) arg ->
+  ( 'a
+    * 'b
+    * 'c
+    * 'd
+    * 'e
+    * 'f
+    * 'g
+    * 'h
+    * 'i
+    * 'j
+    * 'k
+    * 'l
+    * 'm
+    * 'n
+    * 'o
+    * 'p
+    * 'q
+    * 'r
+    * 's
+    * 't
+    * 'u
+    * 'v
+    * 'w
+    * 'x
+    * 'y,
     'ctx )
   options
 

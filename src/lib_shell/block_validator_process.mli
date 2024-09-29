@@ -44,17 +44,10 @@ type validator_environment = {
     one processus has a write access to the context. Currently informations
     are exchanged via the file system. *)
 type validator_kind =
-  | Internal : Store.Chain.chain_store -> validator_kind
+  | Internal : validator_environment * Store.Chain.chain_store -> validator_kind
   | External : {
-      genesis : Genesis.t;
-      readonly : bool;
-      data_dir : string;
-      context_root : string;
-      protocol_root : string;
+      parameters : External_validation.parameters;
       process_path : string;
-      sandbox_parameters : Data_encoding.json option;
-      dal_config : Tezos_crypto_dal.Cryptobox.Config.t;
-      internal_events : Tezos_base.Internal_event_config.t;
     }
       -> validator_kind
 
@@ -63,7 +56,7 @@ type simple_kind = External_process | Single_process
 (** Internal representation of the block validator process *)
 type t
 
-val init : validator_environment -> validator_kind -> t tzresult Lwt.t
+val init : validator_kind -> t tzresult Lwt.t
 
 val kind : t -> simple_kind
 
@@ -80,7 +73,7 @@ val reconfigure_event_logging :
 (** [apply_block bvp predecessor header ops] checks the liveness of the
     operations and then call [Block_validation.apply]
 
-    [should_precheck] when set, triggers the block prechecking before applying
+    [should_validate] when set, triggers the block validation before applying
     it, see [Block_validation.apply].
 
     If [simulate] is true, the context resulting from the application
@@ -88,7 +81,7 @@ val reconfigure_event_logging :
 *)
 val apply_block :
   ?simulate:bool ->
-  ?should_precheck:bool ->
+  ?should_validate:bool ->
   t ->
   Store.chain_store ->
   predecessor:Store.Block.t ->
@@ -107,9 +100,9 @@ val preapply_block :
   Block_validation.operation list list ->
   (Block_header.shell_header * error Preapply_result.t list) tzresult Lwt.t
 
-(** [precheck_block bvp chain_store ~predecessor header hash ops] is a wrapper
-    for [Block_validation.precheck]. *)
-val precheck_block :
+(** [validate_block bvp chain_store ~predecessor header hash ops] is a
+   wrapper for [Block_validation.validate]. *)
+val validate_block :
   t ->
   Store.chain_store ->
   predecessor:Store.Block.t ->

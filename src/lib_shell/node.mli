@@ -1,30 +1,15 @@
 (*****************************************************************************)
 (*                                                                           *)
-(* Open Source License                                                       *)
-(* Copyright (c) 2018 Dynamic Ledger Solutions, Inc. <contact@tezos.com>     *)
-(* Copyright (c) 2018-2021 Nomadic Labs, <contact@nomadic-labs.com>          *)
-(*                                                                           *)
-(* Permission is hereby granted, free of charge, to any person obtaining a   *)
-(* copy of this software and associated documentation files (the "Software"),*)
-(* to deal in the Software without restriction, including without limitation *)
-(* the rights to use, copy, modify, merge, publish, distribute, sublicense,  *)
-(* and/or sell copies of the Software, and to permit persons to whom the     *)
-(* Software is furnished to do so, subject to the following conditions:      *)
-(*                                                                           *)
-(* The above copyright notice and this permission notice shall be included   *)
-(* in all copies or substantial portions of the Software.                    *)
-(*                                                                           *)
-(* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR*)
-(* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,  *)
-(* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL   *)
-(* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER*)
-(* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING   *)
-(* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER       *)
-(* DEALINGS IN THE SOFTWARE.                                                 *)
+(* SPDX-License-Identifier: MIT                                              *)
+(* Copyright (c) 2018 Dynamic Ledger Solutions, Inc. <contact@tezos.com>    *)
+(* Copyright (c) 2018-2024 Nomadic Labs, <contact@nomadic-labs.com>          *)
+(* Copyright (c) 2024 TriliTech <contact@trili.tech>                         *)
 (*                                                                           *)
 (*****************************************************************************)
 
 type t
+
+val get_version : t -> Tezos_version.Octez_node_version.t
 
 type config = {
   genesis : Genesis.t;
@@ -54,21 +39,30 @@ type config = {
 val create :
   ?sandboxed:bool ->
   ?sandbox_parameters:Data_encoding.json ->
+  ?disable_context_pruning:bool ->
+  ?history_mode:History_mode.t ->
+  ?maintenance_delay:Storage_maintenance.delay ->
   singleprocess:bool ->
   version:string ->
-  commit_info:Node_version.commit_info ->
+  commit_info:Octez_node_version.commit_info ->
   config ->
   Shell_limits.peer_validator_limits ->
   Shell_limits.block_validator_limits ->
   Shell_limits.prevalidator_limits ->
   Shell_limits.chain_validator_limits ->
-  History_mode.t option ->
   (t, tztrace) result Lwt.t
 
 val shutdown : t -> unit Lwt.t
 
+(** [build_rpc_directory ~node_version node] builds a Tezos RPC
+    directory for the node by gathering all the
+    subdirectories. [node_version], and [node] contain all
+    informations required to build such a directory. *)
 val build_rpc_directory :
-  version:Tezos_version_parser.t ->
-  commit_info:Node_version.commit_info ->
+  node_version:Tezos_version.Octez_node_version.t ->
   t ->
   unit Tezos_rpc.Directory.t
+
+(** [http_cache_header_tools] builds the tools required to expose the node
+    internals in an abstract way to the http cache header middleware. *)
+val http_cache_header_tools : t -> Http_cache_headers.tools

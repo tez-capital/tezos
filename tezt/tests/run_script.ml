@@ -30,6 +30,8 @@
    Subject:      Check that run script command to octez-client behaves correctly
 *)
 
+let team = Tag.layer1
+
 (* This script checks result of some arbitrary instruction against the
    expected value. Return type and name of the instruction should be
    given by arguments [ty] and [instr] respectively.  The expected
@@ -70,11 +72,17 @@ let check_sender = prg "address" "SENDER"
 
 let check_source = prg "address" "SOURCE"
 
+let check_contract addr =
+  prg
+    "address"
+    (Printf.sprintf "PUSH address %s; CONTRACT nat; ASSERT_SOME; ADDRESS" addr)
+
 let test_balance_and_self_address =
   Protocol.register_test
     ~__FILE__
     ~title:"Run script with balance and self address"
-    ~tags:["client"; "michelson"]
+    ~tags:[team; "client"; "michelson"]
+    ~uses_node:false
   @@ fun protocol ->
   let* client = Client.init_mockup ~protocol () in
   (* With no parameters, the default BALANCE is 4 000 000 ꜩ. *)
@@ -106,7 +114,7 @@ let test_balance_and_self_address =
       client
   in
 
-  (* When --self-address is given, SELF_ADDRESS should match the given. *)
+  (* When --self-address is given, SELF_ADDRESS should match with it. *)
   let* _storage =
     Client.run_script
       ~self_address
@@ -127,7 +135,7 @@ let test_balance_and_self_address =
   in
 
   (* When both --self-address and --balance are given, the BALANCE should be
-     equal to the given value and SELF_ADDRESS should still match the given. *)
+     equal to the given value and SELF_ADDRESS should still match the given one. *)
   let* _storage =
     Client.run_script
       ~balance:(Tez.of_int 1)
@@ -152,7 +160,8 @@ let test_source_and_sender =
   Protocol.register_test
     ~__FILE__
     ~title:"Run script with source and sender"
-    ~tags:["client"; "michelson"]
+    ~tags:[team; "client"; "michelson"]
+    ~uses_node:false
   @@ fun protocol ->
   let* client = Client.init_mockup ~protocol () in
   let* bootstrap1 = Client.show_address ~alias:"bootstrap1" client in
@@ -217,6 +226,48 @@ let test_source_and_sender =
   in
   unit
 
+let test_other_contracts =
+  Protocol.register_test
+    ~__FILE__
+    ~title:"Run script with other_contracts"
+    ~tags:[team; "client"; "michelson"]
+    ~uses_node:false
+  @@ fun protocol ->
+  let* client = Client.init_mockup ~protocol () in
+  let unused_address = {|"KT1Q36KWPSba7dHsH5E4ZsQHehrChc51e19d"|} in
+  let* _storage =
+    Client.run_script
+      ~prg:(check_contract unused_address)
+      ~storage:"Unit"
+      ~input:unused_address
+      ~other_contracts:(Printf.sprintf "{Contract %s nat}" unused_address)
+      client
+  in
+  unit
+
+let test_extra_big_maps =
+  Protocol.register_test
+    ~__FILE__
+    ~title:"Run script with extra_big_maps"
+    ~tags:[team; "client"; "michelson"]
+    ~uses_node:false
+    ~supports:(Protocol.From_protocol 018)
+  @@ fun protocol ->
+  let* client = Client.init_mockup ~protocol () in
+  let* {storage; _} =
+    Client.run_script
+      ~prg:
+        {|parameter unit; storage (pair string (big_map nat string)); code {CDR; CDR; DUP; PUSH nat 42; GET; ASSERT_SOME; PAIR; NIL operation; PAIR}|}
+      ~storage:{|Pair "" 4|}
+      ~input:{|Unit|}
+      ~extra_big_maps:{|{Big_map 4 nat string {Elt 42 "foobar"}}|}
+      client
+  in
+  assert (storage = {|(Pair "foobar" 4)|}) ;
+  unit
+
 let register ~protocols =
   test_balance_and_self_address protocols ;
-  test_source_and_sender protocols
+  test_source_and_sender protocols ;
+  test_other_contracts protocols ;
+  test_extra_big_maps protocols

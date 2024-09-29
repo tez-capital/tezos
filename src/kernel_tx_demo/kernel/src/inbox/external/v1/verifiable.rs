@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2022-2023 TriliTech <contact@trili.tech>
+// SPDX-FileCopyrightText: 2022-2024 TriliTech <contact@trili.tech>
 //
 // SPDX-License-Identifier: MIT
 
@@ -11,13 +11,14 @@ use crate::storage::get_or_set_ticket_id;
 use crate::storage::Account;
 use crate::storage::{account_path, AccountStorage, AccountStorageError};
 use crate::transactions::withdrawal::Withdrawal;
-use crypto::hash::Signature;
-use crypto::hash::{ContractTz1Hash, TryFromPKError};
+use crypto::hash::ContractTz1Hash;
 use crypto::CryptoError;
 use crypto::PublicKeySignatureVerifier;
 use nom::combinator::{consumed, map};
 use nom::sequence::pair;
 use num_bigint::{BigInt, TryFromBigIntError};
+use tezos_crypto_rs::blake2b::Blake2bError;
+use tezos_crypto_rs::hash::Ed25519Signature;
 use tezos_data_encoding::nom::NomReader;
 #[cfg(feature = "debug")]
 use tezos_smart_rollup_debug::debug_msg;
@@ -38,9 +39,6 @@ pub enum TransactionError {
     /// The expected counter did not match the actual given.
     #[error("Account operation counter at {0}, transaction had {1}")]
     InvalidOperationCounter(i64, i64),
-    /// Unable to hash compressed public key.
-    #[error("Unable to convert compressed public key to Layer2 address {0}")]
-    AddressOfPublicKey(#[from] TryFromPKError),
     /// Invalid ticket amount
     #[error("ticket amount out of range of u64 {0}")]
     InvalidAmount(TryFromBigIntError<BigInt>),
@@ -50,6 +48,9 @@ pub enum TransactionError {
     /// Could not identify ticket
     #[error("Unable to identify ticket {0}")]
     TicketIdentification(#[from] TicketHashError),
+    /// Digest error
+    #[error("Unable to digest operation: {0}")]
+    Digest(#[from] Blake2bError),
     /// Unable to decompress public key
     #[error("Invalid signature or public key {0:?}")]
     InvalidSigOrPk(#[from] CryptoError),
@@ -93,7 +94,7 @@ impl From<TryFromBigIntError<BigInt>> for TransactionError {
 pub struct VerifiableOperation<'a> {
     pub(crate) parsed: &'a [u8],
     pub(crate) operation: Operation,
-    pub(crate) signature: Signature,
+    pub(crate) signature: Ed25519Signature,
 }
 
 impl<'a> VerifiableOperation<'a> {
@@ -129,7 +130,7 @@ impl<'a> VerifiableOperation<'a> {
         host: &mut Host,
         account_storage: &mut AccountStorage,
     ) -> Result<Vec<Withdrawal>, TransactionError> {
-        let signer_address = self.operation.signer.address()?;
+        let signer_address = self.operation.signer.address();
 
         let signer_path: OwnedPath = account_path(&signer_address)?;
 
@@ -215,7 +216,7 @@ impl<'a> VerifiableOperation<'a> {
     /// Parse an operation, remembering the parsed slice.
     pub fn parse(input: &'a [u8]) -> tezos_data_encoding::nom::NomResult<Self> {
         map(
-            pair(consumed(Operation::nom_read), Signature::nom_read),
+            pair(consumed(Operation::nom_read), Ed25519Signature::nom_read),
             |((parsed, operation), signature)| Self {
                 parsed,
                 operation,
@@ -290,7 +291,7 @@ mod test {
         #[test]
         fn verifiable_operation_encode_decode(
             (operation, _key) in Operation::arb_with_signer(),
-            sig in any::<[u8; HashType::Signature.size()]>(),
+            sig in any::<[u8; HashType::Ed25519Signature.size()]>(),
             remaining_input in any::<Vec<u8>>(),
         ) {
             let mut encoded = Vec::new();
@@ -303,7 +304,7 @@ mod test {
             assert_eq!(remaining_input, remaining, "Incorrect remaining bytes");
 
             assert_eq!(operation, decoded.operation, "Operations do not match");
-            assert_eq!(sig.as_slice(), decoded.signature.0.as_slice(), "Sigs do not match");
+            assert_eq!(sig.as_slice(), decoded.signature.as_ref(), "Sigs do not match");
         }
     }
 }

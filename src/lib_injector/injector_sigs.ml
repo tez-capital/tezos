@@ -24,17 +24,9 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-type tez = {mutez : int64}
+module Id = Tezos_crypto.Hashed.Injector_operations_hash
 
-type fee_parameter = {
-  minimal_fees : tez;
-  minimal_nanotez_per_byte : Q.t;
-  minimal_nanotez_per_gas_unit : Q.t;
-  force_low_fee : bool;
-  fee_cap : tez;
-  burn_cap : tez;
-}
-
+(** Defines the strategy for a worker. *)
 type injection_strategy =
   [ `Each_block  (** Inject pending operations after each new L1 block *)
   | `Delay_block of float
@@ -108,18 +100,15 @@ end
 module type INJECTOR_OPERATION = sig
   type operation
 
-  (** Hash with b58check encoding iop(53), for hashes of injector operations *)
-  module Hash : Tezos_crypto.Intfs.HASH
-
-  (** Alias for L1 operations hashes *)
-  type hash = Hash.t
+  (** Alias for L1 operations ids *)
+  type id = Id.t
 
   (** Structure to keep track of injection errors. *)
   type errors = {count : int; last_error : tztrace option}
 
-  (** The type of L1 operations that are injected on Tezos. These have a hash
+  (** The type of L1 operations that are injected on Tezos. These have an id
       attached to them that allows tracking and retrieving their status. *)
-  type t = private {hash : hash; operation : operation; mutable errors : errors}
+  type t = private {id : id; operation : operation; mutable errors : errors}
 
   (** [make op] returns an L1 operation with the corresponding hash. *)
   val make : operation -> t
@@ -157,7 +146,11 @@ module type PARAMETERS = sig
   (** Action (see {!retry_action}) to be taken on unsuccessful operation (see
       {!unsuccessful_status}). *)
   val retry_unsuccessful_operation :
-    state -> Operation.t -> unsuccessful_status -> retry_action Lwt.t
+    state ->
+    Operation.t ->
+    ?reason:Operation.t * error trace ->
+    unsuccessful_status ->
+    retry_action Lwt.t
 
   (** The tag of a manager operation. This is used to send operations to the
       correct queue automatically (when signer is not provided) and to recover
@@ -166,17 +159,17 @@ module type PARAMETERS = sig
 
   (** Returns the fee_parameter (to compute fee w.r.t. gas, size, etc.) and the
       caps of fee and burn for each operation. *)
-  val fee_parameter : state -> Operation.t -> fee_parameter
+  val fee_parameter : state -> Operation.t -> Injector_common.fee_parameter
 
-  (** When injecting the given [operations] in an L1 batch, if
-     [batch_must_succeed operations] returns [`All] then all the operations must
-     succeed in the simulation of injection. If it returns [`At_least_one], at
-     least one operation in the list [operations] must be successful in the
-     simulation. In any case, only operations which are known as successful will
-     be included in the injected L1 batch. {b Note}: Returning [`At_least_one]
-     allows to incrementally build "or-batches" by iteratively removing
-     operations that fail from the desired batch. *)
-  val batch_must_succeed : Operation.t list -> [`All | `At_least_one]
+  (** Returns the gas safety guard for each operation if it should be different
+      from the client default (100). *)
+  val safety_guard : Operation.t -> int option
+
+  (** Indicate which operations should be persisted on disk to be reinjected
+      upon restart.  *)
+  val persist_operation : Operation.t -> bool
+
+  val metrics_registry : Prometheus.CollectorRegistry.t
 end
 
 module type PROTOCOL_CLIENT = sig
@@ -223,7 +216,8 @@ module type PROTOCOL_CLIENT = sig
     source:Signature.public_key_hash ->
     src_pk:Signature.public_key ->
     successor_level:bool ->
-    fee_parameter:fee_parameter ->
+    fee_parameter:Injector_common.fee_parameter ->
+    ?safety_guard:int ->
     operation list ->
     ( unsigned_operation simulation_result,
       [`Exceeds_quotas of tztrace | `TzError of tztrace] )
@@ -290,13 +284,9 @@ module type S = sig
     | Included of included_info
         (** The operation has been included in a L1 block. *)
 
-  val injected_info_encoding : injected_info Data_encoding.t
-
-  val included_info_encoding : included_info Data_encoding.t
-
-  (** Initializes the injector with the rollup node state, for a list of
-      signers, and start the workers. Each signer has its own worker with a
-      queue of operations to inject.
+  (** Initializes the injector with the rollup node state, for a list
+      of signers, and start the workers. Each signer's list has its
+      own worker with a queue of operations to inject.
 
       [retention_period] is the number of blocks for which the injector keeps
       the included information for, must be positive or zero. By default (when
@@ -311,29 +301,26 @@ module type S = sig
       [injection_ttl] is the number of blocks after which an operation that is
       injected but never include is retried.
 
-      The injector monitors L1 heads to update the statuses of its operations
-      accordingly. The argument [reconnection_delay] gives an initial value for
-      the delay before attempting a reconnection (see {!Layer_1.init}).
-  *)
+      [collect_metrics] will allow the prometheus to register metrics for the
+      injector.
+
+      Each pkh's list and tag list of [signers] must be disjoint. *)
   val init :
     #Client_context.full ->
     data_dir:string ->
     ?retention_period:int ->
     ?allowed_attempts:int ->
     ?injection_ttl:int ->
-    ?reconnection_delay:float ->
+    ?collect_metrics:bool ->
+    Layer_1.t ->
     state ->
-    signers:(Signature.public_key_hash * injection_strategy * tag list) list ->
+    signers:
+      (Signature.public_key_hash list * injection_strategy * tag list) list ->
     unit tzresult Lwt.t
 
-  (** Add an operation as pending injection in the injector. If the source is
-      not provided, the operation is queued to the worker which handles the
-      corresponding tag. It returns the hash of the operation in the injector
-      queue. *)
-  val add_pending_operation :
-    ?source:Signature.public_key_hash ->
-    operation ->
-    Inj_operation.Hash.t tzresult Lwt.t
+  (** Add an operation as pending injection in the injector. It returns the id
+      of the operation in the injector queue. *)
+  val add_pending_operation : operation -> Id.t tzresult Lwt.t
 
   (** Trigger an injection of the pending operations for all workers. If [tags]
       is given, only the workers which have a tag in [tags] inject their pending
@@ -348,8 +335,24 @@ module type S = sig
   (** Shutdown the injectors, waiting for the ongoing request to be processed. *)
   val shutdown : unit -> unit Lwt.t
 
-  (** The status of an operation in the injector.  *)
-  val operation_status : Inj_operation.Hash.t -> status option
+  (** List of currently running injectors with their respective tags. *)
+  val running_worker_tags : unit -> tag list list
+
+  (** The status of an operation in the injector. *)
+  val operation_status : Id.t -> status option
+
+  (** Returns the total operations per worker queue and in total. This function
+      is constant time excepted for the injectors iteration.  *)
+  val total_queued_operations : unit -> (tag list * int) list * int
+
+  (** Returns the queues of the injectors, with the oldest elements first. If
+      [tag] is provided, returns the queue for the injector which handles this
+      tag. *)
+  val get_queues : ?tag:tag -> unit -> (tag list * Inj_operation.t list) list
+
+  (** Clears the injectors queues completely. If [tag] is provided, only queues
+      for the injector which handles this tag is cleared. *)
+  val clear_queues : ?tag:tag -> unit -> unit tzresult Lwt.t
 
   (** Register a protocol client for a specific protocol to be used by the
       injector. This function {b must} be called for all protocols that the

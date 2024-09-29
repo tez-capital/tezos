@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2022-2023 TriliTech <contact@trili.tech>
+// SPDX-FileCopyrightText: 2022-2024 TriliTech <contact@trili.tech>
 // SPDX-FileCopyrightText: 2023 Marigold <contact@marigold.dev>
 // SPDX-FileCopyrightText: 2022-2023 Nomadic Labs <contact@nomadic-labs.com>
 //
@@ -12,11 +12,14 @@ use crate::state::{HostState, NextInput};
 use crate::MockHost;
 use core::{
     cell::RefCell,
+    cmp::min,
+    mem::size_of,
     ptr,
     slice::{from_raw_parts, from_raw_parts_mut},
 };
 use tezos_smart_rollup_core::smart_rollup_core::{ReadInputMessageInfo, SmartRollupCore};
 use tezos_smart_rollup_core::PREIMAGE_HASH_SIZE;
+use tezos_smart_rollup_host::dal_parameters::DAL_PARAMETERS_SIZE;
 use tezos_smart_rollup_host::metadata::METADATA_SIZE;
 use tezos_smart_rollup_host::Error;
 
@@ -25,6 +28,8 @@ impl From<HostState> for MockHost {
         Self {
             info: super::info_for_level(state.curr_level as i32),
             state: RefCell::new(state),
+            debug_log: Box::new(RefCell::new(std::io::stderr())),
+            keep_going: true,
         }
     }
 }
@@ -33,6 +38,40 @@ impl AsMut<HostState> for MockHost {
     fn as_mut(&mut self) -> &mut HostState {
         self.state.get_mut()
     }
+}
+
+unsafe fn reveal_dal_parameters(
+    host: &MockHost,
+    destination_addr: *mut u8,
+    max_bytes: usize,
+) -> i32 {
+    let params: [u8; DAL_PARAMETERS_SIZE] =
+        host.state.borrow().get_dal_parameters().into();
+    let len = min(max_bytes, params.len());
+    let slice = from_raw_parts_mut(destination_addr, len);
+    slice.copy_from_slice(&params[..len]);
+    len as i32
+}
+
+unsafe fn reveal_dal_page(
+    host: &MockHost,
+    published_level: i32,
+    slot_index: u8,
+    page_index: i16,
+    destination_addr: *mut u8,
+    max_bytes: usize,
+) -> i32 {
+    let state = host.state.borrow();
+    let params = state.get_dal_parameters();
+    let page_size = params.page_size as usize;
+    let len = min(max_bytes, page_size);
+    let start = ((page_index as u64) * params.page_size) as usize;
+    let Some(slot) = state.get_dal_slot(published_level, slot_index) else {
+        return 0;
+    };
+    let slice = from_raw_parts_mut(destination_addr, len);
+    slice.copy_from_slice(&slot[start..start + len]);
+    len as i32
 }
 
 unsafe impl SmartRollupCore for MockHost {
@@ -62,11 +101,9 @@ unsafe impl SmartRollupCore for MockHost {
     }
 
     unsafe fn write_debug(&self, src: *const u8, num_bytes: usize) {
-        let debug_out = from_raw_parts(src, num_bytes).to_vec();
+        let debug_out = from_raw_parts(src, num_bytes);
 
-        let debug = String::from_utf8(debug_out).expect("unexpected non-utf8 debug log");
-
-        eprintln!("DEBUG: {}", &debug);
+        self.debug_log.borrow_mut().write_all(debug_out).unwrap();
     }
 
     unsafe fn write_output(&self, src: *const u8, num_bytes: usize) -> i32 {
@@ -80,11 +117,7 @@ unsafe impl SmartRollupCore for MockHost {
     }
 
     unsafe fn store_has(&self, path: *const u8, len: usize) -> i32 {
-        let path = from_raw_parts(path, len);
-        self.state
-            .borrow()
-            .handle_store_has(path)
-            .unwrap_or_else(Error::code)
+        self.state.borrow().store.store_has(path, len)
     }
 
     unsafe fn store_read(
@@ -95,24 +128,10 @@ unsafe impl SmartRollupCore for MockHost {
         dst: *mut u8,
         max_bytes: usize,
     ) -> i32 {
-        let path = from_raw_parts(path, len);
-
-        let bytes = self
-            .state
+        self.state
             .borrow()
-            .handle_store_read(path, offset, max_bytes);
-
-        match bytes {
-            Ok(bytes) => {
-                assert!(bytes.len() <= max_bytes);
-
-                let slice = from_raw_parts_mut(dst, bytes.len());
-                slice.copy_from_slice(bytes.as_slice());
-
-                bytes.len().try_into().unwrap()
-            }
-            Err(e) => e.code(),
-        }
+            .store
+            .store_read(path, len, offset, dst, max_bytes)
     }
 
     unsafe fn store_write(
@@ -123,43 +142,22 @@ unsafe impl SmartRollupCore for MockHost {
         src: *const u8,
         num_bytes: usize,
     ) -> i32 {
-        let path = from_raw_parts(path, len);
-        let bytes = from_raw_parts(src, num_bytes);
-
         self.state
             .borrow_mut()
-            .handle_store_write(path, offset, bytes)
-            .map(|_| 0)
-            .unwrap_or_else(Error::code)
+            .store
+            .store_write(path, len, offset, src, num_bytes)
     }
 
     unsafe fn store_delete(&self, path: *const u8, len: usize) -> i32 {
-        let path = from_raw_parts(path, len);
-
-        self.state
-            .borrow_mut()
-            .handle_store_delete(path)
-            .map(|_| 0)
-            .unwrap_or_else(Error::code)
+        self.state.borrow_mut().store.store_delete(path, len)
     }
 
     unsafe fn store_delete_value(&self, path: *const u8, len: usize) -> i32 {
-        let path = from_raw_parts(path, len);
-
-        self.state
-            .borrow_mut()
-            .handle_store_delete_value(path)
-            .map(|_| 0)
-            .unwrap_or_else(Error::code)
+        self.state.borrow_mut().store.store_delete_value(path, len)
     }
 
     unsafe fn store_list_size(&self, path: *const u8, len: usize) -> i64 {
-        let path = from_raw_parts(path, len);
-
-        self.state
-            .borrow()
-            .handle_store_list_size(path)
-            .unwrap_or_else(|e| e.code() as i64)
+        self.state.borrow().store.store_list_size(path, len)
     }
 
     unsafe fn store_move(
@@ -169,14 +167,12 @@ unsafe impl SmartRollupCore for MockHost {
         to_path: *const u8,
         to_path_len: usize,
     ) -> i32 {
-        let from_path = from_raw_parts(from_path, from_path_len);
-        let to_path = from_raw_parts(to_path, to_path_len);
-
-        self.state
-            .borrow_mut()
-            .handle_store_move(from_path, to_path)
-            .map(|_| 0)
-            .unwrap_or_else(Error::code)
+        self.state.borrow_mut().store.store_move(
+            from_path,
+            from_path_len,
+            to_path,
+            to_path_len,
+        )
     }
 
     unsafe fn store_copy(
@@ -186,14 +182,12 @@ unsafe impl SmartRollupCore for MockHost {
         to_path: *const u8,
         to_path_len: usize,
     ) -> i32 {
-        let from_path = from_raw_parts(from_path, from_path_len);
-        let to_path = from_raw_parts(to_path, to_path_len);
-
-        self.state
-            .borrow_mut()
-            .handle_store_copy(from_path, to_path)
-            .map(|_| 0)
-            .unwrap_or_else(Error::code)
+        self.state.borrow_mut().store.store_copy(
+            from_path,
+            from_path_len,
+            to_path,
+            to_path_len,
+        )
     }
 
     unsafe fn reveal_preimage(
@@ -223,32 +217,80 @@ unsafe impl SmartRollupCore for MockHost {
     }
 
     unsafe fn store_value_size(&self, path: *const u8, path_len: usize) -> i32 {
-        let path = from_raw_parts(path, path_len);
-        self.state
-            .borrow()
-            .handle_store_value_size(path)
-            .unwrap_or_else(Error::code)
+        self.state.borrow().store.store_value_size(path, path_len)
     }
 
     unsafe fn reveal_metadata(&self, destination_addr: *mut u8, max_bytes: usize) -> i32 {
-        assert!(METADATA_SIZE <= max_bytes);
         let metadata: [u8; METADATA_SIZE] =
             self.state.borrow().get_metadata().clone().into();
-        let slice = from_raw_parts_mut(destination_addr, metadata.len());
-        slice.copy_from_slice(metadata.as_slice());
-        metadata.len().try_into().unwrap()
+        let len = min(max_bytes, metadata.len());
+        let slice = from_raw_parts_mut(destination_addr, len);
+        slice.copy_from_slice(&metadata[..len]);
+        len as i32
     }
 
-    #[cfg(feature = "proto-alpha")]
     unsafe fn reveal(
         &self,
-        _payload_addr: *const u8,
-        _payload_len: usize,
-        _destination_addr: *mut u8,
-        _max_bytes: usize,
+        payload_addr: *const u8,
+        payload_len: usize,
+        destination_addr: *mut u8,
+        max_bytes: usize,
     ) -> i32 {
-        // TODO: https://gitlab.com/tezos/tezos/-/issues/6171
-        unimplemented!("The `reveal` host function is not yet mocked.")
+        let payload: &[u8] = from_raw_parts(payload_addr, payload_len);
+        if payload.is_empty() {
+            return 0;
+        }
+        let (tag, payload) = payload.split_at(size_of::<u8>());
+        match tag[0] {
+            0 => {
+                // Reveal_raw_data
+                self.reveal_preimage(
+                    payload_addr.add(1),
+                    payload_len.saturating_sub(1),
+                    destination_addr,
+                    max_bytes,
+                )
+            }
+            1 => {
+                // Reveal_metadata
+                self.reveal_metadata(destination_addr, max_bytes)
+            }
+            2 => {
+                // Reveal_dal_page
+
+                const PAYLOAD_SIZE: usize =
+                    size_of::<i32>() + size_of::<u8>() + size_of::<i16>();
+                if payload.len() < PAYLOAD_SIZE {
+                    return 0;
+                }
+
+                let (published_level, remaining) = payload.split_at(size_of::<i32>());
+                let (slot_index, remaining) = remaining.split_at(size_of::<u8>());
+                let (page_index, _) = remaining.split_at(size_of::<i16>());
+
+                let published_level =
+                    i32::from_be_bytes(published_level.try_into().unwrap());
+                let slot_index = slot_index[0];
+                let page_index = i16::from_be_bytes(page_index.try_into().unwrap());
+
+                reveal_dal_page(
+                    self,
+                    published_level,
+                    slot_index,
+                    page_index,
+                    destination_addr,
+                    max_bytes,
+                )
+            }
+            3 => {
+                // Reveal_dal_parameters
+                reveal_dal_parameters(self, destination_addr, max_bytes)
+            }
+            tag => unimplemented!(
+                "The `reveal` host function is not yet mocked for tag {}.",
+                tag
+            ),
+        }
     }
 }
 
@@ -276,12 +318,14 @@ mod tests {
             .add_input(vec![5; MAX_INPUT_MESSAGE_SIZE / 2]);
 
         // Act
+        let _ = mock_host.read_input(); // sol
+        let _ = mock_host.read_input(); // info per level
         let result = mock_host.read_input();
 
         // Assert
         let expected = Ok(Some(Message::new(
             mock_host.level(),
-            0,
+            2,
             vec![5; MAX_INPUT_MESSAGE_SIZE / 2],
         )));
 
@@ -381,8 +425,8 @@ mod tests {
         let data = vec![b'a'; size as usize];
         let path = b"/a/b";
 
-        state.handle_store_write(path, 0, &data).unwrap();
-        let value_size = state.handle_store_value_size(path).unwrap();
+        state.store.handle_store_write(path, 0, &data).unwrap();
+        let value_size = state.store.handle_store_value_size(path).unwrap();
 
         assert_eq!(size, value_size)
     }

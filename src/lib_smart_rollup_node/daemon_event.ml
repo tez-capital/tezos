@@ -4,6 +4,7 @@
 (* Copyright (c) 2023 TriliTech <contact@trili.tech>                         *)
 (* Copyright (c) 2023 Nomadic Labs, <contact@nomadic-labs.com>               *)
 (* Copyright (c) 2023 Functori, <contact@functori.com>                       *)
+(* Copyright (c) 2023 Marigold <contact@marigold.dev>                        *)
 (*                                                                           *)
 (* Permission is hereby granted, free of charge, to any person obtaining a   *)
 (* copy of this software and associated documentation files (the "Software"),*)
@@ -28,12 +29,12 @@
 module Simple = struct
   include Internal_event.Simple
 
-  let section = ["sc_rollup_node"; "daemon"]
+  let section = ["smart_rollup_node"; "daemon"]
 
   let head_processing =
     declare_2
       ~section
-      ~name:"sc_rollup_daemon_process_head"
+      ~name:"smart_rollup_node_daemon_process_head"
       ~msg:"Processing head {hash} at level {level}"
       ~level:Notice
       ("hash", Block_hash.encoding)
@@ -42,7 +43,7 @@ module Simple = struct
   let new_head_processed =
     declare_3
       ~section
-      ~name:"sc_rollup_node_layer_1_new_head_processed"
+      ~name:"smart_rollup_node_daemon_new_head_processed"
       ~msg:
         "Finished processing layer 1 head {hash} at level {level} in \
          {process_time}"
@@ -52,14 +53,23 @@ module Simple = struct
       ("process_time", Time.System.Span.encoding)
       ~pp3:Ptime.Span.pp
 
+  let new_head_degraded =
+    declare_2
+      ~section
+      ~name:"smart_rollup_node_daemon_new_head_degraded"
+      ~msg:"[DEGRADED MODE] Seen layer 1 head {hash} at level {level}"
+      ~level:Error
+      ("hash", Block_hash.encoding)
+      ("level", Data_encoding.int32)
+
   let processing_heads_iteration =
     declare_3
       ~section
-      ~name:"sc_rollup_daemon_processing_heads"
+      ~name:"smart_rollup_node_daemon_processing_heads"
       ~msg:
         "A new iteration of process_heads has been triggered: processing \
          {number} heads from level {from} to level {to}"
-      ~level:Notice
+      ~level:Debug
       ("number", Data_encoding.int31)
       ("from", Data_encoding.int32)
       ("to", Data_encoding.int32)
@@ -67,10 +77,10 @@ module Simple = struct
   let new_heads_processed =
     declare_3
       ~section
-      ~name:"sc_rollup_node_layer_1_new_heads_processed"
+      ~name:"smart_rollup_node_daemon_new_heads_processed"
       ~msg:
         "Finished processing {number} layer 1 heads for levels {from} to {to}"
-      ~level:Notice
+      ~level:Info
       ("number", Data_encoding.int31)
       ("from", Data_encoding.int32)
       ("to", Data_encoding.int32)
@@ -78,7 +88,7 @@ module Simple = struct
   let included_successful_operation =
     declare_1
       ~section
-      ~name:"sc_rollup_daemon_included_successful_operation"
+      ~name:"smart_rollup_node_daemon_included_successful_operation"
       ~msg:"Operation {operation} was included as successful"
       ~level:Debug
       ("operation", L1_operation.encoding)
@@ -87,8 +97,10 @@ module Simple = struct
   let included_failed_operation =
     declare_3
       ~section
-      ~name:"sc_rollup_daemon_included_failed_operation"
-      ~msg:"Operation {operation} was included as {status} with error {error}"
+      ~name:"smart_rollup_node_daemon_included_failed_operation"
+      ~msg:
+        "[Warning]: Operation {operation} was included as {status} with error \
+         {error}"
       ~level:Warning
       ("operation", L1_operation.encoding)
       ( "status",
@@ -101,14 +113,13 @@ module Simple = struct
             ]) )
       ("error", Data_encoding.option Error_monad.trace_encoding)
       ~pp1:L1_operation.pp
-      ~pp3:
-        (fun ppf -> function
-          | None -> Format.pp_print_string ppf "none"
-          | Some e -> Error_monad.pp_print_trace ppf e)
+      ~pp3:(fun ppf -> function
+        | None -> Format.pp_print_string ppf "none"
+        | Some e -> Error_monad.pp_print_trace ppf e)
 
   let migration =
     declare_5
-      ~name:"sc_rollup_daemon_protocol_migration"
+      ~name:"smart_rollup_node_daemon_protocol_migration"
       ~msg:
         "{catching_up} from {old_protocol} ({old_protocol_level}) to \
          {new_protocol} ({new_protocol_level}) "
@@ -123,11 +134,24 @@ module Simple = struct
           ppf
           (if catching_up then "Catching up on migration" else "Migration"))
 
+  let switched_protocol =
+    declare_3
+      ~name:"smart_rollup_node_daemon_switched_protocol"
+      ~msg:"Switched to {protocol} ({proto_level}) with constants {constants} "
+      ~level:Notice
+      ("protocol", Protocol_hash.encoding)
+      ("proto_level", Data_encoding.int31)
+      ("constants", Rollup_constants.encoding)
+      ~pp3:(fun fmt c ->
+        Data_encoding.Json.pp
+          fmt
+          (Data_encoding.Json.construct Rollup_constants.encoding c))
+
   let error =
     declare_1
       ~section
-      ~name:"sc_rollup_daemon_error"
-      ~msg:"Fatal daemon error: {error}"
+      ~name:"smart_rollup_node_daemon_error"
+      ~msg:"[Fatal daemon error]: {error}"
       ~level:Fatal
       ("error", trace_encoding)
       ~pp1:pp_print_trace
@@ -135,11 +159,39 @@ module Simple = struct
   let degraded_mode =
     declare_0
       ~section
-      ~name:"sc_rollup_daemon_degraded_mode"
+      ~name:"smart_rollup_node_daemon_degraded_mode"
       ~msg:
-        "Entering degraded mode: only playing refutation game to defend \
-         commitments."
+        "[Daemon error]: entering degraded mode - only playing refutation game \
+         to defend commitments and publishing pending commitments"
       ~level:Error
+      ()
+
+  let refutation_loop_retry =
+    declare_1
+      ~section
+      ~name:"smart_rollup_node_daemon_refutation_loop_retry"
+      ~msg:"[Refutation daemon error]: restarting refutation daemon in {delay}."
+      ~level:Warning
+      ("delay", Time.System.Span.encoding)
+      ~pp1:Ptime.Span.pp
+
+  let main_loop_retry =
+    declare_1
+      ~section
+      ~name:"smart_rollup_node_daemon_main_loop_retry"
+      ~msg:"Restarting main rollup node loop in {delay}."
+      ~level:Warning
+      ("delay", Time.System.Span.encoding)
+      ~pp1:Ptime.Span.pp
+
+  let exit_bailout_mode =
+    declare_0
+      ~section
+      ~name:"smart_rollup_node_daemon_exit_bailout_mode"
+      ~msg:
+        "Exit bailout mode - stakes have been recovered, and the node is \
+         exiting safely now"
+      ~level:Notice
       ()
 end
 
@@ -147,6 +199,8 @@ let head_processing hash level = Simple.(emit head_processing (hash, level))
 
 let new_head_processed hash level process_time =
   Simple.(emit new_head_processed (hash, level, process_time))
+
+let new_head_degraded hash level = Simple.(emit new_head_degraded (hash, level))
 
 let new_heads_iteration event = function
   | oldest :: rest ->
@@ -180,6 +234,17 @@ let migration ~catching_up (old_protocol, old_protocol_level)
       new_protocol,
       new_protocol_level )
 
+let switched_protocol protocol proto_level constants =
+  Simple.(emit switched_protocol) (protocol, proto_level, constants)
+
 let error e = Simple.(emit error) e
 
 let degraded_mode () = Simple.(emit degraded_mode) ()
+
+let refutation_loop_retry d =
+  Simple.(emit refutation_loop_retry) (Time.System.Span.of_seconds_exn d)
+
+let main_loop_retry d =
+  Simple.(emit main_loop_retry) (Time.System.Span.of_seconds_exn d)
+
+let exit_bailout_mode () = Simple.(emit exit_bailout_mode) ()

@@ -1,17 +1,26 @@
+(*****************************************************************************)
+(*                                                                           *)
+(* SPDX-License-Identifier: MIT                                              *)
+(* Copyright (c) 2024 Nomadic Labs, <contact@nomadic-labs.com>               *)
+(*                                                                           *)
+(*****************************************************************************)
+
 (** Testing
     -------
     Component:  Protocol (time repr)
     Invocation: dune exec src/proto_alpha/lib_protocol/test/unit/main.exe \
                   -- --file test_time_repr.ml
-    Subject:    Error handling of time operations 
+    Subject:    Error handling of time operations
 *)
 
 open Protocol
 
 let test_nominal_add () =
+  let open Result_syntax in
   let t = Time_repr.of_seconds (Int64.of_int 2) in
   let addition =
-    Period_repr.of_seconds Int64.one >>? fun p -> Time_repr.( +? ) t p
+    let* p = Period_repr.of_seconds Int64.one in
+    Time_repr.( +? ) t p
   in
   match addition with
   | Ok v ->
@@ -25,6 +34,7 @@ let test_nominal_add () =
   | Error _ -> failwith "Addition has overflowed"
 
 let test_overflow_add () =
+  let open Lwt_result_syntax in
   let t = Time_repr.of_seconds Int64.max_int in
   match Period_repr.of_seconds Int64.one with
   | Error _ -> failwith "period_repr conversion"

@@ -1,0 +1,99 @@
+[
+  {
+    "file": "tezt/tests/synchronisation_heuristic.ml",
+    "title": "Parisc: bootstrap: many nodes bootstrap",
+    "tags": [
+      "admin_client",
+      "baker_psparisc",
+      "bootstrap",
+      "client",
+      "layer1",
+      "memory_4k",
+      "node",
+      "parisc",
+      "synchronisation_threshold",
+      "threshold"
+    ],
+    "successful_runs": {
+      "total_time": "50909714",
+      "count": "1"
+    }
+  },
+  {
+    "file": "tezt/tests/dal.ml",
+    "title": "Parisb: Testing DAL L1 integration (Use all available slots)",
+    "tags": [
+      "regression",
+      "admin_client",
+      "client",
+      "dal",
+      "memory_4k",
+      "node",
+      "parisb",
+      "tezos2"
+    ],
+    "successful_runs": {
+      "total_time": "35276292",
+      "count": "1"
+    }
+  },
+  {
+    "file": "tezt/tests/dal.ml",
+    "title": "Parisc: Testing DAL node (banned attesters receive their shards thanks to amplification)",
+    "tags": [
+      "admin_client",
+      "amplification",
+      "client",
+      "dal",
+      "dal_node",
+      "memory_4k",
+      "node",
+      "parisc",
+      "tezos2"
+    ],
+    "successful_runs": {
+      "total_time": "40732844",
+      "count": "1"
+    }
+  },
+  {
+    "file": "tezt/tests/dal.ml",
+    "title": "Parisb: Testing DAL node (observer triggers amplification (without lost shards))",
+    "tags": [
+      "admin_client",
+      "amplification",
+      "client",
+      "dal",
+      "dal_node",
+      "memory_4k",
+      "node",
+      "parisb",
+      "simple",
+      "tezos2"
+    ],
+    "successful_runs": {
+      "total_time": "23282871",
+      "count": "1"
+    }
+  },
+  {
+    "file": "tezt/tests/dal.ml",
+    "title": "Alpha: Testing DAL node (garbage collection of shards for producer and attester)",
+    "tags": [
+      "admin_client",
+      "alpha",
+      "attester",
+      "client",
+      "dal",
+      "dal_node",
+      "gc",
+      "memory_4k",
+      "node",
+      "tezos2"
+    ],
+    "successful_runs": {
+      "total_time": "43456991",
+      "count": "1"
+    }
+  }
+]

@@ -29,3 +29,7 @@ module type S = Pvm_sig.S
 let of_kind : Kind.t -> (module S) = function
   | Example_arith -> (module Arith_pvm)
   | Wasm_2_0_0 -> (module Wasm_2_0_0_pvm)
+  | Riscv -> invalid_arg "Riscv rollup is inactive in this protocol"
+
+let context : Kind.t -> (module Context_sigs.S) = function
+  | _ -> (module Irmin_context)

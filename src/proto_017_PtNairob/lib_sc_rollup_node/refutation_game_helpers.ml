@@ -27,6 +27,7 @@
 
 open Protocol
 open Alpha_context
+open Context_wrapper.Irmin
 
 (** This function computes the inclusion/membership proof of the page
       identified by [page_id] in the slot whose data are provided in
@@ -54,7 +55,8 @@ let page_membership_proof params page_index slot_data =
         | `Fail s -> "Fail " ^ s
         | `Page_index_out_of_range -> "Page_index_out_of_range"
         | `Slot_wrong_size s -> "Slot_wrong_size: " ^ s
-        | `Invalid_degree_strictly_less_than_expected _ as commit_error ->
+        | ( `Invalid_degree_strictly_less_than_expected _
+          | `Prover_SRS_not_loaded ) as commit_error ->
             Cryptobox.string_of_commit_error commit_error)
 
 (** When the PVM is waiting for a Dal page input, this function attempts to
@@ -103,13 +105,13 @@ let page_info_from_pvm_state (node_ctxt : _ Node_context.t) ~dal_attestation_lag
 
 let metadata (node_ctxt : _ Node_context.t) =
   let address =
-    Sc_rollup_proto_types.Address.of_octez node_ctxt.rollup_address
+    Sc_rollup_proto_types.Address.of_octez node_ctxt.config.sc_rollup_address
   in
   let origination_level = Raw_level.of_int32_exn node_ctxt.genesis_info.level in
   Sc_rollup.Metadata.{address; origination_level}
 
 let generate_proof (node_ctxt : _ Node_context.t)
-    (game : Octez_smart_rollup.Game.t) start_state =
+    (game : Octez_smart_rollup.Game.t) (start_state : Context.pvmstate) =
   let open Lwt_result_syntax in
   let module PVM = (val Pvm.of_kind node_ctxt.kind) in
   let snapshot =
@@ -120,36 +122,25 @@ let generate_proof (node_ctxt : _ Node_context.t)
   let snapshot_level_int32 =
     (Octez_smart_rollup.Inbox.Skip_list.content game.inbox_snapshot).level
   in
-  let get_snapshot_head () =
-    let+ hash = Node_context.hash_of_level node_ctxt snapshot_level_int32 in
-    Layer1.{hash; level = snapshot_level_int32}
-  in
   let* context =
     let* start_hash = Node_context.hash_of_level node_ctxt game.inbox_level in
     let+ context = Node_context.checkout_context node_ctxt start_hash in
     Context.index context
   in
   let* dal_slots_history =
-    if Node_context.dal_supported node_ctxt then
-      let* snapshot_head = get_snapshot_head () in
-      Dal_slots_tracker.slots_history_of_hash node_ctxt snapshot_head
-    else return Dal.Slots_history.genesis
+    (* DAL is not activated in Nairobi *)
+    return Dal.Slots_history.genesis
   in
   let* dal_slots_history_cache =
-    if Node_context.dal_supported node_ctxt then
-      let* snapshot_head = get_snapshot_head () in
-      Dal_slots_tracker.slots_history_cache_of_hash node_ctxt snapshot_head
-    else return (Dal.Slots_history.History_cache.empty ~capacity:0L)
+    (* DAL is not activated in Nairobi *)
+    return (Dal.Slots_history.History_cache.empty ~capacity:0L)
   in
   (* We fetch the value of protocol constants at block snapshot level
      where the game started. *)
-  let* parametric_constants =
-    let cctxt = node_ctxt.cctxt in
-    Protocol.Constants_services.parametric
-      (new Protocol_client_context.wrap_full cctxt)
-      (cctxt#chain, `Level snapshot_level_int32)
+  let* constants =
+    Protocol_plugins.get_constants_of_level node_ctxt snapshot_level_int32
   in
-  let dal_l1_parameters = parametric_constants.dal in
+  let dal_l1_parameters = constants.dal in
   let dal_parameters = dal_l1_parameters.cryptobox_parameters in
   let dal_attestation_lag = dal_l1_parameters.attestation_lag in
 
@@ -158,19 +149,20 @@ let generate_proof (node_ctxt : _ Node_context.t)
       ~dal_attestation_lag
       node_ctxt
       dal_parameters
-      start_state
+      (of_node_pvmstate start_state)
   in
   let module P = struct
     include PVM
 
-    let context = context
+    let context : context = (of_node_context context).index
 
-    let state = start_state
+    let state = of_node_pvmstate start_state
 
     let reveal hash =
       let open Lwt_syntax in
       let* res =
         Reveals.get
+          ~pre_images_endpoint:node_ctxt.config.pre_images_endpoint
           ~data_dir:node_ctxt.data_dir
           ~pvm_kind:(Sc_rollup_proto_types.Kind.to_octez PVM.kind)
           ~hash
@@ -209,19 +201,13 @@ let generate_proof (node_ctxt : _ Node_context.t)
              ~error:(Format.kasprintf Stdlib.failwith "%a" pp_print_trace))
         @@
         let open Lwt_result_syntax in
-        let* {is_first_block; predecessor; predecessor_timestamp; messages} =
-          Node_context.get_messages
+        let* messages =
+          Messages.get
             node_ctxt
             (Sc_rollup_proto_types.Merkelized_payload_hashes_hash.to_octez
                witness)
         in
-        let*? hist =
-          Inbox.payloads_history_of_messages
-            ~is_first_block
-            ~predecessor
-            ~predecessor_timestamp
-            messages
-        in
+        let*? hist = Inbox.payloads_history_of_all_messages messages in
         return hist
     end
 
@@ -240,7 +226,7 @@ let generate_proof (node_ctxt : _ Node_context.t)
     end
   end in
   let metadata = metadata node_ctxt in
-  let*! start_tick = PVM.get_tick start_state in
+  let*! start_tick = PVM.get_tick (of_node_pvmstate start_state) in
   let* proof =
     trace
       (Sc_rollup_node_errors.Cannot_produce_proof
@@ -277,16 +263,18 @@ let generate_proof (node_ctxt : _ Node_context.t)
   in
   return proof
 
-let make_dissection plugin (node_ctxt : _ Node_context.t) ~start_state
-    ~start_chunk ~our_stop_chunk ~default_number_of_sections ~last_level =
+let make_dissection plugin (node_ctxt : _ Node_context.t) state_cache
+    ~start_state ~start_chunk ~our_stop_chunk ~default_number_of_sections
+    ~commitment_period_tick_offset ~last_level =
   let open Lwt_result_syntax in
   let module PVM = (val Pvm.of_kind node_ctxt.kind) in
   let state_of_tick ?start_state tick =
     Interpreter.state_of_tick
       plugin
       node_ctxt
+      state_cache
       ?start_state
-      ~tick:(Sc_rollup.Tick.to_z tick)
+      ~tick:(Z.add (Sc_rollup.Tick.to_z tick) commitment_period_tick_offset)
       last_level
   in
   let state_hash_of_eval_state Pvm_plugin_sig.{state_hash; _} =
@@ -314,12 +302,12 @@ let make_dissection plugin (node_ctxt : _ Node_context.t) ~start_state
 
 let timeout_reached node_ctxt ~self ~opponent =
   let open Lwt_result_syntax in
-  let Node_context.{rollup_address; cctxt; _} = node_ctxt in
+  let Node_context.{config; cctxt; _} = node_ctxt in
   let+ game_result =
     Plugin.RPC.Sc_rollup.timeout_reached
       (new Protocol_client_context.wrap_full cctxt)
       (cctxt#chain, `Head 0)
-      (Sc_rollup_proto_types.Address.of_octez rollup_address)
+      (Sc_rollup_proto_types.Address.of_octez config.sc_rollup_address)
       self
       opponent
   in

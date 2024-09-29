@@ -31,20 +31,11 @@
    Subject:      Test a simple contract origination and call
 *)
 
-let contract_path protocol kind contract =
-  sf
-    "file:tests_python/contracts_%s/%s/%s"
-    (match protocol with
-    | Protocol.Alpha -> "alpha"
-    | _ -> sf "%03d" @@ Protocol.number protocol)
-    kind
-    contract
-
 let test_origination_call =
   Protocol.register_test
     ~__FILE__
     ~title:"contract baker"
-    ~tags:["client"; "michelson"]
+    ~tags:[Tag.layer1; "client"; "michelson"]
   @@ fun protocol ->
   let* _node, client = Client.init_with_protocol `Client ~protocol () in
   Log.info "Contract origination" ;
@@ -78,7 +69,7 @@ let test_origination_call =
   in
   let* () = Client.bake_for_and_wait client in
   let* op_hashes =
-    RPC.Client.call client (RPC.get_chain_block_operation_hashes ())
+    Client.RPC.call client (RPC.get_chain_block_operation_hashes ())
   in
   Check.(
     (List.flatten op_hashes = [operation_hash])
@@ -104,7 +95,7 @@ let test_origination_call =
   in
   let* () = Client.bake_for_and_wait client in
   let* call_op_hashes =
-    RPC.Client.call client (RPC.get_chain_block_operation_hashes ())
+    Client.RPC.call client (RPC.get_chain_block_operation_hashes ())
   in
   Check.(
     list_mem
@@ -118,7 +109,7 @@ let test_origination_call =
     Client.get_balance_for client ~account:Constant.bootstrap3.alias
   in
   let* deposit =
-    RPC.Client.call client
+    Client.RPC.call client
     @@ RPC.get_chain_block_context_delegate_frozen_deposits
          Constant.bootstrap3.public_key_hash
   in
@@ -128,7 +119,7 @@ let test_origination_call =
     ~error_msg:"Expected balance %R, got %L" ;
   Log.info "Contract query storage" ;
   let* json =
-    RPC.Client.call client
+    Client.RPC.call client
     @@ RPC.get_chain_block_context_contract_storage ~id:contract ()
   in
   let storage = JSON.(json |-> "prim" |> as_string) in

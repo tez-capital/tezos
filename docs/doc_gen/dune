@@ -1,24 +1,31 @@
+; This file was automatically generated, do not edit.
+; Edit file manifest/main.ml instead.
+
 (executables
- (names rpc_doc
-        p2p_doc)
- (libraries octez-libs.tezos-base
-            octez-libs.tezos-rpc
-            octez-libs.tezos-stdlib-unix
-            tezos-shell
-            octez-libs.tezos-rpc-http-server
-            tezos-protocol-updater
-            ; TODO tezos/tezos#2170: adapt next line(s)
-            tezos-embedded-protocol-genesis
-            tezos-embedded-protocol-016-PtMumbai
-            tezos-embedded-protocol-017-PtNairob
-            tezos-embedded-protocol-018-Proxford
-            tezos-embedded-protocol-alpha
-            data-encoding
-            re)
- (flags (:standard -open Tezos_base__TzPervasives
-                   -open Tezos_stdlib_unix
-                   -open Tezos_shell
-                   -open Tezos_store
-                   -open Tezos_protocol_updater
-                   -linkall
-                   (:include %{workspace_root}/macos-link-flags.sexp))))
+ (names rpc_doc p2p_doc)
+ (libraries
+  octez-libs.base
+  octez-libs.rpc
+  octez-libs.stdlib-unix
+  octez-shell-libs.shell
+  octez-libs.rpc-http-server
+  octez-shell-libs.store
+  octez-shell-libs.protocol-updater
+  octez-node-config
+  octez-libs.data-encoding
+  re
+  tezos-protocol-genesis.embedded-protocol
+  tezos-protocol-020-PsParisC.embedded-protocol
+  tezos-protocol-021-PsquebeC.embedded-protocol
+  tezos-protocol-alpha.embedded-protocol)
+ (link_flags
+  (:standard)
+  (:include %{workspace_root}/macos-link-flags.sexp))
+ (flags
+  (:standard)
+  -open Tezos_base.TzPervasives
+  -open Tezos_stdlib_unix
+  -open Tezos_shell
+  -open Tezos_store
+  -open Tezos_protocol_updater
+  -open Octez_node_config))

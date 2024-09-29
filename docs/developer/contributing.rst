@@ -16,7 +16,7 @@ Reporting issues
 The simplest way to contribute to Octez is to report issues that you may
 find with the software on `GitLab <https://gitlab.com/tezos/tezos/-/issues>`__.
 If you are unsure about an issue
-consult the :doc:`technical support sources <../introduction/support>`
+consult the :ref:`Tezos community <tezos_community>`
 first and always make sure
 to search the existing issues before reporting a new one.
 Some information that are probably important to include in the description:
@@ -43,7 +43,7 @@ Alternatively, you may of course create your own MRs for submitting your changes
 Other non-code contributions
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-If you acquired a good expertise level in using, configuring, or overcoming problems with the various Octez executables, you may bring useful contributions by providing assistance to others via the different channels (Slack,  StackExchange, etc.) listed in the :doc:`technical support page <../introduction/support>`.
+If you acquired a good expertise level in using, configuring, or overcoming problems with the various Octez executables, you may bring useful contributions by providing assistance to others via the different channels (Slack,  StackExchange, etc.) in the :ref:`Tezos community <tezos_community>`.
 
 If you want to shape the future of Octez, you may consider contributing to Tezos Improvement Proposals (TZIPs), that specify new features or define standards. These are located in the `TZIP repo <https://gitlab.com/tezos/tzip/>`__.
 
@@ -52,7 +52,7 @@ Going further
 
 To directly contribute to the *code* itself, expertise in a few areas is necessary.
 
-First, make sure that you are proficient enough in OCaml. The community
+First, make sure that you are proficient enough in OCaml. The OCaml community
 website https://ocaml.org gives a few useful pointers for that. In
 particular, we use a lot of functors, and a few GADTs in the codebase,
 so you may want to make sure that you master these advanced concepts.
@@ -109,7 +109,7 @@ Then use ``push -f`` in your branch to rewrite the history.
 Being proficient with interactive rebases is mandatory to avoid
 mistakes and wasting time.
 
-This Git strategy is a variant of the `git rebase workflow <https://www.atlassian.com/git/articles/git-team-workflows-merge-or-rebase>`_.
+This Git strategy is a variant of the `git rebase workflow <https://www.atlassian.com/git/tutorials/merging-vs-rebasing>`_.
 
 .. _mr_workflow:
 
@@ -185,6 +185,20 @@ any fix-up commits that were applied (remembering to edit the commit
 message appropriately). Then the developer (or anyone else when not possible) can assign the MR to the `Nomadic
 Marge-bot <https://gitlab.com/nomadic-margebot>`__, which will
 automatically rebase the branch on top of master and finally merge it.
+
+Merge Queue Order
+-----------------
+
+By default, Marge-bot will merge MRs assigned to it in the assignment order. That is, the first MR assigned is the first that is merged. There are situations when it is desirable to modify this order. To achieve this, Marge-bot respects two priority labels, whose usage is reserved to the :doc:`Octez merge team <merge_team>`:
+
+- ``marge-priority::critical``: is reserved for MRs
+  resolving critical production issues (e.g., fixing a blocked CI).
+- ``marge-priority::high``: can be applied to MRs that needs to be
+  merged urgently. For instance, it can applied to MRs for urgent
+  releases or to reduce the merge delay between MRs that compose a
+  stack.
+
+MRs with ``marge-priority::critical`` will be treated before those with ``marge-priority::high`` who in turn will be treated before all MRs lacking either of these labels.
 
 .. _preparing_MR:
 
@@ -319,6 +333,8 @@ Therefore, when creating your MR, observe the following rules:
     + ``ci--docs`` is for testing some scripts in the documentation (e.g. Octez installation scenarios).
     + ``ci--docker`` is for publishing the Docker image of the MR.
     + ``ci--arm64`` is for building on the ARM64 architecture.
+    + ``ci--no-coverage`` disables the job ``unified_coverage`` (but it does not disable coverage instrumentation).
+
 
 - *MR Options*: When opening an MR you should probably tick the following
   options:
@@ -446,13 +462,13 @@ you specified in the reviewers field.
 As mentioned previously, it is the responsibility of authors to find reviewers.
 To find reviewers, either:
 
-  - Advertize your merge request on the ``#mr-advertizing`` channel of
-    the `tezos-dev <https://tezos-dev.slack.com/>`_ Slack. Good advertisement
-    consists of a link to the MR and a one sentence summary.
-  - Look at authors of the code you are modifying using
-    `git blame <https://git-scm.com/docs/git-blame>`_.
-  - Ask help to the :ref:`merge coordinator <merge_coordinator>`, either
-    by asking them on Slack or mentioning them in a comment (see next paragraph).
+- Advertize your merge request on the ``#mr-advertizing`` channel of
+  the `tezos-dev <https://tezos-dev.slack.com/>`_ Slack. Good advertisement
+  consists of a link to the MR and a one sentence summary.
+- Look at authors of the code you are modifying using
+  `git blame <https://git-scm.com/docs/git-blame>`_.
+- Ask help to the :ref:`merge coordinator <merge_coordinator>`, either
+  by asking them on Slack or mentioning them in a comment (see next paragraph).
 
 Depending on your `GitLab role <https://docs.gitlab.com/ee/user/permissions.html>`_
 you may or may not be able to use the *Reviewers* field for specifying
@@ -537,7 +553,7 @@ In the special case where your MR adds a new Python, Rust, JavaScript, or other
 dependency, additional steps must also be followed.
 
 * for Python, you can refer to the related section in the :ref:`python testing documentation <python_adding_new_dependencies>`.
-* the Rust dependencies are located in the GitLab repository `tezos-rust-libs <https://gitlab.com/tezos/tezos-rust-libs>`_ and the instructions are listed there.
+* the Rust dependencies are located in the ``src/rust_deps`` folder
 
 For others, there is currently no dedicated guide. Do not hesitate to ask for
 help on the ``#devteam`` channel on the `tezos-dev <https://tezos-dev.slack.com/>`_ Slack.

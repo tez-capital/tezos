@@ -15,8 +15,16 @@ So now you can configure and launch your node with a metrics exporter.
 Starting a node with monitoring
 -------------------------------
 
-Start
-~~~~~
+Metrics for the node are always available on the ``/metrics`` endpoint of the address and port of the ``--rpc-addr`` (or ``--external-rpc-addr``) argument. One can query this using:
+
+.. code-block:: shell
+
+  curl http://<rpc_addr>:<rpc_port>/metrics
+
+Alternatively, the user has an option to gather metrics when no RPC server is setup at all, or when they want a dedicated server for this process.
+
+Starting metrics server manually
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The node can be started with its metrics exporter with the option ``--metrics-addr`` which takes as a parameter ``<ADDR>:<PORT>`` or ``<ADDR>`` or ``:<PORT>``.
 
@@ -28,9 +36,6 @@ By default, ``<ADDR>`` is ``localhost`` and ``<PORT>`` is ``9932``.
    octez-node run --metrics-addr=<ADDR>:<PORT> …
 
 Note that it is possible to serve metrics on several addresses by using the option more than once.
-
-Configure
-~~~~~~~~~
 
 You can also add this configuration to your persistent configuration file through the command line:
 
@@ -49,11 +54,11 @@ A correct setup should write an entry in the logs similar to:
 
    <date> - node.main: starting metrics server on <addr>:<port>
 
+As some metrics (i.e. node internal metrics) are issued by the node only, some metrics accessible on the external RPC process metrics server may lack some data.
+It is therefore the duty of the user to aggregate both metrics if needed.
+
 Gathering data
 --------------
-
-This section focuses on access to the metrics and their uses.
-More details on the metrics specifications are available :doc:`here <../developer/openmetrics>`
 
 Scraping Octez Metrics
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -116,6 +121,14 @@ or a `histogram <https://github.com/OpenObservability/OpenMetrics/blob/main/spec
 
 The label value is sometimes used to store information that can't be described by the metric value (which can only be a float). This is used for example by the ``octez_version`` metric that provides the version within the labels.
 
+For the list of metrics provided by the node, and a typical monitoring setup, see the following page:
+
+.. toctree::
+   :maxdepth: 2
+
+   ../developer/openmetrics
+
+
 .. note::
 
    Most of the metrics are computed when scraped from the node. As there is no rate limiter, you should consider scraping wisely and adding a proxy for a public endpoint, to limit the impact on performance.
@@ -129,21 +142,57 @@ Scraping metrics gives you instant values of the metrics. For a more effective m
 
 We suggest using `Prometheus <https://prometheus.io/>`_ for that purpose.
 
-Once installed, you need to add the scraping job to the configuration file.
+First, you need to install Prometheus from your favourite package manager, e.g.::
 
-::
+  sudo apt install prometheus
+
+Once installed, you need to add the scraping job to the configuration file (e.g. ``/etc/prometheus/prometheus.yml``)::
 
    - job_name: 'octez-exporter'
-     scrape_interval: interval s
+     scrape_interval: <interval> s
      metrics_path: "/metrics"
      static_configs:
-       - targets: ['addr:port']
+       - targets: ['<addr>:<port>']
 
-Prometheus is a service, so you need to start it. Note that Prometheus can also scrape metrics from several nodes!
+For instance, a typical target address can be ``localhost:9091``.
+
+If you plan to also use Netdata (as described :ref:`below <hardware_metrics>`), you should also add::
+
+  - job_name: 'netdata-scrape'
+    metrics_path: "/api/v1/allmetrics"
+    params:
+      format: [prometheus]
+    static_configs:
+      - targets: ['<addr>:<port>']
+
+For instance, a typical target address may be ``localhost:19999``.
+
+Note that Prometheus can also scrape metrics from several nodes.
+
+Prometheus is a service, so you need to start it:
 
 .. code-block:: shell
 
    sudo systemctl start prometheus
+
+You may visualize the log in real time to make sure the service works correctly::
+
+  sudo journalctl --follow --unit=prometheus.service
+
+History size
+""""""""""""
+
+By default, Prometheus keeps 15 days of data. It may be useful to increase the history window to keep wider history. To do so, update the Prometheus service execution argument (typically, in ``/etc/systemd/system/multi-user.target.wants/prometheus.service``).
+To increase the history to 30 days, simply update the following line::
+
+  ExecStart=/usr/bin/prometheus $ARGS --storage.tsdb.retention 30d
+
+It is also possible to limit the size of the history by adding ``--storage.tsdb.retention.size 5GB``. The first limit reached will trigger the cleanup.
+You can also add ``--storage.tsdb.path <path>`` to change the path were Prometheus stores data.
+
+There are RPCs to trigger an early garbage collection of the Prometheus data but this requires to start the Prometheus RPC server and tweak some rights. Alternatively, the easiest way to delete the whole history is to remove the output directory (typically, ``/var/lib/prometheus/metrics2/``).
+
+Mind restarting the Prometheus service after updating its parameters.
 
 .. _hardware_metrics:
 
@@ -223,9 +272,9 @@ Note, if you use filecheck for storage monitoring, you need to configure your da
 Logs
 ~~~~
 
-Eventually, you may want to gather the logs from the different Octez executables. To do so, we suggest to use `Loki <https://grafana.com/docs/loki/latest/>`_ and `Promtail <https://grafana.com/docs/loki/latest/clients/promtail/>`_. Promtail is used to gather the logs from each executable of Octez and pushes them to a Loki instance, for indexing metadata about the logs.
+Eventually, you may want to gather the logs from the different Octez executables. To do so, we suggest to use `Loki <https://grafana.com/docs/loki/latest/>`_ and `Promtail <https://grafana.com/docs/loki/latest/send-data/promtail/>`_. Promtail is used to gather the logs from each executable of Octez and pushes them to a Loki instance, for indexing metadata about the logs.
 
-You first need to install both tools, following `their installation instructions <https://grafana.com/docs/loki/latest/installation/local/>`_.
+You first need to install both tools, following `their installation instructions <https://grafana.com/docs/loki/latest/setup/install/local/>`_.
 
 A configuration file will be required, which can be downloaded with:
 

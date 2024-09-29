@@ -40,7 +40,7 @@ module Stubs = struct
   - [res[i] = g^i] for [i = 0..(n-1)] *)
   external compute_domain : fr_array -> int -> fr -> unit
     = "caml_bls12_381_polynomial_polynomial_compute_domain_stubs"
-    [@@noalloc]
+  [@@noalloc]
 
   (** [rescale res a size_res size_a] writes the result of rescaling the evaluation
       representation of a polynomial [a] from [domain_a] of size [size_a] to
@@ -54,7 +54,7 @@ module Stubs = struct
    - [size_res mod size_a = 0] *)
   external rescale : fr_array -> fr_array -> int -> int -> unit
     = "caml_bls12_381_polynomial_polynomial_evaluations_rescale_stubs"
-    [@@noalloc]
+  [@@noalloc]
 end
 
 module Domain_impl = struct
@@ -105,6 +105,10 @@ module Domain_impl = struct
     let n = length d in
     Array.init n (fun i ->
         if i = 0 then Fr.(copy one) else Fr_carray.get d (n - i))
+
+  let equal d1 d2 =
+    let len = length d1 in
+    len = length d2 && Fr_carray.equal d1 ~offset1:0 d2 ~offset2:0 ~len
 end
 
 module type Domain_sig = sig
@@ -136,15 +140,18 @@ module type Domain_sig = sig
   (** [inverse d] returns for a domain [wⁱᵢ] its inverse domain [w⁻ⁱᵢ] *)
   val inverse : t -> scalar array
 
+  (* [equal d1 d2] returns true if [d1] is equal to [d2] *)
+  val equal : t -> t -> bool
+end
+
+module type Domain_unsafe_sig = sig
+  include Domain_sig
+
   (** [to_array d] converts a C array [d] to an OCaml array *)
   val to_array : t -> scalar array
 
   (** [of_array d] converts an OCaml array [d] to a C array *)
   val of_array : scalar array -> t
-end
-
-module type Domain_unsafe_sig = sig
-  include Domain_sig
 
   (** [to_carray d] converts [d] from type {!type:t} to type {!type:Fr_carray.t}
 

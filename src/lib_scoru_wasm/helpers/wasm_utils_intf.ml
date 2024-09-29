@@ -21,6 +21,7 @@ module type S = sig
 
   val initial_tree :
     version:Wasm_pvm_state.version ->
+    ?tree:tree ->
     ?ticks_per_snapshot:int64 ->
     ?max_reboots:Z.t ->
     ?from_binary:bool ->
@@ -34,31 +35,37 @@ module type S = sig
   val reveal_builtins : Builtins.reveals
 
   val eval_until_stuck :
+    ?wasm_entrypoint:string ->
     ?reveal_builtins:Builtins.reveals ->
+    ?hooks:Hooks.t ->
     ?write_debug:Builtins.write_debug ->
     ?max_steps:int64 ->
     tree ->
     (Wasm_pvm_errors.t * tree) tzresult Lwt.t
 
   val eval_to_snapshot :
+    ?wasm_entrypoint:string ->
     ?reveal_builtins:Builtins.reveals ->
+    ?hooks:Hooks.t ->
     ?write_debug:Builtins.write_debug ->
     ?max_steps:int64 ->
     tree ->
     tree Lwt.t
 
   val eval_until_input_requested :
+    ?wasm_entrypoint:string ->
     ?reveal_builtins:Builtins.reveals option ->
+    ?hooks:Hooks.t ->
     ?write_debug:Builtins.write_debug ->
-    ?after_fast_exec:(unit -> unit) ->
     ?fast_exec:bool ->
     ?max_steps:int64 ->
     tree ->
     tree Lwt.t
 
   val eval_until_input_or_reveal_requested :
+    ?wasm_entrypoint:string ->
+    ?hooks:Hooks.t ->
     ?write_debug:Builtins.write_debug ->
-    ?after_fast_exec:(unit -> unit) ->
     ?fast_exec:bool ->
     ?max_steps:int64 ->
     tree ->
@@ -113,11 +120,13 @@ module type S = sig
     tree ->
     tree Lwt.t
 
-  val eval_until_init : tree -> tree Lwt.t
+  val eval_until_init : ?wasm_entrypoint:string -> tree -> tree Lwt.t
 
   val eval_to_result :
+    ?wasm_entrypoint:string ->
     ?write_debug:Builtins.write_debug ->
     ?reveal_builtins:Builtins.reveals ->
+    ?hooks:Hooks.t ->
     tree ->
     (tree * int64) Lwt.t
 

@@ -23,6 +23,8 @@
 (*                                                                           *)
 (*****************************************************************************)
 
+module Types = Tezos_dal_node_services.Types
+
 module Term = struct
   let p2p_point_arg ~default_port =
     let open Cmdliner in
@@ -40,12 +42,12 @@ module Term = struct
     let open Cmdliner in
     let doc =
       Format.sprintf
-        "The directory where the octez DAL node will store all its data. \
+        "The directory where the Octez DAL node will store all its data. \
          Parent directories are created if necessary."
     in
     Arg.(
       value
-      & opt (some file) None
+      & opt (some string) None
       & info ~docs ~docv:"DIR" ~doc ["data-dir"; "d"])
 
   let rpc_addr =
@@ -53,17 +55,20 @@ module Term = struct
     let default_port = Configuration_file.default.rpc_addr |> snd in
     let doc =
       Format.asprintf
-        "The TCP socket point at which this RPC server of this instance can be \
-         reached."
+        "The TCP address and optionally the port at which the RPC server of \
+         this instance can be reached. The default address is 0.0.0.0. The \
+         default port is 10732."
     in
     Arg.(
       value
       & opt (some (p2p_point_arg ~default_port)) None
-      & info ~docs ~doc ~docv:"ADDR:PORT" ["rpc-addr"])
+      & info ~docs ~doc ~docv:"ADDR[:PORT]" ["rpc-addr"])
 
   let expected_pow =
     let open Cmdliner in
-    let doc = "Expected level of proof-of-work for peers identity." in
+    let doc =
+      "The expected proof-of-work difficulty level for the peers' identity."
+    in
     Arg.(
       value
       & opt (some float) None
@@ -74,13 +79,29 @@ module Term = struct
     let default_port = Configuration_file.default.listen_addr |> snd in
     let doc =
       Format.asprintf
-        "The TCP address and port at which this instance can be reached by \
-         other P2P nodes."
+        "The TCP address and optionally the port bound by the DAL node. If \
+         --public-addr is not provided, this is also the address and port at \
+         which this instance can be reached by other P2P nodes. The default \
+         address is 0.0.0.0. The default port is 11732."
     in
     Arg.(
       value
       & opt (some (p2p_point_arg ~default_port)) None
-      & info ~docs ~doc ~docv:"ADDR:PORT" ["net-addr"])
+      & info ~docs ~doc ~docv:"ADDR[:PORT]" ["net-addr"])
+
+  let public_addr =
+    let open Cmdliner in
+    let default_port = Configuration_file.default.public_addr |> snd in
+    let doc =
+      Format.asprintf
+        "The TCP address and optionally the port at which this instance can be \
+         reached by other P2P nodes. The default address is 0.0.0.0. The \
+         default port is 11732."
+    in
+    Arg.(
+      value
+      & opt (some (p2p_point_arg ~default_port)) None
+      & info ~docs ~doc ~docv:"ADDR[:PORT]" ["public-addr"])
 
   let endpoint_arg =
     let open Cmdliner in
@@ -93,25 +114,27 @@ module Term = struct
 
   let endpoint =
     let open Cmdliner in
-    let doc = "The Tezos node that the DAL node should connect to." in
+    let doc =
+      "The endpoint (an URI) of the Tezos node that the DAL node should \
+       connect to. The default endpoint is 'http://localhost:8732'."
+    in
     Arg.(
       value
       & opt (some endpoint_arg) None
-      & info ~docs ~doc ~docv:"[ADDR:PORT]" ["endpoint"])
+      & info ~docs ~doc ~docv:"URI" ["endpoint"])
 
-  let operator_profile_printer fmt = function
-    | Services.Types.Attestor pkh ->
-        Format.fprintf fmt "%a" Signature.Public_key_hash.pp pkh
-    | Producer {slot_index} -> Format.fprintf fmt "%d" slot_index
+  let attester_profile_printer = Signature.Public_key_hash.pp
 
-  let attestor_profile_arg =
+  let observer_producer_profile_printer = Format.pp_print_int
+
+  let attester_profile_arg =
     let open Cmdliner in
     let decoder string =
       match Signature.Public_key_hash.of_b58check_opt string with
       | None -> Error (`Msg "Unrecognized profile")
-      | Some pkh -> Services.Types.Attestor pkh |> Result.ok
+      | Some pkh -> Ok pkh
     in
-    Arg.conv (decoder, operator_profile_printer)
+    Arg.conv (decoder, attester_profile_printer)
 
   let producer_profile_arg =
     let open Cmdliner in
@@ -119,26 +142,43 @@ module Term = struct
       let error () =
         Format.kasprintf
           (fun s -> Error (`Msg s))
-          "Unrecognized profile for producer (expected nonnegative integer, \
+          "Unrecognized profile for producer (expected non-negative integer, \
            got %s)"
           string
       in
       match int_of_string_opt string with
       | None -> error ()
       | Some i when i < 0 -> error ()
-      | Some slot_index -> Services.Types.Producer {slot_index} |> Result.ok
+      | Some slot_index -> Ok slot_index
     in
-    Arg.conv (decoder, operator_profile_printer)
+    Arg.conv (decoder, observer_producer_profile_printer)
 
-  let attestor_profile =
+  let observer_profile_arg =
+    let open Cmdliner in
+    let decoder string =
+      let error () =
+        Format.kasprintf
+          (fun s -> Error (`Msg s))
+          "Unrecognized profile for observer (expected nonnegative integer, \
+           got %s)"
+          string
+      in
+      match int_of_string_opt string with
+      | None -> error ()
+      | Some i when i < 0 -> error ()
+      | Some slot_index -> Ok slot_index
+    in
+    Arg.conv (decoder, observer_producer_profile_printer)
+
+  let attester_profile =
     let open Cmdliner in
     let doc =
-      "The Octez DAL node attestor profiles for given public key hashes."
+      "The Octez DAL node attester profiles for given public key hashes."
     in
     Arg.(
       value
-      & opt (list attestor_profile_arg) []
-      & info ~docs ~doc ~docv:"[PKH]" ["attestor-profiles"])
+      & opt (list attester_profile_arg) []
+      & info ~docs ~doc ~docv:"PKH1,PKH2,..." ["attester-profiles"; "attester"])
 
   let producer_profile =
     let open Cmdliner in
@@ -146,22 +186,38 @@ module Term = struct
     Arg.(
       value
       & opt (list producer_profile_arg) []
-      & info ~docs ~doc ~docv:"[slot index]" ["producer-profiles"])
+      & info
+          ~docs
+          ~doc
+          ~docv:"INDEX1,INDEX2,..."
+          ["producer-profiles"; "producer"; "operator"])
+
+  let observer_profile =
+    let open Cmdliner in
+    let doc = "The Octez DAL node observer profiles for given slot indexes." in
+    Arg.(
+      value
+      & opt (some' (list observer_profile_arg)) None
+      & info
+          ~docs
+          ~doc
+          ~docv:"INDEX1,INDEX2,..."
+          ["observer-profiles"; "observer"])
 
   let bootstrap_profile =
     let open Cmdliner in
     let doc =
       "The Octez DAL node bootstrap node profile. Note that a bootstrap node \
-       cannot also be an attestor/slot producer"
+       cannot also be an attester or a slot producer"
     in
-    Arg.(value & flag & info ~docs ~doc ["bootstrap-profile"])
+    Arg.(value & flag & info ~docs ~doc ["bootstrap-profile"; "bootstrap"])
 
   let peers =
     let open Cmdliner in
     let default_list = Configuration_file.default.peers in
     let doc =
-      "An additional peer list to expand the bootstrap peers from \
-       dal_config.bootstrap_peers."
+      "An additional peer list to expand the bootstrap peers from the Octez \
+       node's configuration parameter dal_config.bootstrap_peers."
     in
     Arg.(
       value
@@ -170,36 +226,67 @@ module Term = struct
 
   let metrics_addr =
     let open Cmdliner in
-    let doc = "Address on which to provide metrics over HTTP." in
+    let doc =
+      "The TCP address and optionally the port of the node's metrics server. \
+       The default address is 0.0.0.0. The default port is 11733."
+    in
     let default_port = Configuration_file.default.metrics_addr |> snd in
     Arg.(
       value
       & opt (some (p2p_point_arg ~default_port)) None
-      & info
-          ~docs
-          ~doc
-          ~docv:
-            "ADDR:PORT or :PORT (by default ADDR is localhost and PORT is \
-             11733)"
-          ["metrics-addr"])
+      & info ~docs ~doc ~docv:"ADDR[:PORT]" ["metrics-addr"])
+
+  let history_mode =
+    let open Cmdliner in
+    let open Result_syntax in
+    let doc =
+      "The duration for the shards to be kept in the node storage. Either a \
+       number, the string \"full\" or the string \"auto\". A number is \
+       interpreted as the number of blocks the shards should be kept; the \
+       string \"full\" means no shard deletion, the string \"auto\" means the \
+       default of the profile: 3 months for an observer or a slot producer, \
+       twice the attestation lag for an attester and other profiles."
+    in
+    let decoder =
+      Configuration_file.(
+        function
+        | "full" -> return Full
+        | "auto" -> return @@ Rolling {blocks = `Auto}
+        | s -> (
+            match int_of_string_opt s with
+            | Some i -> return @@ Rolling {blocks = `Some i}
+            | None ->
+                Error (`Msg ("Invalid argument " ^ s ^ " for history-mode."))))
+    in
+    let printer fmt = function
+      | Configuration_file.Full -> Format.fprintf fmt "full"
+      | Rolling {blocks = `Auto} -> Format.fprintf fmt "auto"
+      | Rolling {blocks = `Some i} -> Format.fprintf fmt "%d" i
+    in
+    let history_mode_arg = Arg.conv (decoder, printer) in
+    Arg.(
+      value
+      & opt (some history_mode_arg) None
+      & info ~docs ~doc ["history-mode"])
 
   let term process =
     Cmdliner.Term.(
       ret
         (const process $ data_dir $ rpc_addr $ expected_pow $ net_addr
-       $ endpoint $ metrics_addr $ attestor_profile $ producer_profile
-       $ bootstrap_profile $ peers))
+       $ public_addr $ endpoint $ metrics_addr $ attester_profile
+       $ producer_profile $ observer_profile $ bootstrap_profile $ peers
+       $ history_mode))
 end
 
 module Run = struct
   let description =
-    [`S "DESCRIPTION"; `P "This command allows to run a DAL node."]
+    [`S "DESCRIPTION"; `P "This command runs an Octez DAL node."]
 
   let man = description
 
   let info =
-    let version = Tezos_version_value.Bin_version.version_string in
-    Cmdliner.Cmd.info ~doc:"The Octez DAL node" ~man ~version "run"
+    let version = Tezos_version_value.Bin_version.octez_version_string in
+    Cmdliner.Cmd.info ~doc:"Run the Octez DAL node" ~man ~version "run"
 
   let cmd run = Cmdliner.Cmd.v info (Term.term run)
 end
@@ -220,13 +307,16 @@ module Config = struct
       [
         `S "DESCRIPTION";
         `P
-          "This commands creates a configuration file with the default \
-           parameters and the one provided on the command-line. This \
-           configuration is then used by the run command.";
+          "This commands creates a configuration file with the parameters \
+           provided on the command-line, if no configuration file exists \
+           already in the specified or default location. Otherwise, the \
+           command-line parameters override the existing ones, and old \
+           parameters are lost. This configuration is then used by the run \
+           command.";
       ]
 
     let info =
-      let version = Tezos_version_value.Bin_version.version_string in
+      let version = Tezos_version_value.Bin_version.octez_version_string in
       Cmdliner.Cmd.info ~doc:"Configuration initialisation" ~man ~version "init"
 
     let cmd run = Cmdliner.Cmd.v info (Term.term run)
@@ -235,8 +325,12 @@ module Config = struct
   let cmd run =
     let default = Cmdliner.Term.(ret (const (`Help (`Pager, None)))) in
     let info =
-      let version = Tezos_version_value.Bin_version.version_string in
-      Cmdliner.Cmd.info ~doc:"The Octez DAL node" ~man ~version "config"
+      let version = Tezos_version_value.Bin_version.octez_version_string in
+      Cmdliner.Cmd.info
+        ~doc:"Manage the Octez DAL node configuration"
+        ~man
+        ~version
+        "config"
     in
     Cmdliner.Cmd.group ~default info [Init.cmd run]
 end
@@ -246,18 +340,21 @@ type options = {
   rpc_addr : P2p_point.Id.t option;
   expected_pow : float option;
   listen_addr : P2p_point.Id.t option;
+  public_addr : P2p_point.Id.t option;
   endpoint : Uri.t option;
-  profiles : Services.Types.profiles option;
+  profile : Profile_manager.t option;
   metrics_addr : P2p_point.Id.t option;
   peers : string list;
+  history_mode : Configuration_file.history_mode option;
 }
 
 type t = Run | Config_init
 
 let make ~run =
-  let run subcommand data_dir rpc_addr expected_pow listen_addr endpoint
-      metrics_addr attestors producers bootstrap_flag peers =
-    let run profiles =
+  let run subcommand data_dir rpc_addr expected_pow listen_addr public_addr
+      endpoint metrics_addr attesters producers observers bootstrap_flag peers
+      history_mode =
+    let run profile =
       run
         subcommand
         {
@@ -265,29 +362,35 @@ let make ~run =
           rpc_addr;
           expected_pow;
           listen_addr;
+          public_addr;
           endpoint;
-          profiles;
+          profile;
           metrics_addr;
           peers;
+          history_mode;
         }
     in
-    match (bootstrap_flag, attestors @ producers) with
-    | false, [] -> run None
-    | true, [] -> run @@ Some Services.Types.Bootstrap
-    | false, operator_profiles -> run @@ Some (Operator operator_profiles)
-    | true, _ :: _ ->
+    let profile = Operator_profile.make ~attesters ~producers ?observers () in
+    match (bootstrap_flag, observers, profile) with
+    | false, None, profiles when Operator_profile.is_empty profiles -> run None
+    | false, Some _, profiles when Operator_profile.is_empty profiles ->
+        (* The user only mentioned '--observer' without any slot and
+           without any other profile. It will be assigned to random
+           slots. *)
+        run (Some Profile_manager.random_observer)
+    | false, _, _ -> run @@ Some (Profile_manager.operator profile)
+    | true, None, profiles when Operator_profile.is_empty profiles ->
+        run @@ Some Profile_manager.bootstrap
+    | true, _, _ ->
         `Error
-          (false, "A bootstrap node cannot also be an attestor/slot producer.")
+          ( false,
+            "a bootstrap node (option '--bootstrap') cannot be an attester \
+             (option '--attester'), an operator (option '--operator') nor an \
+             observer (option '--observer')" )
   in
-  let default =
-    Cmdliner.Term.(
-      ret
-        (const (fun _ _ _ _ _ -> `Help (`Pager, None))
-        $ Term.data_dir $ Term.rpc_addr $ Term.expected_pow $ Term.net_addr
-        $ Term.endpoint))
-  in
+  let default = Cmdliner.Term.(ret (const (`Help (`Pager, None)))) in
   let info =
-    let version = Tezos_version_value.Bin_version.version_string in
+    let version = Tezos_version_value.Bin_version.octez_version_string in
     Cmdliner.Cmd.info ~doc:"The Octez DAL node" ~version "octez-dal-node"
   in
   Cmdliner.Cmd.group

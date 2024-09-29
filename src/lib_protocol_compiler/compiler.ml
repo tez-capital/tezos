@@ -76,9 +76,9 @@ let load_embedded_cmis cmis = List.iter load_embedded_cmi cmis
 
 (** Compilation environment.
 
-    [tezos_protocol_env] defines the list of [cmi] available while compiling
-    the protocol version. The [cmi] are packed into the [tezos-node]
-    binary by using [ocp-ocamlres], see the Makefile.
+    [tezos_protocol_env] defines the list of [cmi] available while
+    compiling the protocol version. The [cmi] are packed into the
+    [octez-node] binary by using [ocp-ocamlres], see the Makefile.
 
     [register_env] defines a complementary list of [cmi] available
     while compiling the generated [register.ml] file (that register
@@ -149,6 +149,7 @@ let main {compile_ml; pack_objects; link_shared} version =
   and output_file = ref None
   and output_dep = ref false
   and hash_only = ref false
+  and dump_only = ref false
   and check_protocol_hash = ref true in
   let args_spec =
     [
@@ -156,6 +157,9 @@ let main {compile_ml; pack_objects; link_shared} version =
       ( "-hash-only",
         Arg.Set hash_only,
         " Only display the hash of the protocol and don't compile" );
+      ( "-dump-only",
+        Arg.Set dump_only,
+        " Only dump bytes of the protocol and don't compile" );
       ( "-no-hash-check",
         Arg.Clear check_protocol_hash,
         " Don't check that TEZOS_PROTOCOL declares the expected protocol hash \
@@ -202,6 +206,9 @@ let main {compile_ml; pack_objects; link_shared} version =
         Format.eprintf "Failed to read TEZOS_PROTOCOL: %a" pp_print_trace err ;
         exit 2
   in
+  if !dump_only then (
+    Format.printf "%s" (Bytes.to_string (Protocol.to_bytes protocol)) ;
+    exit 0) ;
   let computed_hash = Protocol.hash protocol in
   if !hash_only then (
     Format.printf "%a@." Protocol_hash.pp computed_hash ;

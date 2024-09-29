@@ -25,15 +25,17 @@
 
 open Protocol
 open Alpha_context
+open Context_wrapper.Irmin
 module Inbox = Sc_rollup.Inbox
 open Pvm_plugin_sig
 
 module Make_fueled (F : Fuel.S) : FUELED_PVM with type fuel = F.t = struct
   type fuel = F.t
 
-  type pvm_state = Context.tree
+  type pvm_state = Irmin_context.tree
 
-  let get_reveal ~dac_client ~data_dir ~pvm_kind reveal_map hash =
+  let get_reveal ~dac_client ~pre_images_endpoint ~data_dir ~pvm_kind reveal_map
+      hash =
     let found_in_map =
       match reveal_map with
       | None -> None
@@ -44,7 +46,8 @@ module Make_fueled (F : Fuel.S) : FUELED_PVM with type fuel = F.t = struct
     in
     match found_in_map with
     | Some data -> return data
-    | None -> Reveals.get ~dac_client ~data_dir ~pvm_kind hash
+    | None ->
+        Reveals.get ~dac_client ~pre_images_endpoint ~data_dir ~pvm_kind hash
 
   type eval_completion =
     | Aborted of {state : pvm_state; fuel : fuel; current_tick : int64}
@@ -59,7 +62,7 @@ module Make_fueled (F : Fuel.S) : FUELED_PVM with type fuel = F.t = struct
 
   let metadata (node_ctxt : _ Node_context.t) =
     let address =
-      Sc_rollup_proto_types.Address.of_octez node_ctxt.rollup_address
+      Sc_rollup_proto_types.Address.of_octez node_ctxt.config.sc_rollup_address
     in
     let origination_level =
       Raw_level.of_int32_exn node_ctxt.genesis_info.level
@@ -77,38 +80,36 @@ module Make_fueled (F : Fuel.S) : FUELED_PVM with type fuel = F.t = struct
       message_index ~fuel start_tick failing_ticks state =
     let open Lwt_result_syntax in
     let open Delayed_write_monad.Lwt_result_syntax in
-    (* TODO: https://gitlab.com/tezos/tezos/-/issues/5871
-       Use constants for correct protocol. *)
+    let* constants =
+      Protocol_plugins.get_constants_of_level node_ctxt (Int32.of_int level)
+    in
     let is_reveal_enabled =
-      node_ctxt.current_protocol.constants.sc_rollup.reveal_activation_level
-      |> WithExceptions.Option.get ~loc:__LOC__
-      |> Sc_rollup_proto_types.Constants.reveal_activation_level_of_octez
-      |> Sc_rollup.is_reveal_enabled_predicate
+      match constants.sc_rollup.reveal_activation_level with
+      | None -> fun ~current_block_level:_ _ -> true
+      | Some reveal_activation_level ->
+          reveal_activation_level
+          |> Sc_rollup_proto_types.Constants.reveal_activation_level_of_octez
+          |> Protocol.Alpha_context.Sc_rollup.is_reveal_enabled_predicate
     in
     let module PVM = (val Pvm.of_kind node_ctxt.kind) in
     let metadata = metadata node_ctxt in
-    let dal_attestation_lag =
-      node_ctxt.current_protocol.constants.dal.attestation_lag
-    in
-    let decode_reveal (Tezos_scoru_wasm.Wasm_pvm_state.Reveal_raw payload) =
-      match
-        Data_encoding.Binary.of_string_opt
-          Sc_rollup_PVM_sig.reveal_encoding
-          payload
-      with
-      | Some reveal -> reveal
-      | None ->
-          (* If the kernel has tried to submit an incorrect reveal request,
-             we don’t stuck the rollup. Instead, we fallback to the
-             requesting the [well_known_reveal_hash] preimage *)
-          Reveal_raw_data Sc_rollup.Wasm_2_0_0PVM.well_known_reveal_hash
+    let dal_attestation_lag = constants.dal.attestation_lag in
+    let dal_parameters =
+      Sc_rollup.Dal_parameters.
+        {
+          number_of_slots = Int64.of_int constants.dal.number_of_slots;
+          attestation_lag = Int64.of_int dal_attestation_lag;
+          slot_size = Int64.of_int constants.dal.cryptobox_parameters.slot_size;
+          page_size = Int64.of_int constants.dal.cryptobox_parameters.page_size;
+        }
     in
     let reveal_builtins request =
-      match decode_reveal request with
+      match Sc_rollup.Wasm_2_0_0PVM.decode_reveal request with
       | Reveal_raw_data hash -> (
           let*! data =
             get_reveal
               ~dac_client:node_ctxt.dac_client
+              ~pre_images_endpoint:node_ctxt.config.pre_images_endpoint
               ~data_dir:node_ctxt.data_dir
               ~pvm_kind:node_ctxt.kind
               reveal_map
@@ -125,9 +126,32 @@ module Make_fueled (F : Fuel.S) : FUELED_PVM with type fuel = F.t = struct
             (Data_encoding.Binary.to_string_exn
                Sc_rollup.Metadata.encoding
                metadata)
-      | Request_dal_page _ ->
-          (* DAL in the Fast Execution WASM PVM is not supported for Mumbai. *)
-          assert false
+      | Request_dal_page dal_page -> (
+          let*! content =
+            Dal_pages_request.page_content
+              ~inbox_level:(Int32.of_int level)
+              ~dal_attestation_lag
+              node_ctxt
+              dal_page
+          in
+          match content with
+          | Error error ->
+              (* The [Error_wrapper] must be caught upstream and converted into
+                 a tzresult. *)
+              (* This happens when, for example, the kernel requests a page from a future level. *)
+              Lwt.fail (Error_wrapper error)
+          | Ok None ->
+              (* The page was not confirmed by L1.
+                 We return empty string in this case, as done in the slow executon. *)
+              Lwt.return ""
+          | Ok (Some b) -> Lwt.return (Bytes.to_string b))
+      | Reveal_dal_parameters ->
+          (* TODO: https://gitlab.com/tezos/tezos/-/issues/6562
+             Consider supporting revealing of historical DAL parameters. *)
+          Lwt.return
+            (Data_encoding.Binary.to_string_exn
+               Sc_rollup.Dal_parameters.encoding
+               dal_parameters)
     in
     let eval_tick fuel failing_ticks state =
       let max_steps = F.max_ticks fuel in
@@ -144,7 +168,8 @@ module Make_fueled (F : Fuel.S) : FUELED_PVM with type fuel = F.t = struct
             in
             return (state, executed_ticks, failing_ticks))
           (function
-            | Error_wrapper error -> Lwt.return (Error error) | exn -> raise exn)
+            | Error_wrapper error -> Lwt.return (Error error)
+            | exn -> Lwt.reraise exn)
       in
       let failure_insertion_eval state tick failing_ticks' =
         let*! () =
@@ -206,6 +231,7 @@ module Make_fueled (F : Fuel.S) : FUELED_PVM with type fuel = F.t = struct
           let* data =
             get_reveal
               ~dac_client:node_ctxt.dac_client
+              ~pre_images_endpoint:node_ctxt.config.pre_images_endpoint
               ~data_dir:node_ctxt.data_dir
               ~pvm_kind:node_ctxt.kind
               reveal_map
@@ -225,12 +251,23 @@ module Make_fueled (F : Fuel.S) : FUELED_PVM with type fuel = F.t = struct
       | Needs_reveal (Request_dal_page page_id) -> (
           let* content_opt =
             Dal_pages_request.page_content
+              ~inbox_level:(Int32.of_int level)
               ~dal_attestation_lag
               node_ctxt
               page_id
           in
           let*! next_state =
             PVM.set_input (Reveal (Dal_page content_opt)) state
+          in
+          match F.consume F.one_tick_consumption fuel with
+          | None -> abort state fuel current_tick
+          | Some fuel ->
+              go fuel (Int64.succ current_tick) failing_ticks next_state)
+      | Needs_reveal Reveal_dal_parameters -> (
+          (* TODO: https://gitlab.com/tezos/tezos/-/issues/6562
+             Consider supporting revealing of historical DAL parameters. *)
+          let*! next_state =
+            PVM.set_input (Reveal (Dal_parameters dal_parameters)) state
           in
           match F.consume F.one_tick_consumption fuel with
           | None -> abort state fuel current_tick
@@ -341,7 +378,7 @@ module Make_fueled (F : Fuel.S) : FUELED_PVM with type fuel = F.t = struct
           in
           let failing_ticks =
             Loser_mode.is_failure
-              node_ctxt.Node_context.loser_mode
+              node_ctxt.Node_context.config.loser_mode
               ~level
               ~message_index
           in
@@ -375,14 +412,14 @@ module Make_fueled (F : Fuel.S) : FUELED_PVM with type fuel = F.t = struct
     (feed_messages [@tailcall]) (state, fuel) message_counter_offset messages
 
   let eval_block_inbox ~fuel (node_ctxt : _ Node_context.t) (inbox, messages)
-      (state : pvm_state) :
+      (state : Context.pvmstate) :
       fuel eval_result Node_context.delayed_write tzresult Lwt.t =
     let open Lwt_result_syntax in
     let open Delayed_write_monad.Lwt_result_syntax in
     let module PVM = (val Pvm.of_kind node_ctxt.kind) in
     (* Obtain inbox and its messages for this block. *)
     let inbox_level = Octez_smart_rollup.Inbox.inbox_level inbox in
-    let*! initial_tick = PVM.get_tick state in
+    let*! initial_tick = PVM.get_tick (of_node_pvmstate state) in
     (* Evaluate all the messages for this level. *)
     let>* state, remaining_fuel, num_messages, remaining_messages =
       eval_messages
@@ -390,7 +427,7 @@ module Make_fueled (F : Fuel.S) : FUELED_PVM with type fuel = F.t = struct
         ~fuel
         node_ctxt
         ~message_counter_offset:0
-        state
+        (of_node_pvmstate state)
         inbox_level
         messages
     in
@@ -399,7 +436,7 @@ module Make_fueled (F : Fuel.S) : FUELED_PVM with type fuel = F.t = struct
     let num_ticks = Sc_rollup.Tick.distance initial_tick final_tick in
     let eval_state =
       {
-        state;
+        state = to_node_pvmstate state;
         state_hash = Sc_rollup_proto_types.State_hash.to_octez state_hash;
         tick = Sc_rollup.Tick.to_z final_tick;
         inbox_level;
@@ -430,7 +467,7 @@ module Make_fueled (F : Fuel.S) : FUELED_PVM with type fuel = F.t = struct
           let message_index = message_counter_offset - 1 in
           let failing_ticks =
             Loser_mode.is_failure
-              node_ctxt.Node_context.loser_mode
+              node_ctxt.Node_context.config.loser_mode
               ~level
               ~message_index
           in
@@ -443,7 +480,7 @@ module Make_fueled (F : Fuel.S) : FUELED_PVM with type fuel = F.t = struct
               ~fuel
               0L
               failing_ticks
-              state
+              (of_node_pvmstate state)
           in
           let state, remaining_fuel =
             match res with
@@ -457,7 +494,7 @@ module Make_fueled (F : Fuel.S) : FUELED_PVM with type fuel = F.t = struct
             ~fuel
             node_ctxt
             ~message_counter_offset
-            state
+            (of_node_pvmstate state)
             inbox_level
             messages
     in
@@ -467,7 +504,7 @@ module Make_fueled (F : Fuel.S) : FUELED_PVM with type fuel = F.t = struct
     let num_ticks = Z.sub final_tick initial_tick in
     let eval_state =
       {
-        state;
+        state = to_node_pvmstate state;
         state_hash = Sc_rollup_proto_types.State_hash.to_octez state_hash;
         tick = final_tick;
         inbox_level;

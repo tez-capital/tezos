@@ -46,7 +46,7 @@ let craft_heavy_operation source branch contract_hash client =
 
 let craft_heavy_mempool client contract_hash bootstraps =
   let* branch =
-    RPC.Client.call client @@ RPC.get_chain_block_hash ~block:"0" ()
+    Client.RPC.call client @@ RPC.get_chain_block_hash ~block:"0" ()
   in
   Lwt_list.map_s
     (fun source -> craft_heavy_operation source branch contract_hash client)
@@ -112,6 +112,7 @@ let baker_early_preattestation_test =
     ~__FILE__
     ~title:"Test baker early pre-attestation"
     ~tags:["node"; "baker"; "early"; "preattestation"]
+    ~uses:(fun protocol -> [Protocol.baker protocol])
     ~supports:(Protocol.From_protocol 16)
   @@ fun protocol ->
   Log.info
@@ -220,7 +221,7 @@ let baker_early_preattestation_test =
 
   let recover_baking_rights ~max_round client level =
     let* baking_rights =
-      RPC.Client.call client
+      Client.RPC.call client
       @@ RPC.get_chain_block_helper_baking_rights ~level ()
     in
     return
@@ -310,7 +311,6 @@ let baker_early_preattestation_test =
     Operation.inject_operations
       ~request:`Inject
       ~use_tmp_file:true
-      ~protocol:Protocol.Alpha
       ~force:false
       ops
       client1
@@ -483,11 +483,11 @@ let baker_early_preattestation_test =
     "%s have proposed, both baker have pre-attested for their delegates%s"
     (Baker.name baker1)
     (if preattestation_should_be_validated then
-     " and the pqc is reached. Ensure that the pre-attestations are injected \
-      in the nodes as validated operation"
-    else
-      ". Ensure that the pre-attestations are injected in the nodes as \
-       branch_delayed operation") ;
+       " and the pqc is reached. Ensure that the pre-attestations are injected \
+        in the nodes as validated operation"
+     else
+       ". Ensure that the pre-attestations are injected in the nodes as \
+        branch_delayed operation") ;
 
   let expected_preattestations status_a status_b =
     List.of_seq
@@ -537,7 +537,7 @@ let baker_early_preattestation_test =
     "Ensure that the block at level: %d contain the manager operations"
     test_lvl ;
   let* manager_ops =
-    RPC.Client.call client1
+    Client.RPC.call client1
     @@ RPC.get_chain_block_operation_hashes_of_validation_pass
          ~block:(string_of_int test_lvl)
          3
@@ -551,7 +551,7 @@ let baker_early_preattestation_test =
     next_lvl ;
   let* _ = Node.wait_for_level node2 5 in
   let* consensus_ops =
-    RPC.Client.call client1
+    Client.RPC.call client1
     @@ RPC.get_chain_block_operation_hashes_of_validation_pass
          ~block:(string_of_int next_lvl)
          0

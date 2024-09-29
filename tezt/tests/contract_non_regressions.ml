@@ -31,6 +31,8 @@
    Subject:      Test contract-related non-regressions
 *)
 
+let team = Tag.layer1
+
 (* Normally "--base-dir" would appear in regression logs. However, since
    it is a different dir on every run, we need to mask it in regression
    logs so that it doesn't cause false differences. *)
@@ -40,7 +42,8 @@ let register262 =
   Protocol.register_test
     ~__FILE__
     ~title:"Contract-related non-regressions, Issue 262"
-    ~tags:["client"; "michelson"]
+    ~tags:[team; "client"; "michelson"]
+    ~uses_node:false
   @@ fun protocol ->
   let* client = Client.init_mockup ~protocol () in
   let* _alias, contract =
@@ -65,7 +68,8 @@ let register843 =
   Protocol.register_test
     ~__FILE__
     ~title:"Contract-related non-regressions, Issue 843"
-    ~tags:["client"; "michelson"]
+    ~tags:[team; "client"; "michelson"]
+    ~uses_node:false
     ~supports:(Protocol.From_protocol 015)
   @@ fun protocol ->
   (* https://gitlab.com/tezos/tezos/-/issues/843

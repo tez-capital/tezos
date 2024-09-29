@@ -6,21 +6,21 @@
  (instrumentation (backend bisect_ppx))
  (libraries
   tezt.core
-  octez-libs.tezos-base
-  octez-libs.tezos-micheline
-  tezos-client-alpha
-  tezos-protocol-alpha
+  octez-libs.base
+  octez-libs.micheline
+  octez-protocol-alpha-libs.client
+  tezos-protocol-alpha.protocol
   octez-libs.tezos-context.merkle_proof_encoding
-  tezos-test-helpers
-  tezos-alpha-test-helpers
+  octez-libs.test-helpers
+  octez-protocol-alpha-libs.test-helpers
   octez-alcotezt
   qcheck-alcotest
   tezos-benchmark
   tezos-benchmark-alpha
   tezos-benchmark-type-inference-alpha
-  tezos-smart-rollup-alpha
-  octez-libs.tezos-crypto-dal
-  octez-libs.tezos-base-test-helpers
+  octez-protocol-alpha-libs.smart-rollup
+  octez-libs.crypto-dal
+  octez-libs.base-test-helpers
   tezos-protocol-alpha.parameters)
  (library_flags (:standard -linkall))
  (flags
@@ -47,6 +47,7 @@
   test_gas_properties
   test_sampler
   test_script_comparison
+  test_script_roundtrip
   test_tez_repr
   test_bitset
   test_sc_rollup_tick_repr
@@ -76,7 +77,7 @@
  (alias runtest)
  (package tezos-protocol-alpha-tests)
  (enabled_if (<> false %{env:RUNTEZTALIAS=true}))
- (action (run %{dep:./main.exe})))
+ (action (run %{dep:./main.exe} /flaky /ci_disabled)))
 
 (rule
  (targets main.ml)

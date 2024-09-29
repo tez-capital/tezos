@@ -164,11 +164,6 @@ type key = Block of (Block_hash.t * int)
 (** The status of the merging thread *)
 type merge_status = Not_running | Running | Merge_failed of tztrace
 
-(** The status of the store *)
-type status = Idle | Merging
-
-val status_encoding : status Data_encoding.t
-
 (** [cemented_block_store block_store] returns the instance of the
     cemented block store for [block_store]. *)
 val cemented_block_store : block_store -> Cemented_block_store.t
@@ -193,9 +188,7 @@ val caboose : block_store -> block_descriptor Lwt.t
 
 val write_caboose : block_store -> block_descriptor -> unit tzresult Lwt.t
 
-val status : block_store -> status Lwt.t
-
-val write_status : block_store -> status -> unit tzresult Lwt.t
+val status : block_store -> Block_store_status.t Lwt.t
 
 val genesis_block : block_store -> Block_repr.t
 
@@ -237,7 +230,7 @@ val store_block :
   block_store -> Block_repr.t -> Context_hash.t -> unit tzresult Lwt.t
 
 (** [cement_blocks ?check_consistency ~write_metadata block_store
-    chunk_iterator]
+    chunk_iterator ~cycle_range]
 
     Wrapper of {!Cemented_block_store.cement_blocks}. *)
 val cement_blocks :
@@ -245,6 +238,7 @@ val cement_blocks :
   write_metadata:bool ->
   block_store ->
   Cemented_block_store.chunk_iterator ->
+  cycle_range:int32 * int32 ->
   unit tzresult Lwt.t
 
 (** [move_floating_store block_store ~src ~dst_kind] closes the
@@ -270,6 +264,9 @@ val move_floating_store :
     in [block_store] to finish if any. *)
 val await_merging : block_store -> unit Lwt.t
 
+(** Default cemented cycles maximum size. I.e.: [2^16 - 1] *)
+val default_cycle_size_limit : int32
+
 (**
    (* TODO UPDATE MERGE DOC *)
    [merge_stores block_store ?finalizer ~nb_blocks_to_preserve
@@ -288,16 +285,22 @@ val await_merging : block_store -> unit Lwt.t
 
     After the cementing, {!Cemented_block_store.trigger_gc} will be
     called with the given [history_mode]. When the merging thread
-    succeeds, the callback [finalizer] will be called.
+    succeeds, the callback [finalizer] will be called. Note that
+    depending on the [disable_context_pruning] flag, the context
+    pruning may be discarded.
 
     If a merge thread is already occurring, this function will first
     wait for the previous merge to be done.
+
+    The cemented cycles will have a max size of [cycle_size_limit]
+    blocks which default to [default_cycle_size_limit].
 
     {b Warning} For a given [block_store], the caller must wait for
     this function termination before calling it again or it may result
     in concurrent intertwining causing the cementing to be out of
     order. *)
 val merge_stores :
+  ?cycle_size_limit:int32 ->
   block_store ->
   on_error:(tztrace -> unit tzresult Lwt.t) ->
   finalizer:(int32 -> unit tzresult Lwt.t) ->
@@ -305,6 +308,7 @@ val merge_stores :
   new_head:Block_repr.t ->
   new_head_metadata:Block_repr.metadata ->
   cementing_highwatermark:int32 ->
+  disable_context_pruning:bool ->
   unit tzresult Lwt.t
 
 val get_merge_status : t -> merge_status
@@ -346,6 +350,25 @@ val load :
   readonly:bool ->
   block_store tzresult Lwt.t
 
+val lock_block_store : t -> unit Lwt.t
+
+val unlock_block_store : t -> unit Lwt.t
+
+(** [sync ?last_status block_store] updates the [block_store] internal
+    file descriptors so that the return block store points to the
+    latest fds. This is useful to keep track of a block store opened
+    in readonly mode that is updated by another read/write
+    instance.
+    If [last_status] is provided, it gives a hint about the previous
+    sync call and may avoid unnecessary synchronizations. As a result,
+    a promise to cleanup resources is returned. This closure must be
+    evaluated after switching to the synchronized block_store to close
+    former resources and avoid leaks. *)
+val sync :
+  last_status:Block_store_status.t ->
+  t ->
+  (t * Block_store_status.t * (unit -> unit Lwt.t)) tzresult Lwt.t
+
 (** [register_gc_callback block_store callback] installs a [callback]
    that may be triggered during a block store merge in order to
    garbage-collect old contexts. *)
@@ -358,7 +381,7 @@ val register_gc_callback :
 val register_split_callback :
   block_store -> (unit -> unit tzresult Lwt.t) option -> unit
 
-(** [split_context block_store new_head_lafl] calls the callback
+(** [split_context block_store new_head_lpbl] calls the callback
     registered by [register_split_callback] if any. *)
 val split_context : t -> Int32.t -> unit tzresult Lwt.t
 
@@ -373,13 +396,10 @@ val close : block_store -> unit Lwt.t
    [block_store] where the merge procedure was interrupted. *)
 val may_recover_merge : block_store -> unit tzresult Lwt.t
 
-(** Upgrade a v_2 to v_3 block store by retrieving
-    [resulting_context_hash] of all blocks present in the floating
-    stores and updating their index.
+(** Utility function that aims to give an overview of the shape of the
+    store's metadata. *)
+val stat_metadata_cycles :
+  t -> (string * metadata_stat list) list tzresult Lwt.t
 
-    {b Warning} Not backward-compatible. *)
-val v_3_0_upgrade :
-  [`Chain_dir] Naming.directory ->
-  cleanups:(unit -> unit Lwt.t) list ref ->
-  finalizers:(unit -> unit Lwt.t) list ref ->
-  unit tzresult Lwt.t
+(** Upgrade the block_store_status *)
+val v_3_1_upgrade : [`Chain_dir] Naming.directory -> unit tzresult Lwt.t

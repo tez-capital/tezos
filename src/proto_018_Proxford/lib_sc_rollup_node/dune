@@ -6,50 +6,50 @@
  (package octez-smart-rollup-node-Proxford)
  (instrumentation (backend bisect_ppx))
  (libraries
-  octez-libs.tezos-base
-  octez-libs.tezos-stdlib-unix
-  tezos-client-base
-  tezos-client-base-unix
-  tezos-client-018-Proxford
+  octez-libs.base
+  octez-libs.stdlib-unix
+  octez-shell-libs.client-base
+  octez-shell-libs.client-base-unix
+  octez-protocol-018-Proxford-libs.client
   octez-libs.tezos-context.encoding
   octez-libs.tezos-context.helpers
-  tezos-protocol-018-Proxford
-  tezos-protocol-plugin-018-Proxford
+  tezos-protocol-018-Proxford.protocol
+  octez-protocol-018-Proxford-libs.plugin
   tezos-protocol-018-Proxford.parameters
-  octez-libs.tezos-rpc
-  octez-libs.tezos-rpc-http
-  octez-libs.tezos-rpc-http-server
+  octez-libs.rpc
+  octez-libs.rpc-http
+  octez-libs.rpc-http-server
   octez-libs.tezos-workers
   tezos-dal-node-services
   tezos-dal-node-lib
-  tezos-dac-018-Proxford
   tezos-dac-lib
   tezos-dac-client-lib
-  octez-libs.tezos-shell-services
-  octez-smart-rollup
-  tezos-smart-rollup-018-Proxford
-  tezos-smart-rollup-layer2-018-Proxford
-  tezos-layer2-utils-018-Proxford
-  tezos_layer2_store
+  octez-shell-libs.shell-services
+  octez-l2-libs.smart-rollup
+  octez-protocol-018-Proxford-libs.smart-rollup
+  octez-protocol-018-Proxford-libs.smart-rollup-layer2
+  octez-protocol-018-Proxford-libs.layer2-utils
+  octez-l2-libs.layer2_store
   octez-crawler
-  octez-libs.tezos-tree-encoding
-  data-encoding
-  irmin-pack
-  irmin-pack.unix
-  irmin
+  octez-libs.tree-encoding
+  octez-libs.data-encoding
+  octez-internal-libs.irmin_pack
+  octez-internal-libs.irmin_pack.unix
+  octez-internal-libs.irmin
   aches
   aches-lwt
   octez-injector
   octez-smart-rollup-node-lib
-  tezos-scoru-wasm
-  tezos-scoru-wasm-fast
-  octez-libs.tezos-crypto-dal
-  tezos-version.value)
+  octez-l2-libs.scoru-wasm
+  octez-l2-libs.scoru-wasm-fast
+  octez-libs.crypto-dal
+  octez-version.value)
+ (library_flags (:standard -linkall))
  (flags
   (:standard)
   -open Tezos_base
   -open Tezos_base.TzPervasives
-  -open Tezos_base.TzPervasives.Error_monad.Legacy_monad_globals
+  -open Tezos_base.TzPervasives.Error_monad_legacy
   -open Tezos_stdlib_unix
   -open Tezos_client_base
   -open Tezos_client_base_unix
@@ -59,7 +59,6 @@
   -open Tezos_protocol_018_Proxford_parameters
   -open Tezos_workers
   -open Tezos_dal_node_lib
-  -open Tezos_dac_018_Proxford
   -open Tezos_dac_lib
   -open Tezos_dac_client_lib
   -open Tezos_shell_services

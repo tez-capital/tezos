@@ -30,6 +30,8 @@
    Subject: Property testing the RPC server
 *)
 
+let team = Team.layer1
+
 (*
    {0 Description}
 
@@ -40,9 +42,9 @@
    This is repeated for each RPC with a fresh node and client. The list of RPCs
    is generated from starting a node and getting JSON descriptions from the
    following URLs:
-     - ["localhost:$rpc_port/describe/?recurse=yes"]
-     - ["localhost:$rpc_port/describe/chains/main/blocks/head?recurse=yes"]
-     - ["localhost:$rpc_port/describe/chains/main/mempool?recurse=yes"]
+     - ["$rpc_host:$rpc_port/describe/?recurse=yes"]
+     - ["$rpc_host:$rpc_port/describe/chains/main/blocks/head?recurse=yes"]
+     - ["$rpc_host:$rpc_port/describe/chains/main/mempool?recurse=yes"]
 
    To see a log of all RPC calls, pass [--log-file] when running.
  *)
@@ -286,7 +288,7 @@ module RPC_Index = struct
   let get_index () : rpc_description list Lwt.t =
     (* Define urls to query JSON descriptions from *)
     let port = 8732 in
-    let url_prefix = sf "http://localhost:%d/describe/" port in
+    let url_prefix = sf "http://%s:%d/describe/" Constant.default_host port in
     let shell_url = url_prefix ^ "?recurse=yes" in
     let proto_url = url_prefix ^ "chains/main/blocks/head?recurse=yes" in
     let mempool_url = url_prefix ^ "chains/main/mempool?recurse=yes" in
@@ -548,6 +550,7 @@ let property_test_rpc_server ~executors =
     ~__FILE__
     ~title:"property_test_rpc_server"
     ~tags:["node"; "pbt"; "fuzz"; "rpc"]
+    ~team
     ~executors
     ~timeout:(Hours 1)
     Test.test_rpc_server

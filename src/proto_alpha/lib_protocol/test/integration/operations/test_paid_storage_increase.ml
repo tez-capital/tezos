@@ -34,7 +34,7 @@
 open Protocol
 open Alpha_context
 
-let ten_tez = Test_tez.of_int 10
+let ten_tez = Tez_helpers.of_int 10
 
 let dummy_script =
   "{parameter unit; storage unit; code { CAR ; NIL operation ; PAIR }}"
@@ -62,19 +62,16 @@ let contract_originate block ?(script = dummy_script)
     source contract balance is correct and that the storage of the
     destination contract has been increased by the right amount. *)
 let test_balances ~amount =
-  let open Lwt_result_syntax in
+  let open Lwt_result_wrap_syntax in
   let* b, source = Context.init1 () in
   let* b, destination = contract_originate b source in
   let* inc = Incremental.begin_construction b in
   let* balance_before_op = Context.Contract.balance (I inc) source in
   let contract_dst = Contract.Originated destination in
-  let*! storage_before_op =
+  let*@ storage_before_op =
     Contract.Internal_for_tests.paid_storage_space
       (Incremental.alpha_ctxt inc)
       contract_dst
-  in
-  let* storage_before_op =
-    Lwt.return (Environment.wrap_tzresult storage_before_op)
   in
   let* op =
     Op.increase_paid_storage ~fee:Tez.zero (I inc) ~source ~destination amount
@@ -83,7 +80,7 @@ let test_balances ~amount =
   (* check that after the block has been baked, the source was debited of all
      the burned tez *)
   let* {parametric = {cost_per_byte; _}; _} = Context.get_constants (I inc) in
-  let burned_tez = Tez.mul_exn cost_per_byte (Z.to_int amount) in
+  let burned_tez = Tez_helpers.(cost_per_byte *! Z.to_int64 amount) in
   let* () =
     Assert.balance_was_debited
       ~loc:__LOC__
@@ -93,12 +90,11 @@ let test_balances ~amount =
       burned_tez
   in
   (* check that the storage has been increased by the right amount *)
-  let*! storage =
+  let*@ storage =
     Contract.Internal_for_tests.paid_storage_space
       (Incremental.alpha_ctxt inc)
       contract_dst
   in
-  let* storage = Lwt.return (Environment.wrap_tzresult storage) in
   let storage_minus_amount = Z.sub storage amount in
   Assert.equal_int
     ~loc:__LOC__
@@ -148,7 +144,7 @@ let test_no_tez_to_pay () =
     Z.div (Z.of_int 2_000_000) (Z.of_int64 (Tez.to_mutez cost_per_byte))
   in
   let* balance = Context.Contract.balance (I inc) source in
-  let*? tez_to_substract = Test_tez.(balance -? Tez.one) in
+  let*? tez_to_substract = Tez_helpers.(balance -? Tez.one) in
   let* op =
     Op.transaction (I inc) ~fee:Tez.zero source receiver tez_to_substract
   in

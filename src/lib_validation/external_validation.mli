@@ -28,16 +28,17 @@ type parameters = {
   context_root : string;
   protocol_root : string;
   genesis : Genesis.t;
+  readonly : bool;
+  data_dir : string;
   sandbox_parameters : Data_encoding.json option;
   user_activated_upgrades : User_activated.upgrades;
   user_activated_protocol_overrides : User_activated.protocol_overrides;
   operation_metadata_size_limit : Shell_limits.operation_metadata_size_limit;
-  dal_config : Tezos_crypto_dal.Cryptobox.Config.t;
   internal_events : Tezos_base.Internal_event_config.t;
 }
 
-type request =
-  | Validate of {
+type _ request =
+  | Apply : {
       chain_id : Chain_id.t;
       block_header : Block_header.t;
       predecessor_block_header : Block_header.t;
@@ -47,10 +48,11 @@ type request =
       predecessor_resulting_context_hash : Context_hash.t;
       operations : Block_validation.operation list list;
       max_operations_ttl : int;
-      should_precheck : bool;
+      should_validate : bool;
       simulate : bool;
     }
-  | Preapply of {
+      -> Block_validation.result request
+  | Preapply : {
       chain_id : Chain_id.t;
       timestamp : Time.Protocol.t;
       protocol_data : bytes;
@@ -65,7 +67,8 @@ type request =
       predecessor_resulting_context_hash : Context_hash.t;
       operations : Block_validation.operation list list;
     }
-  | Precheck of {
+      -> (Block_header.shell_header * error Preapply_result.t list) request
+  | Validate : {
       chain_id : Chain_id.t;
       predecessor_block_header : Block_header.t;
       predecessor_block_hash : Block_hash.t;
@@ -74,35 +77,45 @@ type request =
       operations : Block_validation.operation list list;
       hash : Block_hash.t;
     }
-  | Commit_genesis of {chain_id : Chain_id.t}
-  | Fork_test_chain of {
+      -> unit request
+  | Commit_genesis : {chain_id : Chain_id.t} -> Context_hash.t request
+  | Fork_test_chain : {
       chain_id : Chain_id.t;
       context_hash : Context_hash.t;
       forked_header : Block_header.t;
     }
-  | Context_garbage_collection of {
+      -> Block_header.t request
+  | Context_garbage_collection : {
       context_hash : Context_hash.t;
       gc_lockfile_path : string;
     }
-  | Context_split
-  | Terminate
-  | Reconfigure_event_logging of
+      -> unit request
+  | Context_split : unit request
+  | Terminate : unit request
+  | Reconfigure_event_logging :
       Tezos_base_unix.Internal_event_unix.Configuration.t
+      -> unit request
 
-val request_pp : Format.formatter -> request -> unit
+val name : string
+
+val request_pp : Format.formatter -> 'a request -> unit
 
 val magic : Bytes.t
 
 val parameters_encoding : parameters Data_encoding.t
 
-val request_encoding : request Data_encoding.t
+type packed_request = Erequest : _ request -> packed_request
 
-val send : Lwt_io.output_channel -> 'a Data_encoding.t -> 'a -> unit Lwt.t
+val request_encoding : packed_request Data_encoding.t
 
-val recv : Lwt_io.input_channel -> 'a Data_encoding.t -> 'a Lwt.t
+val result_encoding : 'a request -> 'a Data_encoding.t
 
-val recv_result :
-  Lwt_io.input_channel -> 'a Data_encoding.t -> 'a tzresult Lwt.t
+val reconfigure_event_logging_request :
+  Tezos_base.Internal_event_config.t -> unit request
+
+val internal_events : parameters -> Tezos_base.Internal_event_config.t
+
+val terminate_request : packed_request
 
 (** The prefix for the validation socket filename.
 
@@ -116,11 +129,5 @@ val socket_path_prefix : string
     [pid] is the process ID of the validator process. *)
 val socket_path : socket_dir:string -> pid:int -> string
 
-val create_socket_listen :
-  canceler:Lwt_canceler.t ->
-  max_requests:int ->
-  socket_path:string ->
-  Lwt_unix.file_descr tzresult Lwt.t
-
-val create_socket_connect :
-  canceler:Lwt_canceler.t -> socket_path:string -> Lwt_unix.file_descr Lwt.t
+val command_line_args :
+  parameters -> socket_dir:string -> string option * string list

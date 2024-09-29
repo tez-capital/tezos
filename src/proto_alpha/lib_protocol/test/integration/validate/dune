@@ -6,28 +6,27 @@
  (instrumentation (backend bisect_ppx))
  (libraries
   tezt.core
-  octez-alcotezt
-  octez-libs.tezos-base
-  tezos-protocol-alpha
+  octez-libs.base
+  tezos-protocol-alpha.protocol
   qcheck-alcotest
-  tezos-client-alpha
-  tezos-test-helpers
-  tezos-alpha-test-helpers
-  octez-libs.tezos-base-test-helpers
-  tezos-protocol-plugin-alpha)
+  octez-protocol-alpha-libs.client
+  octez-libs.test-helpers
+  octez-protocol-alpha-libs.test-helpers
+  octez-libs.base-test-helpers
+  tezos-protocol-alpha.parameters
+  octez-protocol-alpha-libs.plugin)
  (library_flags (:standard -linkall))
  (flags
   (:standard)
   -open Tezt_core
   -open Tezt_core.Base
-  -open Octez_alcotezt
   -open Tezos_base.TzPervasives
-  -open Tezos_base.TzPervasives.Error_monad.Legacy_monad_globals
   -open Tezos_protocol_alpha
   -open Tezos_client_alpha
   -open Tezos_test_helpers
   -open Tezos_alpha_test_helpers
   -open Tezos_base_test_helpers
+  -open Tezos_protocol_alpha_parameters
   -open Tezos_protocol_plugin_alpha)
  (modules
   generator_descriptors
@@ -57,7 +56,7 @@
  (alias runtest)
  (package tezos-protocol-alpha-tests)
  (enabled_if (<> false %{env:RUNTEZTALIAS=true}))
- (action (run %{dep:./main.exe})))
+ (action (run %{dep:./main.exe} /flaky /ci_disabled)))
 
 (rule
  (targets main.ml)

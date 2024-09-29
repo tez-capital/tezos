@@ -3,13 +3,54 @@
 ## Version next
 
 ### SDK
+- Add experimental support for compiling kernels to a Hermit RISC-V image behind the `proto-alpha` flag.
+- Add an experimental rollup host with an in-memory store behind the `experimental-host-in-memory-store` flag.
+- Add an `OutboxQueue` that can be used when more than 100 outbox messages are produced at a given level.
+- Add `From OutboxMessageTransaction`, `From OutboxMessageTransactionBatch` for `OutboxMessage` to simplify construction.
+- Fix the incomplete inbox on the first level of using `MockHost::default()`.
+- Add support for new michelson `Ticket` constructor.
+- Add michelson `nat`.
+- Removes deprecated `proto-nairobi` feature flag.
+- Stabilise `OutboxMessage::WhitelistUpdate`.
+- Add `tezos-smart-rollup-utils`, for tooling that interacts with non-kernel related standards in the Smart Rollup ecosystem.
+- Add `tezos_smart_rollup_utils::inbox` module, constructing inboxes for testing, and manipulating `inbox.json` files.
+- Add `tezos_smart_rollup::entrypoint` module for kernel entrypoint configuration & macros.
+- Add `entrypoint::main` procedural macro to mark the kernel entrypoint function.
+- Add `extra` feature flag, for functionalility not-expected to be used by kernels directly.
+- Remove the `proto-alpha` flag restriction on DAL host functions.
+- Refactor `OutboxMessage` to `OutboxMessageFull` enabling different atomic batch backends that implement `AtomicBatch` trait.
+- Add `AtomicBatch2` ... `AtomicBatch5` structs implementing `AtomicBatch` and constructed from tuples
+  of `OutboxMessageTransaction` with potentially different parameter types.
+- Add `--keep-going` option to native cli, to control whether the kernel should exit once the inbox has been drained.
+- Implement the generic `reveal` host function in the `MockHost`, this allows in particular to use the DAL host functions in the mockup.
+- Bump `tezos_crypto_rs`/`tezos_data_encoding` to `0.6.0` release.
 
+### Installer client/kernel
+
+- Add support for using the `set` instruction with large (> 512 byte) values.
+
+## Version 0.2.2
+
+### SDK
+
+- Add michelson `or` and `option`.
 - Add a feature flag `proto-alpha` to enable host functions introduced in
   unreleased protocols.
 - Add `Runtime::reveal_dal_page` to let a kernel request pages from Tezos’ Data
   Availability Layer (DAL).
+- Add a new case `WhitelistUpdate(OutboxMessageWhitelistUpdate)` to the
+  `OutboxMessage<Expr: Michelson>` encoding, behind the `proto-alpha` feature flag.
+- The implementation of `write_debug` in the `MockHost` no longer prefixes the debug message
+  with `DEBUG:` and do not print a newline by default.
+- Correctly initialise `MockHost::reboots_remaining` flag for testing outside of `run_level` api.
+- Add `Runtime::reveal_dal_parameters` to let a kernel request DAL parameters from the L1.
+- Add experimental, partial support for RISC-V kernels behind the `proto-alpha`flag.
+- Add a `bls` feature flag, enabled by default, which allows disabling features which require
+  the `bls` feature from `tezos_crypto_rs`.
 
 ### Installer client/kernel
+
+- Remove unused dependency on `blst` crate, to simplify installation.
 
 ## Version 0.2.1
 

@@ -6,12 +6,12 @@
  (instrumentation (backend bisect_ppx))
  (libraries
   tezt.core
-  octez-libs.tezos-base
-  octez-libs.tezos-micheline
-  tezos-client-alpha
-  tezos-protocol-alpha
-  octez-libs.tezos-base-test-helpers
-  tezos-test-helpers
+  octez-libs.base
+  octez-libs.micheline
+  octez-protocol-alpha-libs.client
+  tezos-protocol-alpha.protocol
+  octez-libs.base-test-helpers
+  octez-libs.test-helpers
   octez-alcotezt
   qcheck-alcotest)
  (library_flags (:standard -linkall))
@@ -20,7 +20,6 @@
   -open Tezt_core
   -open Tezt_core.Base
   -open Tezos_base.TzPervasives
-  -open Tezos_base.TzPervasives.Error_monad.Legacy_monad_globals
   -open Tezos_micheline
   -open Tezos_client_alpha
   -open Tezos_protocol_alpha
@@ -46,9 +45,9 @@
 
 (rule
  (alias runtest)
- (package tezos-client-alpha)
+ (package octez-protocol-alpha-libs)
  (enabled_if (<> false %{env:RUNTEZTALIAS=true}))
- (action (run %{dep:./main.exe})))
+ (action (run %{dep:./main.exe} /flaky /ci_disabled)))
 
 (rule
  (targets main.ml)

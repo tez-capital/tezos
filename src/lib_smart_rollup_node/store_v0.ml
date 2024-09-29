@@ -71,7 +71,11 @@ module L2_blocks =
     (struct
       let name = "l2_blocks"
     end)
-    (Tezos_store_shared.Block_key)
+    (struct
+      include Tezos_store_shared.Block_key
+
+      let pp = Block_hash.pp
+    end)
     (struct
       type t = (unit, unit) Sc_rollup_block.block
 
@@ -178,7 +182,7 @@ module Commitments_published_at_level = struct
   include
     Indexed_store.Make_indexable
       (struct
-        let name = "commitments"
+        let name = "commitments_published_at_level"
       end)
       (Make_hash_index_key (Octez_smart_rollup.Commitment.Hash))
       (Indexed_store.Make_index_value (Indexed_store.Make_fixed_encodable (struct
@@ -224,40 +228,6 @@ module Levels_to_hashes =
       let equal = Int32.equal
     end))
     (Tezos_store_shared.Block_key)
-
-(* Published slot headers per block hash,
-   stored as a list of bindings from `Dal_slot_index.t`
-   to `Dal.Slot.t`. The encoding function converts this
-   list into a `Dal.Slot_index.t`-indexed map. *)
-module Dal_slot_pages =
-  Irmin_store.Make_nested_map
-    (struct
-      let path = ["dal"; "slot_pages"]
-    end)
-    (struct
-      type key = Block_hash.t
-
-      let to_path_representation = Block_hash.to_b58check
-    end)
-    (struct
-      type key =
-        Octez_smart_rollup.Dal.Slot_index.t
-        * Octez_smart_rollup.Dal.Page_index.t
-
-      let encoding =
-        Data_encoding.(tup2 Dal.Slot_index.encoding Dal.Page_index.encoding)
-
-      let compare = Stdlib.compare
-
-      let name = "slot_index"
-    end)
-    (struct
-      type value = bytes
-
-      let encoding = Data_encoding.(bytes' Hex)
-
-      let name = "slot_pages"
-    end)
 
 (** stores slots whose data have been considered and pages stored to disk (if
     they are confirmed). *)
@@ -337,48 +307,6 @@ module Dal_slots_headers =
    the block where they have been published.
 *)
 
-(** Confirmed DAL slots history. See documentation of
-    {!Dal_slot_repr.Slots_history} for more details. *)
-module Dal_confirmed_slots_history =
-  Irmin_store.Make_append_only_map
-    (struct
-      let path = ["dal"; "confirmed_slots_history"]
-    end)
-    (struct
-      type key = Block_hash.t
-
-      let to_path_representation = Block_hash.to_b58check
-    end)
-    (struct
-      type value = Octez_smart_rollup.Dal.Slot_history.t
-
-      let name = "dal_slot_histories"
-
-      let encoding = Octez_smart_rollup.Dal.Slot_history.V1.encoding
-    end)
-
-(** Confirmed DAL slots histories cache. See documentation of
-    {!Dal_slot_repr.Slots_history} for more details. *)
-module Dal_confirmed_slots_histories =
-  (* TODO: https://gitlab.com/tezos/tezos/-/issues/4390
-     Store single history points in map instead of whole history. *)
-    Irmin_store.Make_append_only_map
-      (struct
-        let path = ["dal"; "confirmed_slots_histories_cache"]
-      end)
-      (struct
-        type key = Block_hash.t
-
-        let to_path_representation = Block_hash.to_b58check
-      end)
-    (struct
-      type value = Octez_smart_rollup.Dal.Slot_history_cache.t
-
-      let name = "dal_slot_histories"
-
-      let encoding = Octez_smart_rollup.Dal.Slot_history_cache.V1.encoding
-    end)
-
 type 'a store = {
   l2_blocks : 'a L2_blocks.t;
   messages : 'a Messages.t;
@@ -446,17 +374,26 @@ let close
   and+ () = Irmin_store.close irmin_store in
   ()
 
-let load (type a) (mode : a mode) ~l2_blocks_cache_size data_dir :
-    a store tzresult Lwt.t =
+let load (type a) (mode : a mode) ~index_buffer_size ~l2_blocks_cache_size
+    data_dir : a store tzresult Lwt.t =
   let open Lwt_result_syntax in
   let path name = Filename.concat data_dir name in
   let cache_size = l2_blocks_cache_size in
-  let* l2_blocks = L2_blocks.load mode ~path:(path "l2_blocks") ~cache_size in
-  let* messages = Messages.load mode ~path:(path "messages") ~cache_size in
-  let* inboxes = Inboxes.load mode ~path:(path "inboxes") ~cache_size in
-  let* commitments = Commitments.load mode ~path:(path "commitments") in
+  let* l2_blocks =
+    L2_blocks.load mode ~index_buffer_size ~path:(path "l2_blocks") ~cache_size
+  in
+  let* messages =
+    Messages.load mode ~index_buffer_size ~path:(path "messages") ~cache_size
+  in
+  let* inboxes =
+    Inboxes.load mode ~index_buffer_size ~path:(path "inboxes") ~cache_size
+  in
+  let* commitments =
+    Commitments.load mode ~index_buffer_size ~path:(path "commitments")
+  in
   let* commitments_published_at_level =
     Commitments_published_at_level.load
+      ~index_buffer_size
       mode
       ~path:(path "commitments_published_at_level")
   in
@@ -465,7 +402,10 @@ let load (type a) (mode : a mode) ~l2_blocks_cache_size data_dir :
     Last_finalized_level.load mode ~path:(path "last_finalized_level")
   in
   let* levels_to_hashes =
-    Levels_to_hashes.load mode ~path:(path "levels_to_hashes")
+    Levels_to_hashes.load
+      mode
+      ~index_buffer_size
+      ~path:(path "levels_to_hashes")
   in
   let+ irmin_store = Irmin_store.load mode (path "irmin_store") in
   {
@@ -480,7 +420,7 @@ let load (type a) (mode : a mode) ~l2_blocks_cache_size data_dir :
     irmin_store;
   }
 
-let iter_l2_blocks ({l2_blocks; l2_head; _} : _ t) f =
+let iter_l2_blocks ?progress _ {l2_blocks; l2_head; _} f =
   let open Lwt_result_syntax in
   let* head = L2_head.read l2_head in
   match head with
@@ -488,6 +428,14 @@ let iter_l2_blocks ({l2_blocks; l2_head; _} : _ t) f =
       (* No reachable head, nothing to do *)
       return_unit
   | Some head ->
+      let track_progress =
+        match progress with
+        | None -> fun f -> f (fun _ -> Lwt.return_unit)
+        | Some message ->
+            let progress_bar = Progress_bar.spinner ~message in
+            Progress_bar.Lwt.with_reporter progress_bar
+      in
+      track_progress @@ fun count_progress ->
       let rec loop hash =
         let* block = L2_blocks.read l2_blocks hash in
         match block with
@@ -496,6 +444,12 @@ let iter_l2_blocks ({l2_blocks; l2_head; _} : _ t) f =
             return_unit
         | Some (block, header) ->
             let* () = f {block with header} in
+            let*! () = count_progress 1 in
             loop header.predecessor
       in
       loop head.header.block_hash
+
+let gc (_ : _ t) ~level:_ = failwith "GC is not implemented for store V0"
+
+let wait_gc_completion (_ : _ t) =
+  Lwt.fail_with "GC is not implemented for store V0"

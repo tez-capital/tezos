@@ -8,12 +8,12 @@ bug-reports: "https://gitlab.com/tezos/tezos/issues"
 dev-repo: "git+https://gitlab.com/tezos/tezos.git"
 license: "MIT"
 depends: [
-  "dune" { >= "3.0" }
+  "dune" { >= "3.11.1" }
   "ocaml" { >= "4.14" }
   "bisect_ppx" { >= "2.7.0" }
-  "ocamlformat" { = "0.24.1" }
-  "ometrics" { >= "0.2.1" }
-  "base-unix"
+  "ocamlformat" { = "0.26.2" }
+  "num"
+  "re" { >= "1.10.0" }
 ]
 build: [
   ["rm" "-r" "vendors" "contrib"]

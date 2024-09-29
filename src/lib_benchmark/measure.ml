@@ -27,7 +27,7 @@
 open Stats
 
 type options = {
-  seed : int option;
+  seed : int;
   nsamples : int;
   bench_number : int;
   minor_heap_size : [`words of int];
@@ -83,7 +83,7 @@ let options_encoding =
        (fun (seed, nsamples, bench_number, minor_heap_size, config_file) ->
          {seed; nsamples; bench_number; minor_heap_size; config_file})
        (obj5
-          (req "seed" (option Benchmark_helpers.int_encoding))
+          (req "seed" Benchmark_helpers.int_encoding)
           (req "samples_per_bench" Benchmark_helpers.int_encoding)
           (req "bench_number" Benchmark_helpers.int_encoding)
           (req "minor_heap_size" heap_size_encoding)
@@ -151,11 +151,7 @@ let serialized_workload_encoding =
 (* Pp *)
 
 let pp_options fmtr (options : options) =
-  let seed =
-    match options.seed with
-    | None -> "self-init"
-    | Some seed -> string_of_int seed
-  in
+  let seed = match options.seed with seed -> string_of_int seed in
   let nsamples = string_of_int options.nsamples in
   let config_file = Option.value options.config_file ~default:"None" in
   let bench_number = string_of_int options.bench_number in
@@ -358,11 +354,11 @@ let collect_stats : 'a workload_data -> workloads_stats =
 module Time = struct
   external get_time_ns : unit -> (int64[@unboxed])
     = "caml_clock_gettime_byte" "caml_clock_gettime"
-    [@@noalloc]
+  [@@noalloc]
 
   external clock_getres : unit -> (int64[@unboxed])
     = "caml_clock_getres_byte" "caml_clock_getres"
-    [@@noalloc]
+  [@@noalloc]
 
   let measure f =
     let bef = get_time_ns () in
@@ -370,7 +366,16 @@ module Time = struct
     let aft = get_time_ns () in
     let dt = Int64.(to_float (sub aft bef)) in
     dt
-    [@@inline always]
+  [@@inline always]
+
+  let measure_lwt f =
+    let open Lwt.Syntax in
+    let bef = get_time_ns () in
+    let+ res = f () in
+    let aft = get_time_ns () in
+    let dt = Int64.(to_float (sub aft bef)) in
+    (dt, res)
+  [@@inline always]
 
   let measure_and_return f =
     let bef = get_time_ns () in
@@ -378,7 +383,7 @@ module Time = struct
     let aft = get_time_ns () in
     let dt = Int64.(to_float (sub aft bef)) in
     (dt, x)
-    [@@inline always]
+  [@@inline always]
 
   let check_timer_resolution () =
     let ns = clock_getres () in
@@ -408,12 +413,10 @@ let compute_empirical_timing_distribution :
   done ;
   let shape = Linalg.Tensor.Int.rank_one nsamples in
   Linalg.Vec.Float.make shape (fun i -> buffer.{i + start})
- [@@ocaml.inline]
+[@@ocaml.inline]
 
 let seed_init_from_options (options : options) =
-  match options.seed with
-  | None -> Random.State.make_self_init ()
-  | Some seed -> Random.State.make [|seed|]
+  Random.State.make [|options.seed|]
 
 let gc_init_from_options (options : options) =
   match options.minor_heap_size with
@@ -457,8 +460,15 @@ let perform_benchmark (type c t) (options : options)
     List.fold_left
       (fun workload_data benchmark_fun ->
         progress () ;
-        set_gc_increment () ;
-        Gc.compact () ;
+        let bench = benchmark_fun () in
+        (match bench with
+        | Generator.Calculated _ ->
+            (* Calculated already gets its measures.
+               No need to perform GC. *)
+            ()
+        | _ ->
+            set_gc_increment () ;
+            Gc.compact ()) ;
         let measure_plain_benchmark workload closure =
           let measures =
             compute_empirical_timing_distribution
@@ -469,7 +479,7 @@ let perform_benchmark (type c t) (options : options)
           in
           {workload; measures} :: workload_data
         in
-        match benchmark_fun () with
+        match bench with
         | Generator.Calculated {workload; measure} ->
             let measures = Array.init options.nsamples (fun _ -> measure ()) in
             let measures = Maths.vector_of_array measures in

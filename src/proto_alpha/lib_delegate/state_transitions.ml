@@ -73,7 +73,14 @@ let is_acceptable_proposal_for_current_level state
          is a predecessor therefore the proposal is valid *)
       return Valid_proposal
 
-let make_consensus_list state proposal =
+(* This function retrieves the branch of the predecessor's predecessor (block
+   finalized) instead of the predecessor. This is done to avoid having consensus
+   operation branched on block that are not part of the canonical chain
+   anymore. *)
+let get_branch_from_proposal (proposal : proposal) =
+  proposal.predecessor.shell.predecessor
+
+let make_consensus_vote_batch state proposal kind =
   let level =
     Raw_level.of_int32 state.level_state.current_level |> function
     | Ok l -> l
@@ -81,19 +88,39 @@ let make_consensus_list state proposal =
   in
   let round = proposal.block.round in
   let block_payload_hash = proposal.block.payload_hash in
-  List.map
-    (fun delegate_slot ->
-      ( delegate_slot.consensus_key_and_delegate,
-        {slot = delegate_slot.first_slot; level; round; block_payload_hash} ))
-    (Delegate_slots.own_delegates state.level_state.delegate_slots)
+  let batch_content = {level; round; block_payload_hash} in
+  let delegates_and_slots =
+    List.map
+      (fun delegate_slot ->
+        (delegate_slot.consensus_key_and_delegate, delegate_slot.first_slot))
+      (Delegate_slots.own_delegates state.level_state.delegate_slots)
+  in
+  (* The branch is the latest finalized block. *)
+  let batch_branch =
+    get_branch_from_proposal state.level_state.latest_proposal
+  in
+  Baking_state.make_unsigned_consensus_vote_batch
+    kind
+    batch_content
+    ~batch_branch
+    delegates_and_slots
 
 (* If we do not have any slots, we won't inject any operation but we
    will still participate to determine an elected block *)
-let make_preattest_action state proposal =
-  let preattestations : (consensus_key_and_delegate * consensus_content) list =
-    make_consensus_list state proposal
+let prepare_preattest_action state proposal =
+  let preattestations : unsigned_consensus_vote_batch =
+    make_consensus_vote_batch state proposal Baking_state.Preattestation
   in
-  Inject_preattestations {preattestations}
+  Prepare_preattestations {preattestations}
+
+let prepare_consensus_votes_action state proposal =
+  let preattestations : unsigned_consensus_vote_batch =
+    make_consensus_vote_batch state proposal Baking_state.Preattestation
+  in
+  let attestations : unsigned_consensus_vote_batch =
+    make_consensus_vote_batch state proposal Baking_state.Attestation
+  in
+  Prepare_consensus_votes {preattestations; attestations}
 
 let update_proposal ~is_proposal_applied state proposal =
   let open Lwt_syntax in
@@ -134,13 +161,28 @@ let preattest state proposal =
   else
     let* () = Events.(emit attempting_preattest_proposal proposal.block.hash) in
     let new_state =
-      (* We await for the block to be applied before updating its
-         locked values. *)
-      if state.level_state.is_latest_proposal_applied then
-        update_current_phase state Awaiting_preattestations
-      else update_current_phase state Awaiting_application
+      (* We have detected a new proposal that needs to be preattested.
+         We switch to the `Awaiting_preattestations` phase. *)
+      update_current_phase state Awaiting_preattestations
     in
-    return (new_state, make_preattest_action state proposal)
+    (* Here, we do not cancel pending signatures as it is already done
+       in [handle_proposal]. *)
+    return (new_state, prepare_preattest_action state proposal)
+
+let prepare_consensus_votes state proposal =
+  let open Lwt_syntax in
+  if Baking_state.is_first_block_in_protocol proposal then
+    (* We do not vote for the first transition block *)
+    let new_state = update_current_phase state Idle in
+    return (new_state, Do_nothing)
+  else
+    let* () = Events.(emit attempting_vote_proposal proposal.block.hash) in
+    let new_state =
+      (* We have detected a new proposal that needs to be voted for.
+         We switch to the `Awaiting_preattestations` phase. *)
+      update_current_phase state Awaiting_preattestations
+    in
+    return (new_state, prepare_consensus_votes_action state proposal)
 
 let extract_pqc state (new_proposal : proposal) =
   match new_proposal.block.prequorum with
@@ -199,8 +241,39 @@ let may_update_attestable_payload_with_internal_pqc state
       in
       {state with level_state = new_level_state}
 
-let may_update_is_latest_proposal_applied ~is_proposal_applied state
-    new_proposal =
+let has_already_been_handled state new_proposal =
+  let current_proposal = state.level_state.latest_proposal in
+  Block_hash.(current_proposal.block.hash = new_proposal.block.hash)
+  && state.level_state.is_latest_proposal_applied
+
+let mark_awaiting_pqc state =
+  let new_round_state =
+    {state.round_state with awaiting_unlocking_pqc = true}
+  in
+  let new_state = {state with round_state = new_round_state} in
+  new_state
+
+let rec handle_proposal ~is_proposal_applied state (new_proposal : proposal) =
+  let open Lwt_syntax in
+  (* We need to avoid to send votes if we are in phases where consensus
+     votes are already being forged. This is needed to avoid switching
+     back from Awaiting_attestations to Awaiting_preattestations.
+     Hypothesis: a fresh round's initial phase is Idle *)
+  let may_vote state proposal =
+    match state.round_state.current_phase with
+    | Idle ->
+        (* We prioritize the new and meaningful consensus vote signing
+           by cancelling all pending forge and signing tasks. In this
+           current context, preattesting means that it is now too late
+           to include outdated consensus votes and blocks. However,
+           active forge requests are still processed until
+           completion. *)
+        state.global_state.forge_worker_hooks.cancel_all_pending_tasks () ;
+        prepare_consensus_votes state proposal
+    | _ -> do_nothing state
+  in
+  let current_level = state.level_state.current_level in
+  let new_proposal_level = new_proposal.block.shell.level in
   let current_proposal = state.level_state.latest_proposal in
   if
     is_proposal_applied
@@ -210,26 +283,8 @@ let may_update_is_latest_proposal_applied ~is_proposal_applied state
       {state.level_state with is_latest_proposal_applied = true}
     in
     let new_state = {state with level_state = new_level_state} in
-    new_state
-  else state
-
-let has_already_been_handled state new_proposal =
-  let current_proposal = state.level_state.latest_proposal in
-  Block_hash.(current_proposal.block.hash = new_proposal.block.hash)
-  && state.level_state.is_latest_proposal_applied
-
-let rec handle_proposal ~is_proposal_applied state (new_proposal : proposal) =
-  let open Lwt_syntax in
-  let current_level = state.level_state.current_level in
-  let new_proposal_level = new_proposal.block.shell.level in
-  let current_proposal = state.level_state.latest_proposal in
-  let state =
-    may_update_is_latest_proposal_applied
-      ~is_proposal_applied
-      state
-      new_proposal
-  in
-  if Compare.Int32.(current_level > new_proposal_level) then
+    do_nothing new_state
+  else if Compare.Int32.(current_level > new_proposal_level) then
     (* The baker is ahead, a reorg may have happened. Do nothing:
        wait for the node to send us the branch's head. This new head
        should have a fitness that is greater than our current
@@ -283,6 +338,11 @@ let rec handle_proposal ~is_proposal_applied state (new_proposal : proposal) =
           let* new_state =
             may_update_proposal ~is_proposal_applied new_state new_proposal
           in
+          (* We invalidate early attestations *)
+          let new_round_state =
+            {new_state.round_state with early_attestations = []}
+          in
+          let new_state = {new_state with round_state = new_round_state} in
           (* The proposal is valid but maybe we already locked on a payload *)
           match new_state.level_state.locked_round with
           | Some locked_round -> (
@@ -291,29 +351,28 @@ let rec handle_proposal ~is_proposal_applied state (new_proposal : proposal) =
                   locked_round.payload_hash = new_proposal.block.payload_hash)
               then
                 (* when the new head has the same payload as our
-                   [locked_round], we accept it and preattest *)
-                preattest new_state new_proposal
+                   [locked_round], we accept it and vote for it *)
+                may_vote new_state new_proposal
               else
                 (* The payload is different *)
                 match new_proposal.block.prequorum with
                 | Some {round; _} when Round.(locked_round.round < round) ->
-                    (* This PQC is above our locked_round, we can preattest it *)
-                    preattest new_state new_proposal
+                    (* This PQC is above our locked_round, we can and vote for it *)
+                    may_vote new_state new_proposal
                 | _ ->
-                    (* We shouldn't preattest this proposal, but we
+                    (* We shouldn't vote for proposal, but we
                        should at least watch (pre)quorums events on it
                        but only when it is applied otherwise we await
                        for the proposal to be applied. *)
-                    if is_proposal_applied then
-                      let new_state =
-                        update_current_phase new_state Awaiting_preattestations
-                      in
-                      return (new_state, Watch_proposal)
-                    else do_nothing new_state)
+                    let new_state = mark_awaiting_pqc new_state in
+                    let new_state =
+                      update_current_phase new_state Awaiting_preattestations
+                    in
+                    return (new_state, Watch_prequorum))
           | None ->
               (* Otherwise, we did not lock on any payload, thus we can
-                 preattest it *)
-              preattest new_state new_proposal)
+                 vote for it it *)
+              may_vote new_state new_proposal)
   else
     (* Last case: new_proposal_level > current_level *)
     (* Possible scenarios:
@@ -325,7 +384,13 @@ let rec handle_proposal ~is_proposal_applied state (new_proposal : proposal) =
     let compute_new_state ~current_round ~delegate_slots
         ~next_level_delegate_slots =
       let round_state =
-        {current_round; current_phase = Idle; delayed_prequorum = None}
+        {
+          current_round;
+          current_phase = Idle;
+          delayed_quorum = None;
+          early_attestations = [];
+          awaiting_unlocking_pqc = false;
+        }
       in
       let level_state =
         {
@@ -407,40 +472,17 @@ and may_switch_branch ~is_proposal_applied state new_proposal =
         let* () = Events.(emit branch_proposal_has_same_prequorum ()) in
         do_nothing state
 
-let may_register_early_prequorum state ((candidate, _) as received_prequorum) =
-  let open Lwt_syntax in
-  if
-    Block_hash.(
-      candidate.Operation_worker.hash
-      <> state.level_state.latest_proposal.block.hash)
-  then
-    let* () =
-      Events.(
-        emit
-          unexpected_pqc_while_waiting_for_application
-          (candidate.hash, state.level_state.latest_proposal.block.hash))
-    in
-    do_nothing state
-  else
-    let* () = Events.(emit pqc_while_waiting_for_application candidate.hash) in
-    let new_round_state =
-      {state.round_state with delayed_prequorum = Some received_prequorum}
-    in
-    let new_state = {state with round_state = new_round_state} in
-    do_nothing new_state
-
-(** Inject a fresh block proposal containing the current operations of the
-    mempool in [state] and the additional [attestations] and [dal_attestations]
-    for [delegate] at round [round]. *)
-let propose_fresh_block_action ~attestations ~dal_attestations ?last_proposal
+(* Create a fresh block proposal containing the current operations of the
+   mempool in [state] and the additional [attestations] for [delegate] at round
+   [round]. *)
+let prepare_block_to_bake ~attestations ?last_proposal
     ~(predecessor : block_info) state delegate round =
-  let open Lwt_syntax in
-  (* TODO check if there is a trace where we could not have updated the level *)
   (* The block to bake embeds the operations gathered by the
      worker. However, consensus operations that are not relevant for
      this block are filtered out. In the case of proposing a new fresh
      block, the block is supposed to carry only attestations for the
      previous level. *)
+  let open Lwt_syntax in
   let operation_pool =
     (* 1. Fetch operations from the mempool. *)
     let current_mempool =
@@ -481,29 +523,38 @@ let propose_fresh_block_action ~attestations ~dal_attestations ?last_proposal
     let filtered_mempool =
       {current_mempool with consensus = relevant_consensus_operations}
     in
-    (* 3. Add the additional given [attestations] and [dal_attestations].
+    (* 3. Add the additional given [attestations].
          N.b. this is a set: there won't be duplicates *)
-    let pool =
-      Operation_pool.add_operations
-        filtered_mempool
-        (List.map Operation.pack attestations)
-    in
     Operation_pool.add_operations
-      pool
-      (List.map Operation.pack dal_attestations)
+      filtered_mempool
+      (List.map Operation.pack attestations)
   in
   let kind = Fresh operation_pool in
-  let* () = Events.(emit proposing_fresh_block (delegate, round)) in
+  let* () = Events.(emit preparing_fresh_block (delegate, round)) in
   let force_apply =
     state.global_state.config.force_apply || Round.(round <> zero)
     (* This is used as a safety net by applying blocks on round > 0, in case
        validation-only did not produce a correct round-0 block. *)
   in
-  let block_to_bake = {predecessor; round; delegate; kind; force_apply} in
-  let updated_state = update_current_phase state Idle in
-  return @@ Inject_block {block_to_bake; updated_state}
+  let block_to_bake : block_to_bake =
+    {predecessor; round; delegate; kind; force_apply}
+  in
+  return (Prepare_block {block_to_bake})
 
-let propose_block_action state delegate round (proposal : proposal) =
+(** Create an inject action that will inject either a fresh block or the pre-emptively
+    forged block if it exists. *)
+let propose_fresh_block_action ~attestations ?last_proposal
+    ~(predecessor : block_info) state delegate round =
+  (* TODO check if there is a trace where we could not have updated the level *)
+  prepare_block_to_bake
+    ~attestations
+    ?last_proposal
+    ~predecessor
+    state
+    delegate
+    round
+
+let propose_block_action state delegate round ~last_proposal =
   let open Lwt_syntax in
   (* Possible cases:
      1. There was a proposal but the PQC was not reached.
@@ -521,18 +572,12 @@ let propose_block_action state delegate round (proposal : proposal) =
       (* Invariant: there is no locked round if there is no attestable
          payload *)
       assert (state.level_state.locked_round = None) ;
-      let attestations_in_last_proposal = proposal.block.quorum in
-      (* Also insert the DAL attestations from the proposal, because the mempool
-         may not contain them anymore *)
-      (* TODO: https://gitlab.com/tezos/tezos/-/issues/4671
-         The block may therefore contain multiple attestations for the same delegate. *)
-      let dal_attestations_in_last_proposal = proposal.block.dal_attestations in
+      let attestations_in_last_proposal = last_proposal.block.quorum in
       propose_fresh_block_action
         ~attestations:attestations_in_last_proposal
-        ~dal_attestations:dal_attestations_in_last_proposal
         state
-        ~last_proposal:proposal.block
-        ~predecessor:proposal.predecessor
+        ~last_proposal:last_proposal.block
+        ~predecessor:last_proposal.predecessor
         delegate
         round
   | Some {proposal; prequorum} ->
@@ -599,13 +644,22 @@ let propose_block_action state delegate round (proposal : proposal) =
       let block_to_bake =
         {predecessor = proposal.predecessor; round; delegate; kind; force_apply}
       in
-      let updated_state = update_current_phase state Idle in
-      return @@ Inject_block {block_to_bake; updated_state}
+      return (Prepare_block {block_to_bake})
 
 let end_of_round state current_round =
   let open Lwt_syntax in
   let new_round = Round.succ current_round in
-  let new_round_state = {state.round_state with current_round = new_round} in
+  (* We initialize the round's phase to Idle for the [handle_proposal]
+     transition to trigger the preattestation action. *)
+  let new_round_state =
+    {
+      current_round = new_round;
+      current_phase = Idle;
+      delayed_quorum = None;
+      early_attestations = [];
+      awaiting_unlocking_pqc = false;
+    }
+  in
   let new_state = {state with round_state = new_round_state} in
   (* we need to check if we need to bake for this round or not *)
   match
@@ -645,11 +699,11 @@ let end_of_round state current_round =
             new_state
             consensus_key_and_delegate
             new_round
-            state.level_state.latest_proposal
+            ~last_proposal:state.level_state.latest_proposal
         in
         return (new_state, action)
 
-let time_to_bake_at_next_level state at_round =
+let time_to_prepare_next_level_block state at_round =
   let open Lwt_syntax in
   (* It is now time to update the state level *)
   (* We need to keep track for which block we have 2f+1 *attestations*, that is,
@@ -658,16 +712,11 @@ let time_to_bake_at_next_level state at_round =
   let round_proposer_opt = round_proposer state ~level:`Next at_round in
   match (state.level_state.elected_block, round_proposer_opt) with
   | None, _ | _, None ->
-      (* Unreachable: the [Time_to_bake_next_level] event can only be
+      (* Unreachable: the [Time_to_prepare_next_level_block] event can only be
          triggered when we have a slot and an elected block *)
       assert false
   | Some elected_block, Some {consensus_key_and_delegate; _} ->
       let attestations = elected_block.attestation_qc in
-      let dal_attestations =
-        (* Unlike proposal attestations, we don't watch and store DAL attestations for
-           each proposal, we'll retrieve them from the mempool *)
-        []
-      in
       let new_level_state =
         {state.level_state with next_level_proposed_round = Some at_round}
       in
@@ -675,7 +724,6 @@ let time_to_bake_at_next_level state at_round =
       let* action =
         propose_fresh_block_action
           ~attestations
-          ~dal_attestations
           ~predecessor:elected_block.proposal.block
           new_state
           consensus_key_and_delegate
@@ -688,11 +736,114 @@ let update_locked_round state round payload_hash =
   let new_level_state = {state.level_state with locked_round} in
   {state with level_state = new_level_state}
 
-let make_attest_action state proposal =
-  let attestations : (consensus_key_and_delegate * consensus_content) list =
-    make_consensus_list state proposal
+let prepare_attest_action state proposal =
+  let attestations : unsigned_consensus_vote_batch =
+    make_consensus_vote_batch state proposal Baking_state.Attestation
   in
-  Inject_attestations {attestations}
+  Prepare_attestations {attestations}
+
+(* This function is called once a prequorum has been reached. *)
+let may_inject_attestations state ~first_signed_attestation
+    ~other_signed_attestations =
+  let open Lwt_syntax in
+  let emit_discarding_unexpected_attestation_event
+      ?(payload : attestable_payload option) attestation =
+    let {
+      vote_consensus_content = {level; round = att_round; block_payload_hash; _};
+      delegate;
+      _;
+    } =
+      attestation.unsigned_consensus_vote
+    in
+    let att_level = Raw_level.to_int32 level in
+    match payload with
+    | None ->
+        Events.(
+          emit
+            discarding_unexpected_attestation_without_prequorum_payload
+            (delegate, att_level, att_round))
+    | Some payload ->
+        Events.(
+          emit
+            discarding_unexpected_attestation_with_different_prequorum_payload
+            ( delegate,
+              block_payload_hash,
+              att_level,
+              att_round,
+              payload.proposal.block.payload_hash ))
+  in
+  let check_payload state attestation do_action =
+    match state.level_state.attestable_payload with
+    | None ->
+        (* No attestable payload, either the prequorum has not been reached yet,
+           or an other issue occurred, we cannot inject the attestations. *)
+        let* () = emit_discarding_unexpected_attestation_event attestation in
+        do_nothing state
+    | Some payload ->
+        if
+          not
+            Block_payload_hash.(
+              payload.proposal.block.payload_hash
+              = attestation.unsigned_consensus_vote.vote_consensus_content
+                  .block_payload_hash)
+        then
+          (* Attestable payload found in the state but it is different from the
+             one in the attestation operation, we cannot inject the
+             attestation. *)
+          let* () =
+            emit_discarding_unexpected_attestation_event ~payload attestation
+          in
+          do_nothing state
+        else do_action
+  in
+  match other_signed_attestations with
+  | [] ->
+      check_payload state first_signed_attestation
+      @@
+      let signed_attestations =
+        make_singleton_consensus_vote_batch first_signed_attestation
+      in
+      Lwt.return (state, Inject_attestations {signed_attestations})
+  | _ :: _ -> (
+      check_payload state first_signed_attestation
+      @@
+      let batch_branch =
+        get_branch_from_proposal state.level_state.latest_proposal
+      in
+      let batch_content =
+        let vote_consensus_content =
+          first_signed_attestation.unsigned_consensus_vote
+            .vote_consensus_content
+        in
+        {
+          level = vote_consensus_content.level;
+          round = vote_consensus_content.round;
+          block_payload_hash = vote_consensus_content.block_payload_hash;
+        }
+      in
+      make_signed_consensus_vote_batch
+        Attestation
+        batch_content
+        ~batch_branch
+        (first_signed_attestation :: other_signed_attestations)
+      |> function
+      | Ok signed_attestations ->
+          Lwt.return (state, Inject_attestations {signed_attestations})
+      | Error _err -> (* Unreachable *) do_nothing state)
+
+(* This function tries to inject attestations already prepared if the
+   prequorum is reached. *)
+let may_inject_early_forged_attestations state =
+  let early_attestations = state.round_state.early_attestations in
+  match early_attestations with
+  | [] -> Lwt.return (state, Watch_quorum)
+  | first_signed_attestation :: other_signed_attestations ->
+      let new_round_state = {state.round_state with early_attestations = []} in
+      let new_state = {state with round_state = new_round_state} in
+      may_inject_attestations
+        new_state
+        ~first_signed_attestation
+        ~other_signed_attestations
 
 let prequorum_reached_when_awaiting_preattestations state candidate
     preattestations =
@@ -706,9 +857,6 @@ let prequorum_reached_when_awaiting_preattestations state candidate
           unexpected_prequorum_received
           (candidate.hash, latest_proposal.block.hash))
     in
-    do_nothing state
-  else if not state.level_state.is_latest_proposal_applied then
-    let* () = Events.(emit handling_prequorum_on_non_applied_proposal ()) in
     do_nothing state
   else
     let prequorum =
@@ -746,11 +894,21 @@ let prequorum_reached_when_awaiting_preattestations state candidate
         latest_proposal.block.payload_hash
     in
     let new_state = update_current_phase new_state Awaiting_attestations in
-    return (new_state, make_attest_action new_state latest_proposal)
+    if new_state.round_state.awaiting_unlocking_pqc then
+      (* We were locked and did not trigger preemptive
+         consensus votes: we need to start attesting now. *)
+      return (new_state, prepare_attest_action new_state latest_proposal)
+    else
+      (* We already triggered preemptive attestation forging, we
+         either have those already or we are waiting for them. *)
+      may_inject_early_forged_attestations new_state
 
 let quorum_reached_when_waiting_attestations state candidate attestation_qc =
   let open Lwt_syntax in
   let latest_proposal = state.level_state.latest_proposal in
+  let is_latest_proposal_applied =
+    state.level_state.is_latest_proposal_applied
+  in
   if Block_hash.(candidate.Operation_worker.hash <> latest_proposal.block.hash)
   then
     let* () =
@@ -761,19 +919,40 @@ let quorum_reached_when_waiting_attestations state candidate attestation_qc =
     in
     do_nothing state
   else
-    let new_level_state =
+    let new_round_state, new_level_state =
       match state.level_state.elected_block with
-      | None ->
+      | None when is_latest_proposal_applied ->
+          (* The elected proposal has been applied. Record the elected block
+             and transition to the Idle phase, as there is nothing left to do.
+          *)
           let elected_block =
             Some {proposal = latest_proposal; attestation_qc}
           in
-          {state.level_state with elected_block}
+          let new_level_state = {state.level_state with elected_block} in
+          let new_round_state = {state.round_state with current_phase = Idle} in
+          (new_round_state, new_level_state)
+      | None ->
+          (* A quorum has been reached, but the elected proposal has not been
+             applied yet by the node. Transition in the `Awaiting_application`
+             phase, and do not save the elected block in the state. Instead,
+             keep track that an early quorum has been reached at this round.
+             This avoids the proposer of a block at the next level to inject a
+             proposal before the node has been applied the proposal elected at
+             the current level. *)
+          let new_round_state =
+            {
+              state.round_state with
+              current_phase = Awaiting_application;
+              delayed_quorum = Some attestation_qc;
+            }
+          in
+          (new_round_state, state.level_state)
       | Some _ ->
           (* If we already have an elected block, do not update it: the
-             earliest, the better. *)
-          state.level_state
+             earlier, the better. We do not need to record the quorum either,
+             as this won't be used to elect a new block. *)
+          (state.round_state, state.level_state)
     in
-    let new_round_state = {state.round_state with current_phase = Idle} in
     let new_state =
       {state with round_state = new_round_state; level_state = new_level_state}
     in
@@ -783,30 +962,143 @@ let handle_expected_applied_proposal (state : Baking_state.t) =
   let new_level_state =
     {state.level_state with is_latest_proposal_applied = true}
   in
+  (* This code is triggered only when in the `Awaiting_application`phase, which
+     in turn is reached only if a quorum has been met but the
+     block has not been applied by the node. As a consequence, the only
+     thing that is left to do at this stage is to update the elected block
+     and transition to the Idle phase, as there is nothing left to do. *)
   let new_state = {state with level_state = new_level_state} in
-  match new_state.round_state.delayed_prequorum with
-  | None ->
-      (* The application arrived before the prequorum: just wait for the prequorum. *)
-      let new_state = update_current_phase new_state Awaiting_preattestations in
-      do_nothing new_state
-  | Some (candidate, preattestation_qc) ->
-      (* The application arrived after the prequorum: handle the
-         prequorum received earlier.
-         Start by resetting the delayed_prequorum *)
-      let new_round_state =
-        {new_state.round_state with delayed_prequorum = None}
-      in
-      let new_state =
-        {
-          state with
-          level_state = new_level_state;
-          round_state = new_round_state;
-        }
-      in
-      prequorum_reached_when_awaiting_preattestations
+  let new_state =
+    match new_state.level_state.elected_block with
+    | None ->
+        (* We do not have an elected block for this level. We need to update it. *)
+        let latest_proposal = state.level_state.latest_proposal in
+        let attestation_qc =
+          match state.round_state.delayed_quorum with
+          | None -> assert false
+          | Some attestation_qc -> attestation_qc
+        in
+        let elected_block = Some {proposal = latest_proposal; attestation_qc} in
+        let new_level_state = {state.level_state with elected_block} in
+        {state with level_state = new_level_state}
+    | Some _ ->
+        (* We already have an elected block at this level. We do not need to update
+           it. The earlier, the better. *)
         new_state
-        candidate
-        preattestation_qc
+  in
+  let new_state = update_current_phase new_state Idle in
+  do_nothing new_state
+
+let handle_forged_preattestation state signed_preattestation =
+  let open Lwt_syntax in
+  let {
+    vote_consensus_content =
+      {
+        level;
+        round = att_round;
+        block_payload_hash = att_payload_hash;
+        slot = _;
+      };
+    delegate;
+    _;
+  } =
+    signed_preattestation.unsigned_consensus_vote
+  in
+  let att_level = Raw_level.to_int32 level in
+  let check_payload state preattestation do_action =
+    match state.level_state.attestable_payload with
+    | None ->
+        (* No attestable payload set, we are free to inject the
+           preattestations *)
+        do_action
+    | Some payload ->
+        if
+          not
+            Block_payload_hash.(
+              payload.proposal.block.payload_hash
+              = preattestation.unsigned_consensus_vote.vote_consensus_content
+                  .block_payload_hash)
+        then
+          (* The preattestation payload does not match the one set in the
+             state, we cannot inject the preattestation. *)
+          let* () =
+            Events.(
+              emit
+                discarding_unexpected_preattestation_with_different_payload
+                ( delegate,
+                  att_payload_hash,
+                  att_level,
+                  att_round,
+                  payload.proposal.block.payload_hash ))
+          in
+          do_nothing state
+        else do_action
+  in
+  check_payload state signed_preattestation
+  @@ Lwt.return (state, Inject_preattestation {signed_preattestation})
+
+let handle_forged_attestation state signed_attestation =
+  let open Lwt_syntax in
+  let {
+    vote_consensus_content =
+      {
+        level;
+        round = att_round;
+        block_payload_hash = att_payload_hash;
+        slot = _;
+      };
+    delegate;
+    _;
+  } =
+    signed_attestation.unsigned_consensus_vote
+  in
+  let att_level = Raw_level.to_int32 level in
+  let attestation_matches_proposal =
+    let {payload_hash; round = block_round; shell; _} =
+      state.level_state.latest_proposal.block
+    in
+    Block_payload_hash.(att_payload_hash = payload_hash)
+    && Round.(att_round = block_round)
+    && Compare.Int32.(shell.level = att_level)
+  in
+  if not attestation_matches_proposal then
+    let* () =
+      Events.(emit discarding_attestation (delegate, att_level, att_round))
+    in
+    do_nothing state
+  else
+    match state.round_state.current_phase with
+    | Awaiting_preattestations ->
+        (* An attestation is ready for injection but the prequorum has
+           not been reached yet: we save them until then. *)
+        let new_round_state =
+          {
+            state.round_state with
+            early_attestations =
+              signed_attestation :: state.round_state.early_attestations;
+          }
+        in
+        let new_state = {state with round_state = new_round_state} in
+        do_nothing new_state
+    | Idle | Awaiting_attestations | Awaiting_application ->
+        (* For these three phases, we should have already reached the prequorum.
+           If this is not the case, the attestations will not be injected. *)
+        may_inject_attestations
+          state
+          ~first_signed_attestation:signed_attestation
+          ~other_signed_attestations:[]
+
+let handle_forge_event state forge_event =
+  match forge_event with
+  | Block_ready prepared_block ->
+      Lwt.return
+        ( state,
+          Inject_block
+            {prepared_block; force_injection = false; asynchronous = true} )
+  | Preattestation_ready signed_preattestation ->
+      handle_forged_preattestation state signed_preattestation
+  | Attestation_ready signed_attestation ->
+      handle_forged_attestation state signed_attestation
 
 (* Hypothesis:
    - The state is not to be modified outside this module
@@ -832,10 +1124,10 @@ let step (state : Baking_state.t) (event : Baking_state.event) :
       (* If the round is ending, stop everything currently going on and
          increment the round. *)
       end_of_round state ending_round
-  | _, Timeout (Time_to_bake_next_level {at_round}) ->
+  | _, Timeout (Time_to_prepare_next_level_block {at_round}) ->
       (* If it is time to bake the next level, stop everything currently
          going on and propose the next level block *)
-      time_to_bake_at_next_level state at_round
+      time_to_prepare_next_level_block state at_round
   | Idle, New_head_proposal proposal ->
       let* () =
         Events.(
@@ -890,6 +1182,9 @@ let step (state : Baking_state.t) (event : Baking_state.event) :
               proposal.block.round ))
       in
       handle_proposal ~is_proposal_applied:false state proposal
+  | _, New_forge_event (forge_event : forge_event) ->
+      let* () = Events.(emit new_forge_event forge_event) in
+      handle_forge_event state forge_event
   | Awaiting_application, New_valid_proposal proposal
   | Awaiting_attestations, New_valid_proposal proposal
   | Awaiting_preattestations, New_valid_proposal proposal ->
@@ -907,8 +1202,6 @@ let step (state : Baking_state.t) (event : Baking_state.event) :
       else
         let* () = Events.(emit new_valid_proposal_while_waiting_for_qc ()) in
         handle_proposal ~is_proposal_applied:false state proposal
-  | Awaiting_application, Prequorum_reached (candidate, preattestation_qc) ->
-      may_register_early_prequorum state (candidate, preattestation_qc)
   | Awaiting_preattestations, Prequorum_reached (candidate, preattestation_qc)
     ->
       prequorum_reached_when_awaiting_preattestations
@@ -917,10 +1210,20 @@ let step (state : Baking_state.t) (event : Baking_state.event) :
         preattestation_qc
   | Awaiting_attestations, Quorum_reached (candidate, attestation_qc) ->
       quorum_reached_when_waiting_attestations state candidate attestation_qc
-  (* Unreachable cases *)
-  | Idle, (Prequorum_reached _ | Quorum_reached _)
-  | Awaiting_preattestations, Quorum_reached _
-  | Awaiting_attestations, Prequorum_reached _
-  | Awaiting_application, Quorum_reached _ ->
-      (* This cannot/should not happen *)
+  (* Unreachable cases modulo concurrency. *)
+  | ( (Idle | Awaiting_application | Awaiting_attestations),
+      Prequorum_reached (candidate, _operations_pqc) ) ->
+      (* Unexpected prequorum reached, we do not lock on it and discard it. *)
+      let* () =
+        Events.(
+          emit discarding_unexpected_prequorum_reached (candidate.hash, phase))
+      in
+      do_nothing state
+  | ( (Idle | Awaiting_preattestations | Awaiting_application),
+      Quorum_reached (candidate, _operations_qc) ) ->
+      (* Unexpected quorum reached, we discard it. *)
+      let* () =
+        Events.(
+          emit discarding_unexpected_quorum_reached (candidate.hash, phase))
+      in
       do_nothing state

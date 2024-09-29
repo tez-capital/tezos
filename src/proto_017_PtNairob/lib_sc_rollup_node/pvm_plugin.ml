@@ -25,41 +25,50 @@
 (*****************************************************************************)
 open Protocol
 open Alpha_context
+open Context_wrapper.Irmin
+
+let context = Pvm.context
+
+module Context = Irmin_context
 
 let get_tick kind state =
   let open Lwt_syntax in
   let module PVM = (val Pvm.of_kind kind) in
-  let+ tick = PVM.get_tick state in
+  let+ tick = PVM.get_tick (of_node_pvmstate state) in
   Sc_rollup.Tick.to_z tick
 
 let state_hash kind state =
   let open Lwt_syntax in
   let module PVM = (val Pvm.of_kind kind) in
-  let+ hash = PVM.state_hash state in
+  let+ hash = PVM.state_hash (of_node_pvmstate state) in
   Sc_rollup_proto_types.State_hash.to_octez hash
 
 let initial_state kind =
+  let open Lwt_syntax in
   let module PVM = (val Pvm.of_kind kind) in
-  PVM.initial_state ~empty:(PVM.State.empty ())
+  let+ state = PVM.initial_state ~empty:(PVM.State.empty ()) in
+  to_node_pvmstate state
 
 let parse_boot_sector kind =
   let module PVM = (val Pvm.of_kind kind) in
   PVM.parse_boot_sector
 
 let install_boot_sector kind state boot_sector =
+  let open Lwt_syntax in
   let module PVM = (val Pvm.of_kind kind) in
-  PVM.install_boot_sector state boot_sector
+  let+ state = PVM.install_boot_sector (of_node_pvmstate state) boot_sector in
+  to_node_pvmstate state
 
 let get_status node_ctxt state =
-  let open Lwt_syntax in
+  let open Lwt_result_syntax in
   let module PVM = (val Pvm.of_kind node_ctxt.Node_context.kind) in
-  let+ status = PVM.get_status state in
-  PVM.string_of_status status
+  let*! status = PVM.get_status (of_node_pvmstate state) in
+  return (PVM.string_of_status status)
 
 let get_current_level kind state =
   let open Lwt_option_syntax in
   let module PVM = (val Pvm.of_kind kind) in
-  let+ current_level = PVM.get_current_level state in
+  let+ current_level = PVM.get_current_level (of_node_pvmstate state) in
   Raw_level.to_int32 current_level
 
 module Fueled = Fueled_pvm
@@ -80,3 +89,117 @@ let info_per_level_serialized ~predecessor ~predecessor_timestamp =
   let open Sc_rollup_inbox_message_repr in
   unsafe_to_string
     (info_per_level_serialized ~predecessor ~predecessor_timestamp)
+
+let find_whitelist_update_output_index _node_ctxt _state ~outbox_level:_ =
+  Lwt.return_none
+
+let outbox_transaction_summary
+    (transaction : Sc_rollup.Outbox.Message.transaction) =
+  Outbox_message.
+    {
+      destination = Contract_hash.to_b58check transaction.destination;
+      entrypoint = Entrypoint.to_string transaction.entrypoint;
+      parameters =
+        (Michelson_v1_printer.unparse_expression
+           transaction.unparsed_parameters)
+          .unexpanded;
+      parameters_ty = None;
+    }
+
+let outbox_typed_transaction_summary
+    (transaction : Sc_rollup.Outbox.Message.typed_transaction) =
+  Outbox_message.
+    {
+      destination = Contract_hash.to_b58check transaction.destination;
+      entrypoint = Entrypoint.to_string transaction.entrypoint;
+      parameters =
+        (Michelson_v1_printer.unparse_expression
+           transaction.unparsed_parameters)
+          .unexpanded;
+      parameters_ty =
+        Some
+          (Michelson_v1_printer.unparse_expression transaction.unparsed_ty)
+            .unexpanded;
+    }
+
+let outbox_message_summary (output : Sc_rollup.output) =
+  let summary =
+    match output with
+    | {message = Atomic_transaction_batch {transactions}; _} ->
+        let transactions = List.map outbox_transaction_summary transactions in
+        Outbox_message.Transaction_batch transactions
+    | {message = Atomic_transaction_batch_typed {transactions}; _} ->
+        let transactions =
+          List.map outbox_typed_transaction_summary transactions
+        in
+        Transaction_batch transactions
+  in
+  (Z.to_int output.message_index, summary)
+
+let get_outbox_messages node_ctxt state ~outbox_level =
+  let open Lwt_syntax in
+  let outbox_level = Raw_level.of_int32_exn outbox_level in
+  let open (val Pvm.of_kind node_ctxt.Node_context.kind) in
+  let* outbox = get_outbox outbox_level (of_node_pvmstate state) in
+  List.rev_map outbox_message_summary outbox |> List.rev |> return
+
+let produce_serialized_output_proof node_ctxt state ~outbox_level ~message_index
+    =
+  let open Lwt_result_syntax in
+  let state = of_node_pvmstate state in
+  let module PVM = (val Pvm.of_kind node_ctxt.Node_context.kind) in
+  let outbox_level = Raw_level.of_int32_exn outbox_level in
+  let*! outbox = PVM.get_outbox outbox_level state in
+  let output = List.nth outbox message_index in
+  match output with
+  | None -> invalid_arg "invalid index"
+  | Some output -> (
+      let*! proof =
+        PVM.produce_output_proof
+          (of_node_context node_ctxt.context).index
+          state
+          output
+      in
+      match proof with
+      | Ok proof ->
+          let serialized_proof =
+            Data_encoding.Binary.to_string_exn PVM.output_proof_encoding proof
+          in
+          return serialized_proof
+      | Error err ->
+          failwith
+            "Error producing outbox proof (%a)"
+            Environment.Error_monad.pp
+            err)
+
+module Wasm_2_0_0 = struct
+  let decode_durable_state enc tree =
+    Wasm_2_0_0_pvm.Durable_state.Tree_encoding_runner.decode
+      enc
+      (of_node_pvmstate tree)
+
+  let proof_mem_tree tree =
+    Wasm_2_0_0_pvm.Wasm_2_0_0_proof_format.Tree.mem_tree (of_node_pvmstate tree)
+
+  let proof_fold_tree ?depth tree key ~order ~init ~f =
+    Wasm_2_0_0_pvm.Wasm_2_0_0_proof_format.Tree.fold
+      ?depth
+      (of_node_pvmstate tree)
+      key
+      ~order
+      ~init
+      ~f:(fun a b c -> f a (to_node_pvmstate b) c)
+end
+
+module Unsafe = struct
+  let apply_patch (kind : Octez_smart_rollup.Kind.t) state
+      (patch : Pvm_patches.unsafe_patch) =
+    let open Lwt_result_syntax in
+    let open (val Pvm.of_kind kind) in
+    let*? patch = Unsafe_patches.of_patch patch in
+    let* state =
+      protect @@ fun () ->
+      Unsafe_patches.apply (of_node_pvmstate state) patch |> Lwt_result.ok
+    in
+    return (to_node_pvmstate state)
+end

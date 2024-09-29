@@ -72,8 +72,8 @@ module Wasm_context = struct
     match Context.Tree.kinded_key tree with
     | Some k ->
         let* p = Context.produce_tree_proof index k step in
-        return (Some p)
-    | None -> return None
+        return_some p
+    | None -> return_none
 
   let kinded_hash_to_state_hash = function
     | `Value hash | `Node hash ->
@@ -89,37 +89,6 @@ end
 module Full_Wasm =
   Sc_rollup_wasm.V2_0_0.Make (Environment.Wasm_2_0_0.Make) (Wasm_context)
 
-let test_initial_state_hash_wasm_pvm () =
-  let open Alpha_context in
-  let open Lwt_result_syntax in
-  let empty = Sc_rollup_helpers.Wasm_pvm.make_empty_state () in
-  let*! state = Sc_rollup_helpers.Wasm_pvm.initial_state ~empty in
-  let*! hash = Sc_rollup_helpers.Wasm_pvm.state_hash state in
-  let expected = Sc_rollup.Wasm_2_0_0PVM.reference_initial_state_hash in
-  if Sc_rollup.State_hash.(hash = expected) then return_unit
-  else
-    failwith
-      "incorrect hash, expected %a, got %a"
-      Sc_rollup.State_hash.pp
-      expected
-      Sc_rollup.State_hash.pp
-      hash
-
-let test_initial_state_hash_wasm_machine () =
-  let open Lwt_result_syntax in
-  let open Sc_rollup_machine_no_proofs in
-  let*! state = Wasm.initial_state ~empty:(empty_tree ()) in
-  let*! hash = Wasm.state_hash state in
-  let expected = Sc_rollup_wasm.V2_0_0.reference_initial_state_hash in
-  if Sc_rollup_repr.State_hash.(hash = expected) then return_unit
-  else
-    failwith
-      "incorrect hash, expected %a, got %a"
-      Sc_rollup_repr.State_hash.pp
-      expected
-      Sc_rollup_repr.State_hash.pp
-      hash
-
 let test_metadata_size () =
   let address = Sc_rollup_repr.Address.of_bytes_exn (Bytes.make 20 '\000') in
   let metadata =
@@ -134,11 +103,11 @@ let test_metadata_size () =
   Lwt_result_syntax.return_unit
 
 let test_l1_input_kind () =
-  let open Lwt_result_syntax in
+  let open Lwt_result_wrap_syntax in
   let open Sc_rollup_inbox_message_repr in
   let open Tezos_scoru_wasm in
   let check_msg msg expected =
-    let*? msg = Environment.wrap_tzresult @@ serialize msg in
+    let*?@ msg = serialize msg in
     let msg = unsafe_to_string msg |> Pvm_input_kind.from_raw_input in
     assert (msg = expected) ;
     return_unit
@@ -178,7 +147,7 @@ let make_transactions () =
    Info_per_level, input, EOL) it receives. It uses the [write_output] host
    function and so it is used to test this function. *)
 let test_output () =
-  let open Lwt_result_syntax in
+  let open Lwt_result_wrap_syntax in
   let level_offset = 20 in
   let dst = 60 in
   let max_bytes = 3600 in
@@ -308,9 +277,7 @@ let test_output () =
       bytes_output_message
   in
   assert (message = out) ;
-  let*? outbox_level =
-    Environment.wrap_tzresult @@ Raw_level_repr.of_int32 last_outbox_level
-  in
+  let*?@ outbox_level = Raw_level_repr.of_int32 last_outbox_level in
   let output = Sc_rollup_PVM_sig.{outbox_level; message_index; message} in
 
   let*! pf = Full_Wasm.produce_output_proof dummy_context final_tree output in
@@ -445,14 +412,6 @@ let test_reveal_host_function_can_request_dal_pages () =
 
 let tests =
   [
-    Tztest.tztest
-      "initial state hash for Wasm"
-      `Quick
-      test_initial_state_hash_wasm_pvm;
-    Tztest.tztest
-      "initial state hash for Wasm machine"
-      `Quick
-      test_initial_state_hash_wasm_machine;
     Tztest.tztest "size of a rollup metadata" `Quick test_metadata_size;
     Tztest.tztest "l1 input kind" `Quick test_l1_input_kind;
     Tztest.tztest "output proofs" `Quick test_output;

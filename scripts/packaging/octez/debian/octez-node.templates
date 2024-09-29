@@ -1,0 +1,55 @@
+Template: octez-node/history-mode
+Description: The type of node you wish to install:
+ - Full (default mode with 1 additional cycle). The node stores the minimal data
+   since the genesis required to reconstruct (or ‘replay’) the complete chain’s
+   ledger state.
+ .
+ - Archive: This is the heaviest mode as it keeps the whole chain data to be able
+   to query any information stored on the chain since the genesis.
+   It is particularly suitable for indexers or block explorers.
+ .
+ - Rolling: This is the lightest mode as it only maintains a minimal rolling
+   fragment of the chain data so the node can still validate new blocks and
+   synchronize with the head.
+ .
+ Source: https://tezos.gitlab.io/user/history_modes.html
+Type: string
+Default: full
+
+Template: octez-node/network
+Description: The network you want to connect:
+ - mainnet
+ - testnet
+ - ghostnet
+Type: string
+Default: mainnet
+
+Template: octez-node/purge_warning
+Description: Do you really want to remove all data:
+ This operation will remove all node data, the node
+ configuration and all associated files. Otherwise,
+ the node data will be left untouched, and only the
+ packages will be removed.
+ .
+ Enter "yes" to confirm.
+Type: string
+Default: no
+
+Template: octez-node/configure
+Description: Skipping node init:
+ Enter "yes" to skip.
+Type: string
+Default: no
+
+Template: octez-node/upgrade_note_current
+Type: note
+Description: Important upgrade information
+ This package has been upgraded to a new version. Please note that
+ some changes have been made that may affect your usage of the
+ package.
+ .
+ In particular this new version now use systemd to manage the octez-node
+ life-cycle instead of a plain system V init script. Also the default values
+ in /etc/default/octez-node have been revised and updated.
+ .
+ Please review the release notes for more information.

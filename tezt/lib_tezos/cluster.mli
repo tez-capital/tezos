@@ -55,13 +55,19 @@
 
 (** Create several nodes.
 
-    Usage: [create count arguments]
+    Usage: [create count ?rpc_external arguments]
 
-    Create [count] nodes (using [Node.create]) sharing the same [arguments].
+    Create [count] nodes (using [Node.create]) sharing the same [?rpc_external]
+    and [arguments].
     Each node is named [name ^ "." ^ i] where [i] is the index of the node
     in the resulting list, starting from 1. *)
 val create :
-  ?path:string -> ?name:string -> int -> Node.argument list -> Node.t list
+  ?path:string ->
+  ?name:string ->
+  int ->
+  ?rpc_external:bool ->
+  Node.argument list ->
+  Node.t list
 
 (** {2 Topologies} *)
 

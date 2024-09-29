@@ -30,12 +30,14 @@
    Invocation:   dune exec tezt/tests/main.exe -- --file client_simulation_flag.ml
    Subject:      Tests the behavior of the --simulation flag.
 *)
+let team = Tag.layer1
 
 let test_client =
   Protocol.register_test
     ~__FILE__
     ~title:"Test client simulation"
-    ~tags:["client"]
+    ~tags:[team; "client"]
+    ~uses_node:false
   @@ fun protocol ->
   let* client = Client.init_mockup ~protocol () in
   Log.info "Import an encrypted account with some tez" ;
@@ -50,9 +52,11 @@ let test_client =
     }
   in
   let* () =
+    let Account.{alias; secret_key; _} = encrypted_account in
     Client.import_encrypted_secret_key
       client
-      encrypted_account
+      ~alias
+      secret_key
       ~password:"password"
   in
   let* () =

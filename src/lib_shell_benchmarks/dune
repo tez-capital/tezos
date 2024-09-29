@@ -3,17 +3,16 @@
 
 (library
  (name tezos_shell_benchmarks)
- (public_name tezos-shell-benchmarks)
+ (public_name octez-shell-libs.shell-benchmarks)
  (instrumentation (backend bisect_ppx))
  (libraries
-  octez-libs.tezos-stdlib
-  octez-libs.tezos-base
-  octez-libs.tezos-error-monad
+  octez-libs.stdlib
+  octez-libs.base
+  octez-libs.error-monad
   tezos-benchmark
-  octez-libs.tezos-crypto
-  octez-libs.tezos-context
-  tezos-shell-context
-  octez-libs.tezos-micheline)
+  octez-libs.crypto
+  octez-shell-libs.store
+  octez-libs.micheline)
  (library_flags (:standard -linkall))
  (flags
   (:standard)
@@ -21,4 +20,5 @@
   -open Tezos_base
   -open Tezos_base.TzPervasives
   -open Tezos_error_monad
-  -open Tezos_benchmark))
+  -open Tezos_benchmark)
+ (foreign_stubs (language c) (names alloc_mmap)))

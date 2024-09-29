@@ -31,6 +31,8 @@
    Dependencies: tezt/tests/proxy.ml
 *)
 
+let team = Tag.layer1
+
 let init_light ~protocol =
   (* Note that this code CANNOT be in tezt/lib_tezos/client.ml
      because it uses RPC.*.get_current_level, which depends on client.ml
@@ -53,7 +55,7 @@ let init_light ~protocol =
   let* () =
     Client.bake_for_and_wait ~endpoint ~keys:[Constant.bootstrap2.alias] client
   in
-  let level = Node.get_level node0 in
+  let* level = Node.get_level node0 in
   let () =
     Log.info "Waiting for node %s to be at level %d" (Node.name node1) level
   in
@@ -68,10 +70,15 @@ let test_no_endpoint () =
   Test.register
     ~__FILE__
     ~title:"mode light no endpoint"
-    ~tags:["client"; "light"; "cli"]
+    ~tags:[team; "client"; "light"; "cli"]
+    ~uses_node:false
   @@ fun () ->
   let min_agreement = 1.0 in
-  let uris = List.map (fun port -> sf "http://localhost:%d" port) [666; 667] in
+  let uris =
+    List.map
+      (fun port -> sf "http://%s:%d" Constant.default_host port)
+      [666; 667]
+  in
   let endpoints =
     (* As the client should fail before contacting the node, we don't need
        to start a node in this test. Hence we pass an empty list of endpoints
@@ -81,7 +88,7 @@ let test_no_endpoint () =
   let client = Client.create_with_mode (Light (min_agreement, endpoints)) in
   let* () = Client.write_sources_file ~min_agreement ~uris client in
   let*? process =
-    RPC.Client.spawn client @@ RPC.get_chain_block_context_contracts ()
+    Client.RPC.spawn client @@ RPC.get_chain_block_context_contracts ()
   in
   let* stderr = Process.check_and_read_stderr ~expect_failure:true process in
   let regexp =
@@ -94,7 +101,7 @@ let test_endpoint_not_in_sources () =
   Test.register
     ~__FILE__
     ~title:"mode light endpoint not in sources"
-    ~tags:["client"; "light"; "cli"]
+    ~tags:[team; "client"; "light"; "cli"]
   @@ fun () ->
   let min_agreement = 1.0 in
   let mk_node_endpoint rpc_port = Client.Node (Node.create ~rpc_port []) in
@@ -102,7 +109,7 @@ let test_endpoint_not_in_sources () =
    * We use the port to disambiguate, because disambiguating
    * with the host is complicated, because of Client.address
    * that delegates to Runner.address; which, to make it short,
-   * defaults the host to "localhost". *)
+   * defaults the host to "127.0.0.1". *)
   let endpoint = mk_node_endpoint 666 in
   let sources_ports = [667; 668] in
   let endpoints =
@@ -111,12 +118,14 @@ let test_endpoint_not_in_sources () =
   in
   let uris =
     (* URIs written to sources.json *)
-    List.map (fun port -> sf "http://localhost:%d" port) sources_ports
+    List.map
+      (fun port -> sf "http://%s:%d" Constant.default_host port)
+      sources_ports
   in
   let client = Client.create_with_mode (Light (min_agreement, endpoints)) in
   let* () = Client.write_sources_file ~min_agreement ~uris client in
   let*? process =
-    RPC.Client.spawn ~endpoint client
+    Client.RPC.spawn ~endpoint client
     @@ RPC.get_chain_block_context_contracts ()
   in
   let* stderr = Process.check_and_read_stderr ~expect_failure:true process in
@@ -135,7 +144,7 @@ let test_transfer =
   Protocol.register_test
     ~__FILE__
     ~title:"(Light) transfer"
-    ~tags:["light"; "client"; "transfer"]
+    ~tags:[team; "light"; "client"; "transfer"]
   @@ fun protocol ->
   let* _, client = init_light ~protocol in
   do_transfer client
@@ -144,7 +153,7 @@ let test_bake =
   Protocol.register_test
     ~__FILE__
     ~title:"(Light) bake"
-    ~tags:["light"; "client"; "bake"]
+    ~tags:[team; "light"; "client"; "bake"]
   @@ fun protocol ->
   let* _, client = init_light ~protocol in
   let giver = Constant.bootstrap1.alias in
@@ -215,7 +224,7 @@ module NoUselessRpc = struct
     Protocol.register_test
       ~__FILE__
       ~title:"(Light) No useless RPC call"
-      ~tags:["light"; "rpc"; "get"]
+      ~tags:[team; "light"; "rpc"; "get"]
     @@ fun protocol ->
     let* _, client = init_light ~protocol in
     let paths =
@@ -224,7 +233,7 @@ module NoUselessRpc = struct
         (["helpers"; "baking_rights"], [("all", "true")]);
         (["context"; "delegates"], []);
         (["context"; "nonces"; "3"], []);
-        (["helpers"; "endorsing_rights"], []);
+        (["helpers"; "attestation_rights"], []);
         (["votes"; "ballot_list"], []);
         (["votes"; "ballots"], []);
         (["votes"; "current_period"], []);
@@ -233,11 +242,6 @@ module NoUselessRpc = struct
         (["votes"; "listings"], []);
         (["votes"; "proposals"], []);
       ]
-    in
-    let paths =
-      if Protocol.(number protocol > number Nairobi) then
-        (["helpers"; "attestation_rights"], []) :: paths
-      else paths
     in
     Lwt_list.iter_s
       (fun (sub_path, query_string) ->
@@ -256,7 +260,7 @@ let test_wrong_proto =
   Protocol.register_test
     ~__FILE__
     ~title:"(Light) Wrong proto"
-    ~tags:["light"; "proto"]
+    ~tags:[team; "light"; "proto"]
   @@ fun protocol ->
   let* _, client = init_light ~protocol in
   Proxy.wrong_proto protocol client
@@ -267,7 +271,7 @@ let test_locations =
   Protocol.register_test
     ~__FILE__
     ~title:"(Light) RPC get's location"
-    ~tags:(locations_tags alt_mode)
+    ~tags:(team :: locations_tags alt_mode)
   @@ fun protocol ->
   let* _, client = init_light ~protocol in
   check_locations alt_mode client
@@ -278,7 +282,7 @@ let test_compare_light =
   Protocol.register_test
     ~__FILE__
     ~title:"(Light) Compare RPC get"
-    ~tags:(compare_tags alt_mode)
+    ~tags:(team :: compare_tags alt_mode)
   @@ fun protocol ->
   let* node, light_client = init_light ~protocol in
   let* vanilla = Client.init ~endpoint:(Node node) () in

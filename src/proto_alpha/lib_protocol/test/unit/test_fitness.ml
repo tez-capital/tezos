@@ -96,10 +96,12 @@ let test_from_to_raw_fitness tuple =
   | Error _x -> assert false
 
 let test_from_to_raw_fitness_all () =
+  let open Lwt_result_syntax in
   List.iter test_from_to_raw_fitness test_cases ;
   return_unit
 
 let test_locked_round () =
+  let open Lwt_result_wrap_syntax in
   let test_bad_cases =
     List.map
       make_tuple
@@ -122,7 +124,8 @@ let test_locked_round () =
   in
   List.iter_es
     (fun tuple ->
-      Environment.wrap_tzresult @@ tuple_to_fitness tuple |> function
+      let@ fitness = tuple_to_fitness tuple in
+      match fitness with
       | Error
           [
             Environment.Ecoproto_error

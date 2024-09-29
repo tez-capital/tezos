@@ -23,8 +23,7 @@
 (*                                                                           *)
 (*****************************************************************************)
 
-include Services_legacy
-open Tezos_crypto_dal
+open Types
 
 type 'rpc service =
   ('meth, 'prefix, 'params, 'query, 'input, 'output) Tezos_rpc.Service.service
@@ -37,227 +36,55 @@ type 'rpc service =
     ; input : 'input
     ; output : 'output >
 
-module Types = struct
-  type level = int32
-
-  type slot_index = int
-
-  (* Declaration of types used as inputs and/or outputs. *)
-  type slot_id = {slot_level : level; slot_index : slot_index}
-
-  (** A set of slots, represented by a list of booleans (false for not in the
-      set). It is used for instance to record which slots are deemed available
-      by an attestor. *)
-  type slot_set = bool list
-
-  type attestable_slots = Attestable_slots of slot_set | Not_in_committee
-
-  type header_status =
-    [ `Waiting_attestation
-    | `Attested
-    | `Unattested
-    | `Not_selected
-    | `Unseen_or_not_finalized ]
-
-  type shard_index = int
-
-  type slot_header = {
-    slot_id : slot_id;
-    commitment : Cryptobox.Commitment.t;
-    status : header_status;
-  }
-
-  type operator_profile =
-    | Attestor of Tezos_crypto.Signature.public_key_hash
-    | Producer of {slot_index : int}
-
-  type operator_profiles = operator_profile list
-
-  type profiles = Bootstrap | Operator of operator_profiles
-
-  type with_proof = {with_proof : bool}
-
-  (* Auxiliary functions.  *)
-
-  (* Encodings associated  to the types. *)
-
-  let slot_id_encoding =
-    (* TODO: https://gitlab.com/tezos/tezos/-/issues/4396
-        Reuse protocol encodings. *)
-    let open Data_encoding in
-    conv
-      (fun {slot_level; slot_index} -> (slot_level, slot_index))
-      (fun (slot_level, slot_index) -> {slot_level; slot_index})
-      (obj2 (req "slot_level" int32) (req "slot_index" uint8))
-
-  let slot_encoding = Data_encoding.bytes
-
-  let attestable_slots_encoding : attestable_slots Data_encoding.t =
-    let open Data_encoding in
-    union
-      [
-        case
-          ~title:"attestable_slots_set"
-          (Tag 0)
-          (obj2
-             (req "kind" (constant "attestable_slots_set"))
-             (req "attestable_slots_set" Data_encoding.(list bool)))
-          (function Attestable_slots slots -> Some ((), slots) | _ -> None)
-          (function (), slots -> Attestable_slots slots);
-        case
-          ~title:"not_in_committee"
-          (Tag 1)
-          (obj1 (req "kind" (constant "not_in_committee")))
-          (function Not_in_committee -> Some () | _ -> None)
-          (function () -> Not_in_committee);
-      ]
-
-  let header_status_encoding : header_status Data_encoding.t =
-    let open Data_encoding in
-    union
-      [
-        case
-          ~title:"waiting_attestation"
-          (Tag 0)
-          (obj1 (req "status" (constant "waiting_attestation")))
-          (function `Waiting_attestation -> Some () | _ -> None)
-          (function () -> `Waiting_attestation);
-        case
-          ~title:"attested"
-          (Tag 1)
-          (obj1 (req "status" (constant "attested")))
-          (function `Attested -> Some () | _ -> None)
-          (function () -> `Attested);
-        case
-          ~title:"unattested"
-          (Tag 2)
-          (obj1 (req "status" (constant "unattested")))
-          (function `Unattested -> Some () | _ -> None)
-          (function () -> `Unattested);
-        case
-          ~title:"not_selected"
-          (Tag 3)
-          (obj1 (req "status" (constant "not_selected")))
-          (function `Not_selected -> Some () | _ -> None)
-          (function () -> `Not_selected);
-        case
-          ~title:"unseen_or_not_finalized"
-          (Tag 4)
-          (obj1 (req "status" (constant "unseen")))
-          (function `Unseen_or_not_finalized -> Some () | _ -> None)
-          (function () -> `Unseen_or_not_finalized);
-      ]
-
-  let slot_header_encoding =
-    let open Data_encoding in
-    conv
-      (fun {slot_id; commitment; status} -> (slot_id, (commitment, status)))
-      (fun (slot_id, (commitment, status)) -> {slot_id; commitment; status})
-      (merge_objs
-         slot_id_encoding
-         (merge_objs
-            (obj1 (req "commitment" Cryptobox.Commitment.encoding))
-            header_status_encoding))
-
-  let operator_profile_encoding =
-    let open Data_encoding in
-    union
-      [
-        case
-          ~title:"Attestor with pkh"
-          (Tag 0)
-          (obj2
-             (req "kind" (constant "attestor"))
-             (req
-                "public_key_hash"
-                Tezos_crypto.Signature.Public_key_hash.encoding))
-          (function Attestor attest -> Some ((), attest) | _ -> None)
-          (function (), attest -> Attestor attest);
-        case
-          ~title:"Slot producer"
-          (Tag 1)
-          (obj2 (req "kind" (constant "producer")) (req "slot_index" int31))
-          (function
-            | Producer {slot_index} -> Some ((), slot_index) | _ -> None)
-          (function (), slot_index -> Producer {slot_index});
-      ]
-
-  let profiles_encoding =
-    let open Data_encoding in
-    union
-      [
-        case
-          ~title:"Boostrap node"
-          (Tag 1)
-          (obj1 (req "kind" (constant "bootstrap")))
-          (function Bootstrap -> Some () | _ -> None)
-          (function () -> Bootstrap);
-        case
-          ~title:"Operator"
-          (Tag 2)
-          (obj2
-             (req "kind" (constant "operator"))
-             (req "operator_profiles" (list operator_profile_encoding)))
-          (function
-            | Operator operator_profiles -> Some ((), operator_profiles)
-            | _ -> None)
-          (function (), operator_profiles -> Operator operator_profiles);
-      ]
-
-  let with_proof_encoding =
-    let open Data_encoding in
-    conv
-      (fun {with_proof} -> with_proof)
-      (fun with_proof -> {with_proof})
-      (obj1 (req "with_proof" bool))
-
-  (* String parameters queries. *)
-
-  let header_status_arg =
-    let destruct s =
-      let s = `O [("status", `String s)] in
-      try Ok (Data_encoding.Json.destruct header_status_encoding s)
-      with _ -> Error "Cannot parse header status value"
-    in
-    let construct = Data_encoding.Binary.to_string_exn header_status_encoding in
-    Tezos_rpc.Arg.make ~name:"header_status" ~destruct ~construct ()
-
-  let slot_id_query =
-    let open Tezos_rpc in
-    let open Query in
-    query (fun slot_level slot_index -> (slot_level, slot_index))
-    |+ opt_field "slot_level" Arg.int32 fst
-    |+ opt_field "slot_index" Arg.int snd
-    |> seal
-
-  let opt_header_status_query =
-    let open Tezos_rpc in
-    let open Query in
-    query (fun header_status -> header_status)
-    |+ opt_field "status" header_status_arg (fun hs -> hs)
-    |> seal
-end
-
-let post_commitment :
-    < meth : [`POST]
-    ; input : Cryptobox.slot
-    ; output : Cryptobox.commitment
+let health :
+    < meth : [`GET]
+    ; input : unit
+    ; output : Types.Health.t
     ; prefix : unit
     ; params : unit
     ; query : unit >
     service =
+  Tezos_rpc.Service.get_service
+    ~description:
+      "Performs health checks on the DAL node, evaluating key components of \
+       the DAL node. Returns a health status indicating whether the DAL node \
+       is 'Up', 'Down', or 'Degraded' based on the results of these checks."
+    ~query:Tezos_rpc.Query.empty
+    ~output:Types.Health.encoding
+    Tezos_rpc.Path.(open_root / "health")
+
+let post_slot :
+    < meth : [`POST]
+    ; input : string
+    ; output : Cryptobox.commitment * Cryptobox.commitment_proof
+    ; prefix : unit
+    ; params : unit
+    ; query : < padding : char ; slot_index : Types.slot_index option > >
+    service =
   Tezos_rpc.Service.post_service
     ~description:
-      "Add a slot in the node's context if not already present. The \
-       corresponding commitment is returned."
-    ~query:Tezos_rpc.Query.empty
-    ~input:Types.slot_encoding
-    ~output:Cryptobox.Commitment.encoding
-    Tezos_rpc.Path.(open_root / "commitments")
+      "Post a slot to the DAL node, computes its commitment and commitment \
+       proof, then computes the correspoding shards with their proof. The \
+       result of this RPC can be directly used to publish a slot header. If \
+       the sent data is smaller than the size of a DAL slot, it is padded with \
+       the character provided as padding query parameter (defaults to \\000). \
+       If the slot_index query parameter is provided, the DAL node checks that \
+       its profile allows to publish data on the given slot index."
+    ~query:Types.slot_query
+      (* With [Data_encoding.string], the body of the HTTP request contains
+         two length prefixes: one for the full body, and one for the string.
+         Using [Variable.string] instead fixes this. *)
+    ~input:Data_encoding.Variable.string
+    ~output:
+      Data_encoding.(
+        obj2
+          (req "commitment" Cryptobox.Commitment.encoding)
+          (req "commitment_proof" Cryptobox.Commitment_proof.encoding))
+    Tezos_rpc.Path.(open_root / "slots")
 
 let patch_commitment :
     < meth : [`PATCH]
-    ; input : Types.slot_id
+    ; input : slot_id
     ; output : unit
     ; prefix : unit
     ; params : unit * Cryptobox.commitment
@@ -266,66 +93,65 @@ let patch_commitment :
   Tezos_rpc.Service.patch_service
     ~description:"Associate a commitment to a level and a slot index."
     ~query:Tezos_rpc.Query.empty
-    ~input:Types.slot_id_encoding
+    ~input:slot_id_encoding
     ~output:Data_encoding.unit
     Tezos_rpc.Path.(open_root / "commitments" /: Cryptobox.Commitment.rpc_arg)
 
-let get_commitment_slot :
+let get_slot_content :
     < meth : [`GET]
     ; input : unit
     ; output : Cryptobox.slot
     ; prefix : unit
-    ; params : unit * Cryptobox.commitment
+    ; params : (unit * Types.level) * Types.slot_index
     ; query : unit >
     service =
   Tezos_rpc.Service.get_service
     ~description:
       "Retrieve the content of the slot associated with the given commitment."
     ~query:Tezos_rpc.Query.empty
-    ~output:Types.slot_encoding
+    ~output:slot_encoding
     Tezos_rpc.Path.(
-      open_root / "commitments" /: Cryptobox.Commitment.rpc_arg / "slot")
+      open_root / "levels" /: Tezos_rpc.Arg.int32 / "slots" /: Tezos_rpc.Arg.int
+      / "content")
 
-let get_commitment_proof :
+let get_slot_pages :
     < meth : [`GET]
     ; input : unit
-    ; output : Cryptobox.commitment_proof
+    ; output : Tezos_crypto_dal.Cryptobox.page list
     ; prefix : unit
-    ; params : unit * Cryptobox.commitment
+    ; params : (unit * Types.level) * Types.slot_index
     ; query : unit >
     service =
   Tezos_rpc.Service.get_service
-    ~description:"Compute the proof associated with a commitment"
+    ~description:"Fetch slot as list of pages"
     ~query:Tezos_rpc.Query.empty
-    ~output:Cryptobox.Commitment_proof.encoding
+    ~output:(Data_encoding.list Data_encoding.bytes)
     Tezos_rpc.Path.(
-      open_root / "commitments" /: Cryptobox.Commitment.rpc_arg / "proof")
+      open_root / "levels" /: Tezos_rpc.Arg.int32 / "slots" /: Tezos_rpc.Arg.int
+      / "pages")
 
-let put_commitment_shards :
-    < meth : [`PUT]
-    ; input : Types.with_proof
-    ; output : unit
+let get_slot_page_proof :
+    < meth : [`GET]
+    ; input : unit
+    ; output : Cryptobox.page_proof
     ; prefix : unit
-    ; params : unit * Cryptobox.commitment
+    ; params : ((unit * Types.level) * Types.slot_index) * Types.page_index
     ; query : unit >
     service =
-  Tezos_rpc.Service.put_service
-    ~description:
-      "Compute and save the shards of the slot associated to the given \
-       commitment. If the input's flag is true, the proofs associated with \
-       each given shards are also computed."
+  Tezos_rpc.Service.get_service
+    ~description:"Compute the proof associated with a page of a given slot."
     ~query:Tezos_rpc.Query.empty
-    ~input:Types.with_proof_encoding
-    ~output:Data_encoding.unit
+    ~output:Cryptobox.page_proof_encoding
     Tezos_rpc.Path.(
-      open_root / "commitments" /: Cryptobox.Commitment.rpc_arg / "shards")
+      open_root / "levels" /: Tezos_rpc.Arg.int32 / "slots" /: Tezos_rpc.Arg.int
+      / "pages" /: Tezos_rpc.Arg.int / "proof")
 
-let get_commitment_by_published_level_and_index :
+let get_slot_commitment :
     < meth : [`GET]
     ; input : unit
     ; output : Cryptobox.commitment
     ; prefix : unit
-    ; params : (unit * Types.level) * Types.slot_index
+    ; params : (unit * level) * slot_index
     ; query : unit >
     service =
   Tezos_rpc.Service.get_service
@@ -335,42 +161,28 @@ let get_commitment_by_published_level_and_index :
     ~query:Tezos_rpc.Query.empty
     ~output:Cryptobox.Commitment.encoding
     Tezos_rpc.Path.(
-      open_root / "levels" /: Tezos_rpc.Arg.int32 / "slot_indices"
-      /: Tezos_rpc.Arg.int / "commitment")
+      open_root / "levels" /: Tezos_rpc.Arg.int32 / "slots" /: Tezos_rpc.Arg.int
+      / "commitment")
 
-let get_commitment_headers :
+let get_slot_status :
     < meth : [`GET]
     ; input : unit
-    ; output : Types.slot_header list
+    ; output : header_status
     ; prefix : unit
-    ; params : unit * Cryptobox.commitment
-    ; query : Types.level option * Types.slot_index option >
+    ; params : (unit * level) * slot_index
+    ; query : unit >
     service =
   Tezos_rpc.Service.get_service
-    ~description:
-      "Return the known headers for the slot whose commitment is given."
-    ~query:Types.slot_id_query
-    ~output:(Data_encoding.list Types.slot_header_encoding)
+    ~description:"Return the status for the given slot."
+    ~query:Tezos_rpc.Query.empty
+    ~output:header_status_encoding
     Tezos_rpc.Path.(
-      open_root / "commitments" /: Cryptobox.Commitment.rpc_arg / "headers")
-
-let get_published_level_headers :
-    < meth : [`GET]
-    ; input : unit
-    ; output : Types.slot_header list
-    ; prefix : unit
-    ; params : unit * Types.level
-    ; query : Types.header_status option >
-    service =
-  Tezos_rpc.Service.get_service
-    ~description:"Return the known headers for the given published level."
-    ~query:Types.opt_header_status_query
-    ~output:(Data_encoding.list Types.slot_header_encoding)
-    Tezos_rpc.Path.(open_root / "levels" /: Tezos_rpc.Arg.int32 / "headers")
+      open_root / "levels" /: Tezos_rpc.Arg.int32 / "slots" /: Tezos_rpc.Arg.int
+      / "status")
 
 let patch_profiles :
     < meth : [`PATCH]
-    ; input : Types.operator_profiles
+    ; input : Operator_profile.t
     ; output : unit
     ; prefix : unit
     ; params : unit
@@ -382,30 +194,30 @@ let patch_profiles :
        not take the bootstrap profile as it is incompatible with other \
        profiles."
     ~query:Tezos_rpc.Query.empty
-    ~input:(Data_encoding.list Types.operator_profile_encoding)
+    ~input:Operator_profile.encoding
     ~output:Data_encoding.unit
     Tezos_rpc.Path.(open_root / "profiles")
 
 let get_profiles :
     < meth : [`GET]
     ; input : unit
-    ; output : Types.profiles
+    ; output : profile
     ; prefix : unit
     ; params : unit
     ; query : unit >
     service =
   Tezos_rpc.Service.get_service
-    ~description:"Return the list of current profiles tracked by the DAL node"
+    ~description:"Return the list of current profiles tracked by the DAL node."
     ~query:Tezos_rpc.Query.empty
-    ~output:Types.profiles_encoding
+    ~output:Types.profile_encoding
     Tezos_rpc.Path.(open_root / "profiles")
 
 let get_assigned_shard_indices :
     < meth : [`GET]
     ; input : unit
-    ; output : Types.shard_index list
+    ; output : shard_index list
     ; prefix : unit
-    ; params : (unit * Tezos_crypto.Signature.public_key_hash) * Types.level
+    ; params : (unit * Tezos_crypto.Signature.public_key_hash) * level
     ; query : unit >
     service =
   Tezos_rpc.Service.get_service
@@ -421,9 +233,9 @@ let get_assigned_shard_indices :
 let get_attestable_slots :
     < meth : [`GET]
     ; input : unit
-    ; output : Types.attestable_slots
+    ; output : attestable_slots
     ; prefix : unit
-    ; params : (unit * Tezos_crypto.Signature.public_key_hash) * Types.level
+    ; params : (unit * Tezos_crypto.Signature.public_key_hash) * level
     ; query : unit >
     service =
   Tezos_rpc.Service.get_service
@@ -434,21 +246,404 @@ let get_attestable_slots :
        at level [l] to the given public key hash are available in the DAL \
        node's store."
     ~query:Tezos_rpc.Query.empty
-    ~output:Types.attestable_slots_encoding
+    ~output:attestable_slots_encoding
     Tezos_rpc.Path.(
       open_root / "profiles" /: Tezos_crypto.Signature.Public_key_hash.rpc_arg
       / "attested_levels" /: Tezos_rpc.Arg.int32 / "attestable_slots")
 
-let monitor_shards :
+let get_slot_shard :
     < meth : [`GET]
     ; input : unit
-    ; output : Cryptobox.Commitment.t
+    ; output : Tezos_crypto_dal.Cryptobox.shard
+    ; prefix : unit
+    ; params : ((unit * Types.level) * Types.slot_index) * int
+    ; query : unit >
+    service =
+  Tezos_rpc.Service.get_service
+    ~description:"Fetch shard as bytes"
+    ~query:Tezos_rpc.Query.empty
+    ~output:Cryptobox.shard_encoding
+    Tezos_rpc.Path.(
+      open_root / "levels" /: Tezos_rpc.Arg.int32 / "slots" /: Tezos_rpc.Arg.int
+      / "shards" /: Tezos_rpc.Arg.int / "content")
+
+let version :
+    < meth : [`GET]
+    ; input : unit
+    ; output : Types.Version.t
     ; prefix : unit
     ; params : unit
     ; query : unit >
     service =
   Tezos_rpc.Service.get_service
-    ~description:"Monitor put shards"
+    ~description:"version"
     ~query:Tezos_rpc.Query.empty
-    ~output:Cryptobox.Commitment.encoding
-    Tezos_rpc.Path.(open_root / "monitor_shards")
+    ~output:Types.Version.encoding
+    Tezos_rpc.Path.(open_root / "version")
+
+module P2P = struct
+  open Tezos_rpc.Path
+
+  let open_root = open_root / "p2p"
+
+  let post_connect :
+      < meth : [`POST]
+      ; input : P2p_point.Id.t
+      ; output : unit
+      ; prefix : unit
+      ; params : unit
+      ; query : < timeout : Ptime.Span.t option > >
+      service =
+    Tezos_rpc.Service.post_service
+      ~description:"Connect to a new peer."
+      ~query:
+        (let open Tezos_rpc.Query in
+         query (fun timeout ->
+             object
+               method timeout = timeout
+             end)
+         |+ opt_field "timeout" Tezos_base.Time.System.Span.rpc_arg (fun t ->
+                t#timeout)
+         |> seal)
+      ~input:P2p_point.Id.encoding
+      ~output:Data_encoding.unit
+      (open_root / "connect")
+
+  module Points = struct
+    let open_root = open_root / "points"
+
+    let delete_disconnect_point :
+        < meth : [`DELETE]
+        ; input : unit
+        ; output : unit
+        ; prefix : unit
+        ; params : unit * P2p_point.Id.t
+        ; query : < wait : bool > >
+        service =
+      Tezos_rpc.Service.delete_service
+        ~description:"Disconnect from a point."
+        ~query:wait_query
+        ~output:Data_encoding.unit
+        (open_root / "disconnect" /: P2p_point.Id.rpc_arg)
+
+    let get_points :
+        < meth : [`GET]
+        ; input : unit
+        ; output : P2p_point.Id.t list
+        ; prefix : unit
+        ; params : unit
+        ; query : < connected : bool > >
+        service =
+      Tezos_rpc.Service.get_service
+        ~description:
+          "By default, get the list of known points. When the 'connected' flag \
+           is given, only get the connected points."
+        ~query:connected_query
+        ~output:Data_encoding.(list (obj1 (req "point" P2p_point.Id.encoding)))
+        open_root
+
+    let get_points_info :
+        < meth : [`GET]
+        ; input : unit
+        ; output : (P2p_point.Id.t * P2p_point.Info.t) list
+        ; prefix : unit
+        ; params : unit
+        ; query : < connected : bool > >
+        service =
+      Tezos_rpc.Service.get_service
+        ~description:
+          "By default, get the list of known points and their corresponding \
+           info. When the 'connected' flag is given, then only get the \
+           connected points."
+        ~query:connected_query
+        ~output:
+          Data_encoding.(
+            list
+              (obj2
+                 (req "point" P2p_point.Id.encoding)
+                 (req "info" P2p_point.Info.encoding)))
+        (open_root / "info")
+
+    let get_point_info :
+        < meth : [`GET]
+        ; input : unit
+        ; output : P2p_point.Info.t
+        ; prefix : unit
+        ; params : unit * P2p_point.Id.t
+        ; query : unit >
+        service =
+      Tezos_rpc.Service.get_service
+        ~description:"Get info of the requested point"
+        ~query:Tezos_rpc.Query.empty
+        ~output:Data_encoding.(obj1 (req "info" P2p_point.Info.encoding))
+        (open_root / "by-id" /: P2p_point.Id.rpc_arg)
+  end
+
+  module Peers = struct
+    let open_root = open_root / "peers"
+
+    let delete_disconnect_peer :
+        < meth : [`DELETE]
+        ; input : unit
+        ; output : unit
+        ; prefix : unit
+        ; params : unit * P2p_peer.Id.t
+        ; query : < wait : bool > >
+        service =
+      Tezos_rpc.Service.delete_service
+        ~description:"Disconnect from a peer."
+        ~query:wait_query
+        ~output:Data_encoding.unit
+        (open_root / "disconnect" /: P2p_peer.Id.rpc_arg)
+
+    let get_peers :
+        < meth : [`GET]
+        ; input : unit
+        ; output : P2p_peer.Id.t list
+        ; prefix : unit
+        ; params : unit
+        ; query : < connected : bool > >
+        service =
+      Tezos_rpc.Service.get_service
+        ~description:
+          "By default, get the list of known peers. When the 'connected' flag \
+           is given, then only get the connected peers."
+        ~query:connected_query
+        ~output:Data_encoding.(list (obj1 (req "peer" P2p_peer.Id.encoding)))
+        open_root
+
+    let get_peers_info :
+        < meth : [`GET]
+        ; input : unit
+        ; output : (P2p_peer.Id.t * P2P.Peer.Info.t) list
+        ; prefix : unit
+        ; params : unit
+        ; query : < connected : bool > >
+        service =
+      Tezos_rpc.Service.get_service
+        ~description:"Get list of known peers and their corresponding info."
+        ~query:connected_query
+        ~output:
+          Data_encoding.(
+            list
+              (obj2
+                 (req "peer" P2p_peer.Id.encoding)
+                 (req "info" P2P.Peer.Info.encoding)))
+        (open_root / "info")
+
+    let get_peer_info :
+        < meth : [`GET]
+        ; input : unit
+        ; output : Types.P2P.Peer.Info.t
+        ; prefix : unit
+        ; params : unit * P2p_peer.Id.t
+        ; query : unit >
+        service =
+      Tezos_rpc.Service.get_service
+        ~description:"Get info of the requested peer"
+        ~query:Tezos_rpc.Query.empty
+        ~output:Data_encoding.(obj1 (req "info" Types.P2P.Peer.Info.encoding))
+        (open_root / "by-id" /: P2p_peer.Id.rpc_arg)
+
+    let patch_peer :
+        < meth : [`PATCH]
+        ; input : [`Ban | `Trust | `Open] option
+        ; output : Types.P2P.Peer.Info.t
+        ; prefix : unit
+        ; params : unit * P2p_peer.Id.t
+        ; query : unit >
+        service =
+      Tezos_rpc.Service.patch_service
+        ~description:
+          "Change the permissions of a given peer. With `{acl: ban}`: \
+           blacklist the given peer and remove it from the whitelist if \
+           present. With `{acl: open}`: removes the peer from the blacklist \
+           and whitelist. With `{acl: trust}`: trust the given peer \
+           permanently and remove it from the blacklist if present. The peer \
+           cannot be blocked (but its host IP still can). In all cases, the \
+           updated information for the peer is returned. If input is omitted, \
+           this is equivalent to using the `GET` version of this RPC."
+        ~query:Tezos_rpc.Query.empty
+        ~input:
+          Data_encoding.(
+            obj1
+              (opt
+                 "acl"
+                 (string_enum
+                    [("ban", `Ban); ("trust", `Trust); ("open", `Open)])))
+        ~output:Data_encoding.(obj1 (req "info" Types.P2P.Peer.Info.encoding))
+        (open_root / "by-id" /: P2p_peer.Id.rpc_arg)
+  end
+
+  module Gossipsub = struct
+    let open_root = open_root / "gossipsub"
+
+    let get_topics :
+        < meth : [`GET]
+        ; input : unit
+        ; output : Topic.t list
+        ; prefix : unit
+        ; params : unit
+        ; query : unit >
+        service =
+      Tezos_rpc.Service.get_service
+        ~description:"Get the topics this node is currently subscribed to."
+        ~query:Tezos_rpc.Query.empty
+        ~output:(Data_encoding.list Topic.encoding)
+        (open_root / "topics")
+
+    let get_topics_peers :
+        < meth : [`GET]
+        ; input : unit
+        ; output : (Types.Topic.t * Types.Peer.t list) list
+        ; prefix : unit
+        ; params : unit
+        ; query : < subscribed : bool > >
+        service =
+      Tezos_rpc.Service.get_service
+        ~description:
+          "Get an association list between each topic subscribed to by the \
+           connected peers and the remote peers subscribed to that topic. If \
+           the 'subscribed' flag is given, then restrict the output to the \
+           topics this peer is subscribed to."
+        ~query:subscribed_query
+        ~output:
+          Data_encoding.(
+            list
+              (obj2
+                 (req "topic" Types.Topic.encoding)
+                 (req "peers" (list Types.Peer.encoding))))
+        (open_root / "topics" / "peers")
+
+    let get_slot_indexes_peers :
+        < meth : [`GET]
+        ; input : unit
+        ; output : (Types.slot_index * Types.Peer.t list) list
+        ; prefix : unit
+        ; params : unit
+        ; query : < subscribed : bool > >
+        service =
+      Tezos_rpc.Service.get_service
+        ~description:
+          "Get an association list between each public key hash part of a \
+           topic subscribed to by the connected peers and the remote peers \
+           subscribed to such topics. If the 'subscribed' flag is given, then \
+           restrict the output to the topics this peer is subscribed to."
+        ~query:subscribed_query
+        ~output:
+          Data_encoding.(
+            list
+              (obj2
+                 (req "slot_index" uint8)
+                 (req "peers" (list Types.Peer.encoding))))
+        (open_root / "slot_indexes" / "peers")
+
+    let get_pkhs_peers :
+        < meth : [`GET]
+        ; input : unit
+        ; output : (Signature.public_key_hash * Types.Peer.t list) list
+        ; prefix : unit
+        ; params : unit
+        ; query : < subscribed : bool > >
+        service =
+      Tezos_rpc.Service.get_service
+        ~description:
+          "Get an association list between each topic subscribed to by the \
+           connected peers and the remote peers subscribed to that topic. If \
+           the 'subscribed' flag is given, then restrict the output to the \
+           topics this peer is subscribed to."
+        ~query:subscribed_query
+        ~output:
+          Data_encoding.(
+            list
+              (obj2
+                 (req "pkh" Signature.Public_key_hash.encoding)
+                 (req "peers" (list Types.Peer.encoding))))
+        (open_root / "pkhs" / "peers")
+
+    let get_connections :
+        < meth : [`GET]
+        ; input : unit
+        ; output : (Peer.t * Gossipsub.connection) list
+        ; prefix : unit
+        ; params : unit
+        ; query : unit >
+        service =
+      Tezos_rpc.Service.get_service
+        ~description:"Get this node's currently active connections."
+        ~query:Tezos_rpc.Query.empty
+        ~output:
+          Data_encoding.(
+            list
+              (obj2
+                 (req "peer" Peer.encoding)
+                 (req "connection" Gossipsub.connection_encoding)))
+        (open_root / "connections")
+
+    let get_scores :
+        < meth : [`GET]
+        ; input : unit
+        ; output : (Peer.t * Score.t) list
+        ; prefix : unit
+        ; params : unit
+        ; query : unit >
+        service =
+      Tezos_rpc.Service.get_service
+        ~description:"Get the scores of the peers with a known score."
+        ~query:Tezos_rpc.Query.empty
+        ~output:
+          Data_encoding.(
+            list (obj2 (req "peer" Peer.encoding) (req "score" Score.encoding)))
+        (open_root / "scores")
+
+    let get_backoffs :
+        < meth : [`GET]
+        ; input : unit
+        ; output : (Topic.t * (Peer.t * Time.t) list) list
+        ; prefix : unit
+        ; params : unit
+        ; query : unit >
+        service =
+      Tezos_rpc.Service.get_service
+        ~description:"Get the backoffs of the peers with a backoff, per topic."
+        ~query:Tezos_rpc.Query.empty
+        ~output:
+          Data_encoding.(
+            list
+              (obj2
+                 (req "topic" Topic.encoding)
+                 (req
+                    "backoffs"
+                    (list
+                       (obj2
+                          (req "peer" Peer.encoding)
+                          (req "backoff" Tezos_base.Time.System.encoding))))))
+        (open_root / "backoffs")
+
+    let get_message_cache :
+        < meth : [`GET]
+        ; input : unit
+        ; output : (int64 * (Types.Topic.t * int) list) list
+        ; prefix : unit
+        ; params : unit
+        ; query : unit >
+        service =
+      Tezos_rpc.Service.get_service
+        ~description:
+          "Get the number of message ids in the message cache, grouped by \
+           heartbeat tick and topic."
+        ~query:Tezos_rpc.Query.empty
+        ~output:
+          Data_encoding.(
+            list
+              (obj2
+                 (req "tick" int64)
+                 (req
+                    "per_topic_cache_size"
+                    (list
+                       (obj2
+                          (req "topic" Types.Topic.encoding)
+                          (req "num_ids" int31))))))
+        (open_root / "message_cache")
+  end
+end

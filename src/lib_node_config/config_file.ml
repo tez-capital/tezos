@@ -3,6 +3,7 @@
 (* Open Source License                                                       *)
 (* Copyright (c) 2018 Dynamic Ledger Solutions, Inc. <contact@tezos.com>     *)
 (* Copyright (c) 2019-2020 Nomadic Labs, <contact@nomadic-labs.com>          *)
+(* Copyright (c) 2024 TriliTech <contact@trili.tech>                         *)
 (*                                                                           *)
 (* Permission is hereby granted, free of charge, to any person obtaining a   *)
 (* copy of this software and associated documentation files (the "Software"),*)
@@ -33,6 +34,9 @@ let data_dir_env_name = "TEZOS_NODE_DIR"
 let default_data_dir = home // ".tezos-node"
 
 let default_rpc_port = 8732
+
+let default_max_active_rpc_connections =
+  RPC_server.Max_active_rpc_connections.default
 
 let default_metrics_port = 9932
 
@@ -90,6 +94,7 @@ let mainnet_user_activated_upgrades =
   [
     (28082l, "PsYLVpVvgbLhAhoqAkMFUo6gudkJ9weNXhUYCiLDzcUpFpkk8Wt");
     (204761l, "PsddFKi32cMJ2qPjf43Qv5GDWLDPZb3T3bF6fLKiF5HtvHNU7aP");
+    (5898241l, "PsParisCZo7KAh1Z1smVd9ZMZ1HHn5gkzbM94V3PLCpknFWhUAi");
   ]
 
 (* END_PATCHING_ZONE_FOR_MAINNET_USER_ACTIVATED_UPGRADES *)
@@ -126,9 +131,17 @@ let blockchain_network_mainnet =
           "PtHangz2aRngywmSRGGvrcTyMbbdpWdpFKuS4uMWxg2RaH9i1qx" );
         ( "PtMumbaiiFFEGbew1rRjzSPyzRbA51Tm3RVZL5suHPxSZYDhCEc",
           "PtMumbai2TmsJHNGRkD8v8YDbtao7BLUC3wjASn1inAKLFCjaH1" );
+        ( "PtParisBQscdCm6Cfow6ndeU6wKJyA3aV1j4D3gQBQMsTQyJCrz",
+          "PtParisBxoLz5gzMmn3d9WBQNoPSZakgnkMC2VNuQ3KXfUtUQeZ" );
       ]
     ~default_bootstrap_peers:
-      ["boot.tzboot.net"; "boot.tzbeta.net"; "boot.mainnet.oxheadhosted.com"]
+      ["boot.tzinit.org"; "boot.tzboot.net"; "boot.tzbeta.net"]
+    ~dal_config:
+      {
+        activated = true;
+        bootstrap_peers =
+          ["dalboot.mainnet.tzinit.org"; "dalboot.mainnet.tzboot.net"];
+      }
 
 let blockchain_network_ghostnet =
   make_blockchain_network
@@ -161,16 +174,22 @@ let blockchain_network_ghostnet =
         (765952l, "PtJakart2xVj7pYXJBXrqHgd82rdkLey5ZeeGwDgPp9rhQUbSqY");
         (1191936l, "PtKathmankSpLLDALzWw7CGD2j2MtyveTwboEYokqUCP4a1LxMg");
         (1654784l, "PtLimaPtLMwfNinJi9rCfDPWea8dFgTZ1MeJ9f1m2SRic6ayiwW");
+        (6729729l, "PsParisCZo7KAh1Z1smVd9ZMZ1HHn5gkzbM94V3PLCpknFWhUAi");
       ]
     ~default_bootstrap_peers:
       [
-        "ghostnet.teztnets.xyz";
-        "ghostnet.smartpy.io";
+        "ghostnet.teztnets.com";
+        "ghostnet.tzinit.org";
+        "ghostnet.tzboot.net";
         "ghostnet.boot.ecadinfra.com";
-        "ghostnet.kaml.fr";
         "ghostnet.stakenow.de:9733";
-        "ghostnet.visualtez.com";
       ]
+    ~dal_config:
+      {
+        activated = true;
+        bootstrap_peers =
+          ["dalboot.ghostnet.tzinit.org"; "dalboot.ghostnet.tzboot.net"];
+      }
 
 let blockchain_network_sandbox =
   make_blockchain_network
@@ -200,6 +219,7 @@ let blockchain_network_sandbox =
     ~chain_name:"TEZOS"
     ~sandboxed_chain_name:"SANDBOXED_TEZOS"
     ~user_activated_upgrades:sandbox_user_activated_upgrades
+    ~dal_config:{activated = true; bootstrap_peers = []}
 
 let blockchain_network_encoding : blockchain_network Data_encoding.t =
   let open Data_encoding in
@@ -355,11 +375,14 @@ and p2p = {
 
 and rpc = {
   listen_addrs : string list;
+  external_listen_addrs : string list;
   cors_origins : string list;
   cors_headers : string list;
   tls : tls option;
   acl : RPC_server.Acl.policy;
   media_type : Media_type.Command_line.t;
+  max_active_rpc_connections : RPC_server.Max_active_rpc_connections.t;
+  enable_http_cache_headers : bool;
 }
 
 and tls = {cert : string; key : string}
@@ -382,11 +405,14 @@ let default_p2p =
 let default_rpc =
   {
     listen_addrs = [];
+    external_listen_addrs = [];
     cors_origins = [];
     cors_headers = [];
     tls = None;
     acl = RPC_server.Acl.empty_policy;
     media_type = Media_type.Command_line.Any;
+    max_active_rpc_connections = default_max_active_rpc_connections;
+    enable_http_cache_headers = false;
   }
 
 let default_disable_config_validation = false
@@ -529,13 +555,13 @@ let p2p =
              bool
              default_p2p.enable_testchain)
           (let open Tezos_p2p_services.Point_reconnection_config in
-          dft
-            "greylisting_config"
-            ~description:
-              "The reconnection policy regulates the frequency with which the \
-               node tries to reconnect to an old known peer."
-            encoding
-            default)
+           dft
+             "greylisting_config"
+             ~description:
+               "The reconnection policy regulates the frequency with which the \
+                node tries to reconnect to an old known peer."
+             encoding
+             default)
           (dft
              "disable_peer_discovery"
              ~description:
@@ -549,28 +575,44 @@ let p2p =
 let rpc : rpc Data_encoding.t =
   let open Data_encoding in
   conv
-    (fun {cors_origins; cors_headers; listen_addrs; tls; acl; media_type} ->
+    (fun {
+           cors_origins;
+           cors_headers;
+           listen_addrs;
+           external_listen_addrs;
+           tls;
+           acl;
+           media_type;
+           max_active_rpc_connections;
+           enable_http_cache_headers;
+         } ->
       let cert, key =
         match tls with
         | None -> (None, None)
         | Some {cert; key} -> (Some cert, Some key)
       in
-      ( Some listen_addrs,
-        None,
-        cors_origins,
-        cors_headers,
-        cert,
-        key,
-        acl,
-        media_type ))
-    (fun ( listen_addrs,
-           legacy_listen_addr,
-           cors_origins,
-           cors_headers,
-           cert,
-           key,
-           acl,
-           media_type ) ->
+      let external_listen_addrs =
+        match external_listen_addrs with [] -> None | v -> Some v
+      in
+      ( (Some listen_addrs, external_listen_addrs, None, cors_origins),
+        ( cors_headers,
+          cert,
+          key,
+          acl,
+          media_type,
+          max_active_rpc_connections,
+          enable_http_cache_headers ) ))
+    (fun ( ( listen_addrs,
+             external_listen_addrs,
+             legacy_listen_addr,
+             cors_origins ),
+           ( cors_headers,
+             cert,
+             key,
+             acl,
+             media_type,
+             max_active_rpc_connections,
+             enable_http_cache_headers ) ) ->
       let tls =
         match (cert, key) with
         | None, _ | _, None -> None
@@ -586,44 +628,97 @@ let rpc : rpc Data_encoding.t =
               "Config file: Use only \"listen-addrs\" and not (legacy) \
                \"listen-addr\"."
       in
-      {listen_addrs; cors_origins; cors_headers; tls; acl; media_type})
-    (obj8
-       (opt
-          "listen-addrs"
-          ~description:
-            "Hosts to listen to. If the port is not specified, the default \
-             port 8732 will be assumed."
-          (list string))
-       (opt "listen-addr" ~description:"Legacy value: Host to listen to" string)
-       (dft
-          "cors-origin"
-          ~description:
-            "Cross Origin Resource Sharing parameters, see \
-             https://en.wikipedia.org/wiki/Cross-origin_resource_sharing."
-          (list string)
-          default_rpc.cors_origins)
-       (dft
-          "cors-headers"
-          ~description:
-            "Cross Origin Resource Sharing parameters, see \
-             https://en.wikipedia.org/wiki/Cross-origin_resource_sharing."
-          (list string)
-          default_rpc.cors_headers)
-       (opt
-          "crt"
-          ~description:"Certificate file (necessary when TLS is used)."
-          string)
-       (opt "key" ~description:"Key file (necessary when TLS is used)." string)
-       (dft
-          "acl"
-          ~description:"A list of RPC ACLs for specific listening addresses."
-          RPC_server.Acl.policy_encoding
-          default_rpc.acl)
-       (dft
-          "media-type"
-          ~description:"The media types supported by the server."
-          Media_type.Command_line.encoding
-          default_rpc.media_type))
+      let external_listen_addrs =
+        Option.value
+          external_listen_addrs
+          ~default:default_rpc.external_listen_addrs
+      in
+      {
+        listen_addrs;
+        external_listen_addrs;
+        cors_origins;
+        cors_headers;
+        tls;
+        acl;
+        media_type;
+        max_active_rpc_connections;
+        enable_http_cache_headers;
+      })
+    (merge_objs
+       (obj4
+          (opt
+             "listen-addrs"
+             ~description:
+               "Hosts to listen to. If the port is not specified, the default \
+                port 8732 will be assumed."
+             (list string))
+          (opt
+             "external-listen-addrs"
+             ~description:
+               "Hosts to listen to. If the port is not specified, the default \
+                port 8732 will be assumed."
+             (list string))
+          (opt
+             "listen-addr"
+             ~description:"Legacy value: Host to listen to"
+             string)
+          (dft
+             "cors-origin"
+             ~description:
+               "Cross Origin Resource Sharing parameters, see \
+                https://en.wikipedia.org/wiki/Cross-origin_resource_sharing."
+             (list string)
+             default_rpc.cors_origins))
+       (obj7
+          (dft
+             "cors-headers"
+             ~description:
+               "Cross Origin Resource Sharing parameters, see \
+                https://en.wikipedia.org/wiki/Cross-origin_resource_sharing."
+             (list string)
+             default_rpc.cors_headers)
+          (opt
+             "crt"
+             ~description:"Certificate file (necessary when TLS is used)."
+             string)
+          (opt
+             "key"
+             ~description:"Key file (necessary when TLS is used)."
+             string)
+          (dft
+             "acl"
+             ~description:"A list of RPC ACLs for specific listening addresses."
+             RPC_server.Acl.policy_encoding
+             default_rpc.acl)
+          (dft
+             "media-type"
+             ~description:"The media types supported by the server."
+             Media_type.Command_line.encoding
+             default_rpc.media_type)
+          (dft
+             "max_active_rpc_connections"
+             ~description:
+               "The maximum number of active connections per RPC endpoint."
+             RPC_server.Max_active_rpc_connections.encoding
+             default_rpc.max_active_rpc_connections)
+          (dft
+             "enable-http-cache-headers"
+             ~description:
+               "Enables HTTP cache headers in the RPC response. When enabled, \
+                'Cache-control' will be present with 'max-age' in the response \
+                header of relative queries (eg. head, head-n, head~n). The \
+                'max-age' value indicates the duration of which the returned \
+                response is cacheable. It is an estimate of the remaining \
+                duration of the current round based on when the block was \
+                forged. Enabling this feature adds a performance overhead to \
+                all queries hence you should only do so if you are running the \
+                RPC server behind a caching server. The feature is implemented \
+                based on RFC9111 hence useful for reverse proxies with \
+                auto-caching mechanism."
+             bool
+             default_rpc.enable_http_cache_headers)))
+
+let rpc_encoding = rpc
 
 let encoding =
   let open Data_encoding in
@@ -714,6 +809,9 @@ let encoding =
           ~description:"Configuration of the Prometheus metrics endpoint"
           (list string)
           default_config.metrics_addr))
+
+let () =
+  Data_encoding.Registration.register (Data_encoding.def "node-config" encoding)
 
 (* Abstract version of [Json_encoding.Cannot_destruct]: first argument is the
    string representation of the path, second argument is the error message
@@ -808,7 +906,9 @@ let update ?(disable_config_validation = false) ?data_dir ?min_connections
     ?expected_connections ?max_connections ?max_download_speed ?max_upload_speed
     ?binary_chunks_size ?peer_table_size ?expected_pow ?bootstrap_peers
     ?listen_addr ?advertised_net_port ?discovery_addr ?(rpc_listen_addrs = [])
-    ?(allow_all_rpc = []) ?(media_type = Media_type.Command_line.Any)
+    ?(external_rpc_listen_addrs = []) ?(allow_all_rpc = [])
+    ?(media_type = Media_type.Command_line.Any)
+    ?(max_active_rpc_connections = default_rpc.max_active_rpc_connections)
     ?(metrics_addr = []) ?operation_metadata_size_limit
     ?(private_mode = default_p2p.private_mode)
     ?(disable_p2p_maintenance =
@@ -817,7 +917,9 @@ let update ?(disable_config_validation = false) ?data_dir ?min_connections
     ?(disable_mempool = default_p2p.disable_mempool)
     ?(enable_testchain = default_p2p.enable_testchain) ?(cors_origins = [])
     ?(cors_headers = []) ?rpc_tls ?log_output ?log_coloring
-    ?synchronisation_threshold ?history_mode ?network ?latency cfg =
+    ?synchronisation_threshold ?history_mode ?network ?latency
+    ?enable_http_cache_headers ?disable_context_pruning
+    ?storage_maintenance_delay cfg =
   let open Lwt_result_syntax in
   let disable_config_validation =
     cfg.disable_config_validation || disable_config_validation
@@ -858,7 +960,7 @@ let update ?(disable_config_validation = false) ?data_dir ?min_connections
       binary_chunks_size = Option.map (fun x -> x lsl 10) binary_chunks_size;
       maintenance_idle_time =
         (if disable_p2p_maintenance then None
-        else cfg.p2p.limits.maintenance_idle_time);
+         else cfg.p2p.limits.maintenance_idle_time);
       swap_linger =
         (if disable_p2p_swap then None else cfg.p2p.limits.swap_linger);
     }
@@ -890,11 +992,20 @@ let update ?(disable_config_validation = false) ?data_dir ?min_connections
   and rpc : rpc =
     {
       listen_addrs = unopt_list ~default:cfg.rpc.listen_addrs rpc_listen_addrs;
+      external_listen_addrs =
+        unopt_list
+          ~default:cfg.rpc.external_listen_addrs
+          external_rpc_listen_addrs;
       cors_origins = unopt_list ~default:cfg.rpc.cors_origins cors_origins;
       cors_headers = unopt_list ~default:cfg.rpc.cors_headers cors_headers;
       tls = Option.either rpc_tls cfg.rpc.tls;
       acl;
       media_type;
+      max_active_rpc_connections;
+      enable_http_cache_headers =
+        Option.value
+          ~default:cfg.rpc.enable_http_cache_headers
+          enable_http_cache_headers;
     }
   and metrics_addr = unopt_list ~default:cfg.metrics_addr metrics_addr
   and log : Logs_simple_config.cfg =
@@ -934,6 +1045,14 @@ let update ?(disable_config_validation = false) ?data_dir ?min_connections
            in
            {synchronisation});
         history_mode = Option.either history_mode cfg.shell.history_mode;
+        disable_context_pruning =
+          Option.either
+            disable_context_pruning
+            cfg.shell.disable_context_pruning;
+        storage_maintenance_delay =
+          Option.either
+            storage_maintenance_delay
+            cfg.shell.storage_maintenance_delay;
       }
   in
   (* If --network is specified it overrides the "network" entry of the

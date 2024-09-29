@@ -105,7 +105,7 @@ val create_committee_member_with_endpoint :
   t
 
 (** Creates a DAC node to run in observer mode, using the specified coordinator
-    rpc host and port and set the committee member endpoints to 
+    rpc host and port and set the committee member endpoints to
     [committee_member_rpcs]. *)
 val create_observer :
   ?path:string ->
@@ -192,7 +192,7 @@ val terminate : ?timeout:float -> t -> unit Lwt.t
 val kill : t -> unit Lwt.t
 
 (** Shows in stdout every events sent by the node *)
-val log_events : t -> unit
+val log_events : ?max_length:int -> t -> unit
 
 (** See [Daemon.Make.wait_for]. *)
 val wait_for : ?where:string -> t -> string -> (JSON.t -> 'a option) -> 'a Lwt.t
@@ -224,8 +224,8 @@ module Config_file : sig
   val update : t -> (JSON.t -> JSON.t) -> unit
 end
 
-(** [with_sleeping_node] creates and runs an embedded node that sleeps for [timeout] 
-    seconds upon receiving any request then returns "ok". It is used to test 
+(** [with_sleeping_node] creates and runs an embedded node that sleeps for [timeout]
+    seconds upon receiving any request then returns "ok". It is used to test
     timeout capabilities of clients. *)
 val with_sleeping_node :
   ?rpc_port:int ->
@@ -233,3 +233,8 @@ val with_sleeping_node :
   timeout:float ->
   (string * int -> unit Lwt.t) ->
   unit Lwt.t
+
+(** Expose the RPC server address of this node as a foreign endpoint. *)
+val as_rpc_endpoint : t -> Endpoint.t
+
+module RPC : RPC_core.CALLERS with type uri_provider := t

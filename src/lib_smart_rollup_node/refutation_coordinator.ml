@@ -57,62 +57,69 @@ let on_process Layer1.{level; _} state =
   | None ->
       (* Not injecting refutations, don't play refutation games *)
       return_unit
-  | Some self ->
-      let Node_context.{rollup_address; _} = node_ctxt in
-      let* plugin = Protocol_plugins.last_proto_plugin node_ctxt in
-      let module Plugin = (val plugin) in
-      (* Current conflicts in L1 *)
-      let* conflicts =
-        Plugin.Refutation_game_helpers.get_conflicts
-          state.node_ctxt.cctxt
-          rollup_address
-          self
-      in
-      (* Map of opponents the node is playing against to the corresponding
-         player worker *)
-      let opponent_players =
-        Pkh_map.of_seq @@ List.to_seq @@ Player.current_games ()
-      in
-      (* Conflicts for which we need to start new refutation players.
-         Some of these might be ongoing. *)
-      let new_conflicts = untracked_conflicts opponent_players conflicts in
-      (* L1 ongoing games *)
-      let* ongoing_games =
-        Plugin.Refutation_game_helpers.get_ongoing_games
-          state.node_ctxt.cctxt
-          rollup_address
-          self
-      in
-      (* Map between opponents and their corresponding games *)
-      let ongoing_game_map = make_game_map self ongoing_games in
-      (* Launch new players for new conflicts, and play one step *)
-      let* () =
-        List.iter_ep
-          (fun conflict ->
-            let other = conflict.Octez_smart_rollup.Game.other in
-            Pkh_table.replace state.pending_opponents other () ;
-            let game = Pkh_map.find_opt other ongoing_game_map in
-            Player.init_and_play node_ctxt ~self ~conflict ~game ~level)
-          new_conflicts
-      in
-      let*! () =
-        (* Play one step of the refutation game in every remaining player *)
-        Pkh_map.iter_p
-          (fun opponent worker ->
-            match Pkh_map.find opponent ongoing_game_map with
-            | Some game ->
-                Pkh_table.remove state.pending_opponents opponent ;
-                Player.play worker game ~level
-            | None ->
-                (* Kill finished players: those who don't aren't
-                   playing against pending opponents that don't have
-                   ongoing games in the L1 *)
-                if not @@ Pkh_table.mem state.pending_opponents opponent then
-                  Player.shutdown worker
-                else Lwt.return_unit)
-          opponent_players
-      in
-      return_unit
+  | Some (Single self) -> (
+      let Node_context.{config; _} = node_ctxt in
+      let* plugin = Protocol_plugins.last_proto_plugin_opt node_ctxt in
+      match plugin with
+      | None ->
+          (* The rollup node has not registered any protocol info yet. This
+             happens on startup when the refutation loop starts before the block
+             processing. Protocol information will be available the next block. *)
+          return_unit
+      | Some plugin ->
+          let module Plugin = (val plugin) in
+          (* Current conflicts in L1 *)
+          let* conflicts =
+            Plugin.Refutation_game_helpers.get_conflicts
+              state.node_ctxt.cctxt
+              config.sc_rollup_address
+              self
+          in
+          (* Map of opponents the node is playing against to the corresponding
+             player worker *)
+          let opponent_players =
+            Pkh_map.of_seq @@ List.to_seq @@ Player.current_games ()
+          in
+          (* Conflicts for which we need to start new refutation players.
+             Some of these might be ongoing. *)
+          let new_conflicts = untracked_conflicts opponent_players conflicts in
+          (* L1 ongoing games *)
+          let* ongoing_games =
+            Plugin.Refutation_game_helpers.get_ongoing_games
+              state.node_ctxt.cctxt
+              config.sc_rollup_address
+              self
+          in
+          (* Map between opponents and their corresponding games *)
+          let ongoing_game_map = make_game_map self ongoing_games in
+          (* Launch new players for new conflicts, and play one step *)
+          let* () =
+            List.iter_ep
+              (fun conflict ->
+                let other = conflict.Octez_smart_rollup.Game.other in
+                Pkh_table.replace state.pending_opponents other () ;
+                let game = Pkh_map.find_opt other ongoing_game_map in
+                Player.init_and_play node_ctxt ~self ~conflict ~game ~level)
+              new_conflicts
+          in
+          let*! () =
+            (* Play one step of the refutation game in every remaining player *)
+            Pkh_map.iter_p
+              (fun opponent worker ->
+                match Pkh_map.find opponent ongoing_game_map with
+                | Some game ->
+                    Pkh_table.remove state.pending_opponents opponent ;
+                    Player.play worker game ~level
+                | None ->
+                    (* Kill finished players: those who don't aren't
+                       playing against pending opponents that don't have
+                       ongoing games in the L1 *)
+                    if not @@ Pkh_table.mem state.pending_opponents opponent
+                    then Player.shutdown worker
+                    else Lwt.return_unit)
+              opponent_players
+          in
+          return_unit)
 
 module Types = struct
   type nonrec state = state
@@ -149,7 +156,8 @@ module Handlers = struct
       =
    fun w request ->
     let state = Worker.state w in
-    match request with Request.Process b -> on_process b state
+    match request with
+    | Request.Process b -> protect @@ fun () -> on_process b state
 
   type launch_error = error trace
 
@@ -180,13 +188,20 @@ let table = Worker.create_table Queue
 
 let worker_promise, worker_waker = Lwt.task ()
 
-let start node_ctxt =
+let start (node_ctxt : _ Node_context.t) =
   let open Lwt_result_syntax in
   let*! () = Refutation_game_event.Coordinator.starting () in
   let+ worker = Worker.launch table () node_ctxt (module Handlers) in
   Lwt.wakeup worker_waker worker
 
-let init node_ctxt =
+let start_in_mode mode =
+  let open Configuration in
+  match mode with
+  | Accuser | Bailout | Operator | Maintenance -> true
+  | Observer | Batcher -> false
+  | Custom ops -> purpose_matches_mode (Custom ops) Operating
+
+let init (node_ctxt : _ Node_context.t) =
   let open Lwt_result_syntax in
   match Lwt.state worker_promise with
   | Lwt.Return _ ->
@@ -197,7 +212,8 @@ let init node_ctxt =
       fail [Rollup_node_errors.No_refutation_coordinator; Exn exn]
   | Lwt.Sleep ->
       (* Never started, start it. *)
-      start node_ctxt
+      if start_in_mode node_ctxt.config.mode then start node_ctxt
+      else return_unit
 
 (* This is a refutation coordinator for a single scoru *)
 let worker =
@@ -205,22 +221,26 @@ let worker =
   lazy
     (match Lwt.state worker_promise with
     | Lwt.Return worker -> return worker
-    | Lwt.Fail _ | Lwt.Sleep ->
-        tzfail Rollup_node_errors.No_refutation_coordinator)
+    | Lwt.Fail exn -> fail (Error_monad.error_of_exn exn)
+    | Lwt.Sleep -> Error Rollup_node_errors.No_refutation_coordinator)
 
 let process b =
   let open Lwt_result_syntax in
-  let*? w = Lazy.force worker in
-  let*! (_pushed : bool) = Worker.Queue.push_request w (Request.Process b) in
-  return_unit
+  match Lazy.force worker with
+  | Ok w ->
+      let*! (_pushed : bool) =
+        Worker.Queue.push_request w (Request.Process b)
+      in
+      return_unit
+  | Error Rollup_node_errors.No_refutation_coordinator -> return_unit
+  | Error e -> tzfail e
 
 let shutdown () =
   let open Lwt_syntax in
-  let w = Lazy.force worker in
-  match w with
+  match Lazy.force worker with
   | Error _ ->
       (* There is no refutation coordinator, nothing to do *)
-      Lwt.return_unit
+      return_unit
   | Ok w ->
       (* Shut down all current refutation players *)
       let games = Player.current_games () in
@@ -228,3 +248,9 @@ let shutdown () =
         List.iter_s (fun (_opponent, player) -> Player.shutdown player) games
       in
       Worker.shutdown w
+
+let worker_status () =
+  match Lwt.state worker_promise with
+  | Lwt.Return _ -> `Running
+  | Lwt.Fail exn -> `Crashed (Error_monad.error_of_exn exn)
+  | Lwt.Sleep -> `Not_running

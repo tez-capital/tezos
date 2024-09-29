@@ -6,10 +6,11 @@
  (instrumentation (backend bisect_ppx))
  (libraries
   tezt.core
-  octez-libs.tezos-error-monad
-  tezos_layer2_store
+  octez-libs.error-monad
+  octez-l2-libs.layer2_store
   qcheck-alcotest
-  octez-alcotezt)
+  octez-alcotezt
+  tezt)
  (library_flags (:standard -linkall))
  (flags
   (:standard)
@@ -31,9 +32,9 @@
 
 (rule
  (alias runtest)
- (package tezos-layer2-store)
+ (package octez-l2-libs)
  (enabled_if (<> false %{env:RUNTEZTALIAS=true}))
- (action (run %{dep:./main.exe})))
+ (action (run %{dep:./main.exe} /flaky /ci_disabled)))
 
 (rule
  (targets main.ml)

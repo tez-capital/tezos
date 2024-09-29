@@ -1,7 +1,6 @@
 module TzStdLib = Tezos_lwt_result_stdlib.Lwtreslib.Bare
 open Source
 open Ast
-
 module Unknown = Error.Make ()
 
 exception Unknown = Unknown.Error (* indicates unknown import name *)
@@ -26,7 +25,7 @@ let lookup (im : import) : Instance.extern Lwt.t =
           Unknown.error
             im.at
             ("unknown import \"" ^ module_name ^ "\".\"" ^ item_name ^ "\"")
-      | exn -> raise exn)
+      | exn -> Lwt.reraise exn)
 
 let link m =
   let open Lwt.Syntax in

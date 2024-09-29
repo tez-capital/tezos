@@ -345,6 +345,7 @@ let estimated_gas_single (type kind)
         | Reveal_result {consumed_gas}
         | Delegation_result {consumed_gas; _}
         | Register_global_constant_result {consumed_gas; _}
+        | Set_deposits_limit_result {consumed_gas}
         | Update_consensus_key_result {consumed_gas; _}
         | Increase_paid_storage_result {consumed_gas; _}
         | Transfer_ticket_result {consumed_gas; _}
@@ -421,8 +422,9 @@ let estimated_storage_single (type kind) ~origination_size
         | Sc_rollup_originate_result {size; _} -> Ok size
         | Zk_rollup_origination_result {storage_size; _} -> Ok storage_size
         | Transaction_result (Transaction_to_sc_rollup_result _)
-        | Reveal_result _ | Delegation_result _ | Increase_paid_storage_result _
-        | Dal_publish_slot_header_result _ | Sc_rollup_add_messages_result _
+        | Reveal_result _ | Delegation_result _ | Set_deposits_limit_result _
+        | Increase_paid_storage_result _ | Dal_publish_slot_header_result _
+        | Sc_rollup_add_messages_result _
         (* The following Sc_rollup operations have zero storage cost because we
            consider them to be paid in the stake deposit.
 
@@ -502,12 +504,13 @@ let originated_contracts_single (type kind)
             ( Transaction_to_sc_rollup_result _
             | Transaction_to_zk_rollup_result _ )
         | Register_global_constant_result _ | Reveal_result _
-        | Delegation_result _ | Update_consensus_key_result _
-        | Increase_paid_storage_result _ | Transfer_ticket_result _
-        | Dal_publish_slot_header_result _ | Sc_rollup_originate_result _
-        | Sc_rollup_add_messages_result _ | Sc_rollup_cement_result _
-        | Sc_rollup_publish_result _ | Sc_rollup_refute_result _
-        | Sc_rollup_timeout_result _ | Sc_rollup_execute_outbox_message_result _
+        | Delegation_result _ | Set_deposits_limit_result _
+        | Update_consensus_key_result _ | Increase_paid_storage_result _
+        | Transfer_ticket_result _ | Dal_publish_slot_header_result _
+        | Sc_rollup_originate_result _ | Sc_rollup_add_messages_result _
+        | Sc_rollup_cement_result _ | Sc_rollup_publish_result _
+        | Sc_rollup_refute_result _ | Sc_rollup_timeout_result _
+        | Sc_rollup_execute_outbox_message_result _
         | Sc_rollup_recover_bond_result _ | Zk_rollup_origination_result _
         | Zk_rollup_publish_result _ | Zk_rollup_update_result _ ->
             return_nil)
@@ -622,7 +625,7 @@ let signature_size_of_algo : Signature.algo -> int = function
       Signature.Bls.size + 2
 
 (* This value is used as a safety guard for gas limit. *)
-let safety_guard = Gas.Arith.(integral_of_int_exn 100)
+let default_safety_guard = Gas.Arith.(integral_of_int_exn 100)
 
 (*
 
@@ -649,7 +652,7 @@ let safety_guard = Gas.Arith.(integral_of_int_exn 100)
 
 let may_patch_limits (type kind) (cctxt : #Protocol_client_context.full)
     ~fee_parameter ~signature_algo ~chain ~block ?successor_level ?branch
-    ?(force = false) ?(simulation = false)
+    ?(force = false) ?(simulation = false) ?safety_guard
     (annotated_contents : kind Annotated_manager_operation.annotated_list) :
     kind Kind.manager contents_list tzresult Lwt.t =
   let open Lwt_result_syntax in
@@ -863,12 +866,16 @@ let may_patch_limits (type kind) (cctxt : #Protocol_client_context.full)
                        (Limit.known Gas.Arith.zero)
                        op)
                 else
-                  let safety_guard =
+                  let default_safety_guard =
                     match c.operation with
                     | Transaction {destination = Implicit _; _}
-                    | Reveal _ | Delegation _ | Increase_paid_storage _ ->
+                    | Reveal _ | Delegation _ | Set_deposits_limit _
+                    | Increase_paid_storage _ ->
                         Gas.Arith.zero
-                    | _ -> safety_guard
+                    | _ -> default_safety_guard
+                  in
+                  let safety_guard =
+                    Option.value safety_guard ~default:default_safety_guard
                   in
                   let*! () =
                     cctxt#message
@@ -1463,9 +1470,9 @@ let rec build_contents :
         return (Annotated_manager_operation.Cons_manager (op, rest))
 
 let inject_manager_operation cctxt ~chain ~block ?successor_level ?branch
-    ?confirmations ?dry_run ?verbose_signing ?simulation ?force ~source
-    ~(src_pk : public_key) ~src_sk ~fee ~gas_limit ~storage_limit ?counter
-    ?(replace_by_fees = false) ~fee_parameter (type kind)
+    ?confirmations ?dry_run ?verbose_signing ?simulation ?force ?safety_guard
+    ~source ~(src_pk : public_key) ~src_sk ~fee ~gas_limit ~storage_limit
+    ?counter ?(replace_by_fees = false) ~fee_parameter (type kind)
     (operations : kind Annotated_manager_operation.annotated_list) :
     (Operation_hash.t
     * packed_operation
@@ -1536,6 +1543,7 @@ let inject_manager_operation cctxt ~chain ~block ?successor_level ?branch
             ~block
             ?force
             ?simulation
+            ?safety_guard
             ?successor_level
             ?branch
             contents
@@ -1585,6 +1593,7 @@ let inject_manager_operation cctxt ~chain ~block ?successor_level ?branch
             ~block
             ?force
             ?simulation
+            ?safety_guard
             ?successor_level
             ?branch
             contents

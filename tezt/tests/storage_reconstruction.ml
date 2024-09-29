@@ -29,6 +29,7 @@
    Invocation: dune exec tezt/tests/main.exe -- -f storage_reconstruction.ml
    Subject: Tests the reconstruction mechanism
 *)
+let team = Tag.layer1
 
 let pp_snapshot_export_format fmt v =
   Format.fprintf fmt "%s" ((function Node.Tar -> "tar" | Raw -> "raw") v)
@@ -43,10 +44,10 @@ let pp_snapshot_history_mode fmt v =
 
 let get_constants client =
   let* constants =
-    RPC.Client.call client @@ RPC.get_chain_block_context_constants ()
+    Client.RPC.call client @@ RPC.get_chain_block_context_constants ()
   in
-  let* preserved_cycles =
-    return JSON.(constants |-> "preserved_cycles" |> as_int)
+  let blocks_preservation_cycles =
+    JSON.(constants |-> "blocks_preservation_cycles" |> as_int)
   in
   let* blocks_per_cycle =
     return JSON.(constants |-> "blocks_per_cycle" |> as_int)
@@ -54,7 +55,7 @@ let get_constants client =
   let* max_op_ttl =
     return JSON.(constants |-> "max_operations_time_to_live" |> as_int)
   in
-  return (preserved_cycles, blocks_per_cycle, max_op_ttl)
+  return (blocks_preservation_cycles, blocks_per_cycle, max_op_ttl)
 
 let export_snapshot node ~export_level ~snapshot_dir ~history_mode
     ~export_format =
@@ -96,11 +97,13 @@ let bake_blocks node client ~blocks_to_bake =
 let check_levels node expected_head_level =
   Log.info "Checking head, savepoint and caboose levels for %s" (Node.name node) ;
   let* head_level =
-    let* json = RPC.call node @@ RPC.get_chain_block_header () in
+    let* json = Node.RPC.call node @@ RPC.get_chain_block_header () in
     Lwt.return JSON.(json |-> "level" |> as_int)
   and* {level = savepoint; _} =
-    RPC.call node @@ RPC.get_chain_level_savepoint ()
-  and* {level = caboose; _} = RPC.call node @@ RPC.get_chain_level_caboose () in
+    Node.RPC.call node @@ RPC.get_chain_level_savepoint ()
+  and* {level = caboose; _} =
+    Node.RPC.call node @@ RPC.get_chain_level_caboose ()
+  in
   Check.((head_level = expected_head_level) int)
     ~error_msg:"expected head level = %R, got %L" ;
   Check.((savepoint = 0) int) ~error_msg:"expected savepoint = %R, got %L" ;
@@ -114,7 +117,7 @@ let check_blocks_availability node head =
   in
   let expect_metadata block =
     let* (_ : RPC.block_metadata) =
-      RPC.call node @@ RPC.get_chain_block_metadata ~block ()
+      Node.RPC.call node @@ RPC.get_chain_block_metadata ~block ()
     in
     unit
   in
@@ -129,7 +132,7 @@ let test_storage_reconstruction =
   Protocol.register_test
     ~__FILE__
     ~title:(Format.asprintf "storage reconstruction")
-    ~tags:["storage"; "reconstruction"]
+    ~tags:[team; "storage"; "reconstruction"]
   @@ fun protocol ->
   let node_arguments = Node.[Synchronisation_threshold 0] in
   let* node, client =
@@ -140,9 +143,11 @@ let test_storage_reconstruction =
       `Client
       ()
   in
-  let* preserved_cycles, blocks_per_cycle, max_op_ttl = get_constants client in
+  let* blocks_preservation_cycles, blocks_per_cycle, max_op_ttl =
+    get_constants client
+  in
   Log.info "Baking a few blocks so that the savepoint is still at genesis." ;
-  let blocks_to_bake_1 = preserved_cycles * blocks_per_cycle in
+  let blocks_to_bake_1 = blocks_preservation_cycles * blocks_per_cycle in
   let* () = bake_blocks node client ~blocks_to_bake:blocks_to_bake_1 in
   Log.info "Terminate the node and start a reconstruction." ;
   let* () = Node.terminate node in

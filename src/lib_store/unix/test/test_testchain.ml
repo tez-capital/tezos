@@ -81,7 +81,7 @@ let fork_testchain chain_store (blocks, forked_block) =
   let testchain_store = Store.Chain.testchain_store testchain in
   let* test_blocks, head =
     append_blocks
-      ~min_lafl:genesis_header.shell.level
+      ~min_lpbl:genesis_header.shell.level
       ~should_set_head:true
       testchain_store
       ~kind:`Full
@@ -132,7 +132,10 @@ let test_shutdown store =
       | Some _ -> Assert.fail_msg "test chain still initialized"
       | None -> (
           let* o =
-            Store.Unsafe.load_testchain chain_store ~chain_id:testchain_id
+            Store.Unsafe.load_testchain
+              chain_store
+              ~chain_id:testchain_id
+              ~maintenance_delay:Storage_maintenance.Disabled
           in
           match o with
           | None -> Assert.fail_msg "failed to load the existing test chain"

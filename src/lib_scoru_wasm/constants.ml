@@ -73,4 +73,10 @@ let nairobi_name = "nairobi_017"
 
 let oxford_name = "oxford_018"
 
+let parisb_name = "paris_019"
+
+let parisc_name = "paris_020"
+
+let proto_quebeca_name = "quebeca_021"
+
 let proto_alpha_name = "alpha_current"

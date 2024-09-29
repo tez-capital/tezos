@@ -37,31 +37,19 @@ type block_header_metadata = unit
 
 let block_header_metadata_encoding = Data_encoding.unit
 
-let block_header_metadata_encoding_with_legacy_attestation_name =
-  Data_encoding.unit
-
 type operation_data = unit
 
 let operation_data_encoding = Data_encoding.unit
 
-let operation_data_encoding_with_legacy_attestation_name =
-  operation_data_encoding
-
 type operation_receipt = unit
 
 let operation_receipt_encoding = Data_encoding.unit
-
-let operation_receipt_encoding_with_legacy_attestation_name =
-  operation_receipt_encoding
 
 let operation_data_and_receipt_encoding =
   Data_encoding.conv
     (function (), () -> ())
     (fun () -> ((), ()))
     Data_encoding.unit
-
-let operation_data_and_receipt_encoding_with_legacy_attestation_name =
-  operation_data_and_receipt_encoding
 
 type operation = {
   shell : Operation.shell_header;
@@ -150,7 +138,8 @@ let finalize_application application_state _block_header =
         context = application_state.context;
         fitness;
         max_operations_ttl = 0;
-        last_allowed_fork_level = 0l;
+        last_finalized_block_level = 0l;
+        last_preserved_block_level = 0l;
       },
       () )
 
@@ -165,7 +154,8 @@ let init _chain_id ctxt block_header =
       context = ctxt;
       fitness;
       max_operations_ttl = 0;
-      last_allowed_fork_level = 0l;
+      last_finalized_block_level = 0l;
+      last_preserved_block_level = 0l;
     }
 
 type error += Missing_value_in_cache

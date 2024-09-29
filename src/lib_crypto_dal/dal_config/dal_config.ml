@@ -43,26 +43,16 @@ let parameters_encoding =
        (req "page_size" uint16)
        (req "slot_size" int31)
        (req "number_of_shards" uint16))
-  [@@coverage off]
+[@@coverage off]
 
-type t = {
-  activated : bool;
-  use_mock_srs_for_testing : parameters option;
-  bootstrap_peers : string list;
-}
+type t = {activated : bool; bootstrap_peers : string list}
 
 let encoding : t Data_encoding.t =
   let open Data_encoding in
   conv
-    (fun {activated; use_mock_srs_for_testing; bootstrap_peers} ->
-      (activated, use_mock_srs_for_testing, bootstrap_peers))
-    (fun (activated, use_mock_srs_for_testing, bootstrap_peers) ->
-      {activated; use_mock_srs_for_testing; bootstrap_peers})
-    (obj3
-       (req "activated" bool)
-       (req "use_mock_srs_for_testing" (option parameters_encoding))
-       (req "bootstrap_peers" (list string)))
-  [@@coverage off]
+    (fun {activated; bootstrap_peers} -> (activated, bootstrap_peers))
+    (fun (activated, bootstrap_peers) -> {activated; bootstrap_peers})
+    (obj2 (dft "activated" bool true) (req "bootstrap_peers" (list string)))
+[@@coverage off]
 
-let default =
-  {activated = false; use_mock_srs_for_testing = None; bootstrap_peers = []}
+let default = {activated = true; bootstrap_peers = []}

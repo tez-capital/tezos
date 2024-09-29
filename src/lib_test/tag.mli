@@ -33,9 +33,9 @@
 
 (** ["flaky"]: the test is flaky.
 
-    This disables the test in the CI just like {!ci_disabled}.
-    Contrary to {!ci_disabled} however, this also gives the reason why the test
-    is disabled: the test is flaky.
+    This disables the test in [before_merging] pipelines of the CI
+    just like {!ci_disabled}. Contrary to {!ci_disabled} however, this
+    also gives the reason why the test is disabled: the test is flaky.
 
     Tip: you can list tests that are declared as flaky with [tezt --list flaky].
     You can check if they are still flaky with something like
@@ -52,3 +52,54 @@ val flaky : string
     You must provide a comment to explain why the test is disabled.
     For flaky tests, {!flaky} should be preferred to [ci_disabled]. *)
 val ci_disabled : string
+
+(** ["memory_3k"]: tag memory hungry tests ( >3 GB of memory ). *)
+val memory_3k : string
+
+(** ["memory_4k"]: tag memory hungry tests ( >4 GB of memory ). *)
+val memory_4k : string
+
+(** ["time_sensitive"]: tag for time-sensitive tests.
+
+    They are executed with -j 1 to ensure that other tests do not
+    affect their executions. However, they are not particularly
+    cpu/memory-intensive hence they do not need to run on a particular
+    machine contrary to performance regression tests. *)
+val time_sensitive : string
+
+(** ["infrastructure"]: tag for tests owned by the Infrastructure product unit. *)
+val infrastructure : string
+
+(** ["layer1"]: tag for tests owned by the Layer 1 product unit. *)
+val layer1 : string
+
+(** ["tezos2"]: tag for tests owned by the Tezos 2 product unit. *)
+val tezos2 : string
+
+(** ["etherlink"]: tag for tests owned by the Etherlink product unit. *)
+val etherlink : string
+
+(** ["base"]: tag for tests related to lib_base. *)
+val base : string
+
+(** ["shell"]: tag for tests related to lib_shell and lib_shell_services. *)
+val shell : string
+
+(** ["encodings"]: tag for tests related to encodings. *)
+val encodings : string
+
+(** ["services"]: tag for tests related to services. *)
+val services : string
+
+(** ["unix"]: tag for tests related to unix. *)
+val unix : string
+
+(** ["slow"]: tag for tests that are too slow for the CI's [before_merging]
+    pipelines and that will only be run on the scheduled pipeline.
+
+    This tag should be used for tests that take more than 2 minutes in the CI. *)
+val slow : string
+
+(** [cloud]: tag for tests that depends on the [tezt-cloud] library. Such a test
+  uses VMs deployed onto the cloud. *)
+val cloud : string

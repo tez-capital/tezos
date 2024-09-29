@@ -31,6 +31,7 @@
                  injection of transfer operations, baking, and a couple RPCs
                  that retrieve operations.
 *)
+let team = Tag.layer1
 
 let get_request_level = function
   | "debug" -> "request_completed_debug.v0"
@@ -119,14 +120,14 @@ let bake_wait_log ?level ?protocol ?mempool ?ignore_node_mempool node client =
 (* Get the hash of an operation from the json representing the operation. *)
 let get_hash op = JSON.(op |-> "hash" |> as_string)
 
-(* Get the list of hashes of the mempool's applied operations (using
+(* Get the list of hashes of the mempool's validated operations (using
    RPC get /chains/main/mempool/pending_operations that provides all
    the operations in the mempool). *)
-let get_applied_operation_hash_list client =
+let get_validated_operation_hash_list client =
   let* pending_ops =
-    RPC.Client.call client @@ RPC.get_chain_mempool_pending_operations ()
+    Client.RPC.call client @@ RPC.get_chain_mempool_pending_operations ()
   in
-  return (List.map get_hash JSON.(pending_ops |-> "applied" |> as_list))
+  return (List.map get_hash JSON.(pending_ops |-> "validated" |> as_list))
 
 (* Assert that [json] represents an empty list. *)
 let check_json_is_empty_list ?(fail_msg = "") json =
@@ -152,7 +153,7 @@ let check_json_is_empty_list ?(fail_msg = "") json =
    Scenario:
    - Step 1: Start a node with event_level:debug, activate the protocol.
    - Step 2: Inject a transfer operation, test RPCs.
-     2a) pending_operations should contain one applied operation.
+     2a) pending_operations should contain one validated operation.
      2b) operations in block should be empty.
    - Step 3: Bake, test RPCs.
      3a) pending_operations should be empty.
@@ -162,14 +163,14 @@ let test_debug_level_misc =
   Protocol.register_test
     ~__FILE__
     ~title:"event level debug"
-    ~tags:["node"; "event"]
+    ~tags:[team; "node"; "event"]
   @@ fun protocol ->
   Log.info "Step 1: Start a node with event_level:debug, activate the protocol." ;
   let* node_1 = Node.init ~event_level:`Debug [Synchronisation_threshold 0] in
   let endpoint_1 = Client.(Node node_1) in
   let* client_1 = Client.init ~endpoint:endpoint_1 () in
   let* () = Client.activate_protocol_and_wait ~protocol client_1 in
-  let level = Node.get_level node_1 in
+  let* level = Node.get_level node_1 in
   Log.info "Node at level %d" level ;
   Log.info "Step 2: Inject a transfer operation, test RPCs." ;
   let* () =
@@ -181,17 +182,17 @@ let test_debug_level_misc =
       Constant.bootstrap2
   in
   Log.info "Injection done." ;
-  Log.info "2a) pending_operations should contain one applied operation." ;
-  let* applied_ophs = get_applied_operation_hash_list client_1 in
+  Log.info "2a) pending_operations should contain one validated operation." ;
+  let* validated_ophs = get_validated_operation_hash_list client_1 in
   Log.info "RPC.get_mempool_pending_operations done." ;
   let oph1 =
-    match applied_ophs with
+    match validated_ophs with
     | [x] -> x
-    | _ -> Test.fail "Expected exactly one applied operation in mempool."
+    | _ -> Test.fail "Expected exactly one validated operation in mempool."
   in
   Log.info "Hash of injected operation: %s" oph1 ;
   Log.info "2b) operations in block should be empty." ;
-  let* ops = RPC.Client.call client_1 @@ RPC.get_chain_block_operations () in
+  let* ops = Client.RPC.call client_1 @@ RPC.get_chain_block_operations () in
   Log.info "RPC.get_operations done." ;
   check_json_is_empty_list
     ?fail_msg:
@@ -203,14 +204,14 @@ let test_debug_level_misc =
   let level = level + 1 in
   let* () = bake_wait_log ?level:(Some level) node_1 client_1 in
   Log.info "3a) pending_operations should be empty." ;
-  let* applied_ophs = get_applied_operation_hash_list client_1 in
+  let* validated_ophs = get_validated_operation_hash_list client_1 in
   Log.info "RPC.get_mempool_pending_operations done." ;
-  (match applied_ophs with
+  (match validated_ophs with
   | [] -> ()
-  | _ -> Test.fail "List of applied operations in mempool should be empty.") ;
+  | _ -> Test.fail "List of validated operations in mempool should be empty.") ;
   Log.info
     "3b) operations in block should contain the previously pending operation." ;
-  let* ops = RPC.Client.call client_1 @@ RPC.get_chain_block_operations () in
+  let* ops = Client.RPC.call client_1 @@ RPC.get_chain_block_operations () in
   Log.info "RPC.get_operations done." ;
   (match JSON.(ops |> as_list_opt) with
   | Some [x1; x2; x3; x4] -> (
@@ -222,7 +223,7 @@ let test_debug_level_misc =
           | _ ->
               Test.fail
                 "Fourth list returned by RPC.operations should contain only \
-                 the previously applied operation.")
+                 the previously validated operation.")
       | _ ->
           Test.fail
             "Fourth list returned by RPC.operations should contain exactly one \
@@ -230,11 +231,20 @@ let test_debug_level_misc =
   | _ -> Test.fail "RPC.operations should return a list of length 4.") ;
   unit
 
-(* Wait for an event of name "set_head.v0".
-   Note: this event has level "info", so the node needs to have event
-   level set to either "debug" or "info" for such an event to exist.
+(* Wait for an event of name "set_head.v0" when the node's RPC server
+   is local (rpc_external=false) or "store_synchronized_on_head.v0"
+   when the external RPC server is enabled (rpc_external=true).
+   Note: the "set_head.v0" event has level "info", so the node needs
+   to have event level set to either "debug" or "info" for such an
+   event to exist. Regarding "store_synchronized_on_head.v0" it
+   requires to be set to "notice" at least.
 *)
-let wait_for_set_head node = Node.wait_for node "set_head.v0" (fun _ -> Some ())
+let wait_for_set_head node =
+  let event =
+    if Node.rpc_external node then "store_synchronized_on_head.v0"
+    else "set_head.v0"
+  in
+  Node.wait_for node event (fun _ -> Some ())
 
 (* Event handler that ensures there is no "set_head.v0" event (this event has
    level "info", so should not happen for nodes of event level "notice").
@@ -311,7 +321,10 @@ let check_level_of_all_events node config_level =
      arrival requests (level debug) from node 1.
 *)
 let test_event_levels =
-  Protocol.register_test ~__FILE__ ~title:"event levels" ~tags:["node"; "event"]
+  Protocol.register_test
+    ~__FILE__
+    ~title:"event levels"
+    ~tags:[team; "node"; "event"]
   @@ fun protocol ->
   Log.info
     "Step 1: Start three nodes with respective event levels debug, info, and \

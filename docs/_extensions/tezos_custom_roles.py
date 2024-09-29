@@ -166,7 +166,7 @@ def src_role(_name, rawtext, text, lineno, inliner, options={}, _content=[]):
     if not Path(TEZOS_HOME, file).exists():
         msg = [
             inliner.reporter.warning(
-                f'source file {file} does not exist in the repo', line=lineno
+                f'source file {file} doesn\'t exist in the repo', line=lineno
             )
         ]
     else:
@@ -194,14 +194,6 @@ def default_role(
     node = nodes.Text(rawtext, **options)
 
     file = inliner.document.current_source
-
-    # TODO tezos/tezos#2170: suppress the following check when protocol O
-    # becomes active, because at that point, the pages for all active protocols
-    # will have been fixed automatically by snapshotting Alpha.
-
-    # skip pages of protocols other than Alpha, to avoid manual backporting
-    if re.search("/(active|lima|mumbai|nairobi)/", file):
-        return [node], []
 
     # skip automatically generated pages
     if re.match(".*[.]txt$", file):

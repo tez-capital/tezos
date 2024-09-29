@@ -70,12 +70,15 @@ module Term = struct
               ()
           in
           let*! r =
-            Lwt_lock_file.try_with_lock
-              ~when_locked:(fun () ->
-                failwith
-                  "Failed to lock the data directory '%s'. Is a `octez-node` \
-                   running?"
-                  data_dir)
+            Lwt_lock_file.with_lock
+              ~when_locked:
+                (`Fail
+                  (Exn
+                     (Failure
+                        (Format.sprintf
+                           "Failed to lock the data directory '%s'. Is a \
+                            `octez-node` running?"
+                           data_dir))))
               ~filename:(Data_version.lock_file data_dir)
               (fun () ->
                 let genesis = config.blockchain_network.genesis in
@@ -111,6 +114,7 @@ module Term = struct
           | Ok v -> Lwt.return (Ok v)
           | errs -> Lwt.return errs)
     in
+    Lwt.Exception_filter.(set handle_all_except_runtime) ;
     match Lwt_main.run @@ Lwt_exit.wrap_and_exit run with
     | Ok () -> `Ok ()
     | Error err -> `Error (false, Format.asprintf "%a" pp_print_trace err)

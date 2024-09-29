@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2022-2023 TriliTech <contact@trili.tech>
+// SPDX-FileCopyrightText: 2022-2024 TriliTech <contact@trili.tech>
 //
 // SPDX-License-Identifier: MIT
 
@@ -35,8 +35,8 @@ impl BinWriter for Batch {
             .map(|(op, sk)| {
                 let mut bytes = Vec::new();
                 op.bin_write(&mut bytes)?;
-                let mut sig = sk.sign(bytes.as_slice())?;
-                bytes.append(&mut sig.0);
+                let sig = sk.sign(bytes.as_slice())?;
+                bytes.extend_from_slice(sig.as_ref());
 
                 Ok(bytes)
             })

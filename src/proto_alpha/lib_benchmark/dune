@@ -5,25 +5,24 @@
  (name tezos_benchmark_alpha)
  (public_name tezos-benchmark-alpha)
  (libraries
-  octez-libs.tezos-stdlib
-  octez-libs.tezos-base
-  octez-libs.tezos-error-monad
-  octez-libs.tezos-micheline
+  octez-libs.stdlib
+  octez-libs.base
+  octez-libs.error-monad
+  octez-libs.micheline
   tezos-micheline-rewriting
   tezos-benchmark
   tezos-benchmark-type-inference-alpha
-  tezos-protocol-alpha
-  octez-libs.tezos-crypto
+  tezos-protocol-alpha.protocol
+  octez-libs.crypto
   tezos-protocol-alpha.parameters
   hashcons
-  tezos-alpha-test-helpers
+  octez-protocol-alpha-libs.test-helpers
   prbnmcn-stats)
  (library_flags (:standard -linkall))
  (flags
   (:standard)
   -open Tezos_stdlib
   -open Tezos_base
-  -open Tezos_base.TzPervasives.Error_monad.Legacy_monad_globals
   -open Tezos_error_monad
   -open Tezos_micheline
   -open Tezos_micheline_rewriting

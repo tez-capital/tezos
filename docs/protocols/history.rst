@@ -6,6 +6,16 @@ The following pages describe the former Tezos protocols (i.e., which have been u
 .. toctree::
    :maxdepth: 1
 
+   018_oxford
+
+.. toctree::
+   :maxdepth: 1
+
+   017_nairobi
+
+.. toctree::
+   :maxdepth: 1
+
    016_mumbai
 
 .. toctree::
@@ -83,6 +93,6 @@ See Also
 
 More details on the history of Tezos protocols, including their activation dates or the salient features they brought, can be found in the following places:
 
-- https://tzstats.com/protocols (or on other block explores in :ref:`Tezos community <tezos_community>`)
+- https://tzstats.com/protocols (or on other :ref:`Tezos block explorers <block_explorers>`
+- https://docs.tezos.com/architecture/governance/amendment-history
 - https://opentezos.com/tezos-basics/history-of-amendments/
-- https://wiki.tezosagora.org/learn/governance/past-tezos-amendments

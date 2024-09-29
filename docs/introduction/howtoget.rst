@@ -1,6 +1,6 @@
 .. _howtoget:
 
-How to get Tezos
+Installing Octez
 ================
 
 In this how-to we explain how to get up-to-date binaries to run Tezos
@@ -31,6 +31,11 @@ There are several options for getting the binaries, depending on how you plan to
 
 These different options are described in the following sections.
 
+Some Octez binaries also require some parameter files to run. Only some of the packaged distributions include such parameter files. Therefore, depending on the type of installation and your user profile, you may have to install some extra parameter files separately. Their installation is currently described in section :ref:`compiling_with_make`, but those instructions may be used for other installation types:
+
+- :ref:`setup_zcash_params`
+- :ref:`setup_dal_crypto_params`
+
 Note that some of the packaged distributions are not only available for the latest stable release. For instance, static binaries are also available for release candidates, and Docker images are also available for the current development version (see :doc:`../releases/releases` for more information).
 
 When choosing between the installation options, you may take into account the
@@ -50,8 +55,8 @@ However, if you encounter problems when performing one of the installation scena
 Getting static binaries
 -----------------------
 
-You can get static Linux binaries from the
-`latest release in the tezos-packaging repository <https://github.com/serokell/tezos-packaging/releases/latest>`__.
+You can get static Linux binaries of the latest release from the
+`Octez package registry <https://gitlab.com/tezos/tezos/-/packages/>`__.
 
 This repository provides static binaries for x86_64 and arm64 architectures. Since these binaries
 are static, they can be used on any Linux distribution without any additional prerequisites.
@@ -66,75 +71,119 @@ Installing binaries
 -------------------
 
 Depending on your operating system, you may install Octez (dynamically-linked)
-binaries and their dependencies using a package manager, as follows.
+binaries and their dependencies by first downloading the packages for your
+distribution from the `Octez release page
+<https://gitlab.com/tezos/tezos/-/releases>`__, browsing to your distribution
+and then installing them with your package tool manager. Most of the
+configuration options are accessible by the user in ``/etc/default/<package>``.
 
-Ubuntu Launchpad PPA with Octez packages
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+If you are upgrading from a different package distributor such as `Serokell's tezos-packaging <https://github.com/serokell/tezos-packaging>`__,
+please pay attention to the possible differences between the two packages, in
+particular regarding the home directory for the ``tezos`` user.
 
-If you're using Ubuntu, you can install packages with Octez binaries from a Launchpad PPA.
-Currently it supports Focal and Bionic versions.
+There are several packages:
 
-In order to add the stable release PPA repository to your machine, do:
+- ``octez-client``: the client for manipulating wallets and signing items
+- ``octez-node``: the Octez node
+- ``octez-baker``: the Octez baking and VDF daemons
+- ``octez-smartrollup``: the Octez Smart Rollup daemons
+- ``octez-signer``: the remote signer, to hold keys on (and sign from) a different machine from the baker or client
 
-.. literalinclude:: install-bin-ubuntu.sh
+Ubuntu and Debian Octez packages
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If you're using Ubuntu or Debian, you can install the same packages as in the release page
+using ``apt`` directly from our APT repository, instead of going to the Octez
+release page as explained above.
+
+We support the following distribution/releases:
+- ``debian/bookworm``
+- ``ubuntu/noble``
+- ``ubuntu/jammy``
+
+both on ``amd64`` and ``arm64`` architectures.
+
+In order to add the Tezos package repository to your machine, do:
+
+::
+
+    export distribution=debian
+    export release=bookworm
+    export bucket="tezos-linux-protected-repo"
+
+and run:
+
+.. literalinclude:: install-bin-deb.sh
    :language: shell
-   :start-after: [setup stable repository]
-   :end-before: [end]
+   :start-after: [install prerequisites]
+   :end-before: [ preeseed octez ]
 
-Alternatively, to add the release candidates PPA instead, do:
-
-.. literalinclude:: install-bin-ubuntu.sh
-   :language: shell
-   :start-after: [setup rc repository]
-   :end-before: [end]
+We also maintain a separate repository for release candidates. To install
+the last release candidate simply prepend ``RC/`` to the distribution name
+as in ``export distribution=RC/debian``
 
 Then, to install the binaries, run the following commands:
 
-.. literalinclude:: install-bin-ubuntu.sh
+.. literalinclude:: install-bin-deb.sh
    :language: shell
    :start-after: [install tezos]
-   :end-before: [test executables]
+   :end-before: [install octez additional packages]
 
-Upgrading to a newer release is made easy by the APT package manager, using
-commands such as ``apt-get update``, ``apt-get upgrade <package>``, and
-``apt-get install <new-package>``. Indeed, as the names of some packages (e.g.
-the baker) depend on their version, you may have to also install new packages.
-You may take a look at the available packages in the Octez PPA repository listed
-by ``apt-get update``.
+To remove the Octez packages you can simply run the following command.
 
-Fedora Copr repository with Octez packages
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-If you're using Fedora, you can install packages with Octez binaries from a Copr repository.
-Currently it supports Fedora 35.
-
-In order to add the stable Copr repository to your machine, do:
-
-.. literalinclude:: install-bin-fedora.sh
+.. literalinclude:: install-bin-deb.sh
    :language: shell
-   :start-after: [setup stable repository]
-   :end-before: [end]
+   :start-after: [test autopurge]
+   :end-before: [check autopurge]
 
-Alternatively, to add the release candidates Copr repository instead, do:
+Also there are some experimental packages:
 
-.. literalinclude:: install-bin-fedora.sh
-   :language: shell
-   :start-after: [setup rc repository]
-   :end-before: [end]
+- ``octez-experimental`` - binaries that are considered experimental including
+  the Alpha baker
+- ``octez-evm-node`` - the EVM endpoint node for Etherlink
 
-Then, to install the binaries, run the following commands:
+The packages are set up to run under a dedicated user. The ``octez-node``,
+``octez-baker`` and ``octez-smartrollup`` packages use a user and group called
+tezos. The ``octez-signer`` package uses a user and group called tzsigner. It’s
+possible to configure the software to use a different user (even root).
 
-.. literalinclude:: install-bin-fedora.sh
-   :language: shell
-   :start-after: [install tezos]
-   :end-before: [test executables]
+The documentation for these packages, originally developed by Chris Pinnock,
+can be found here: https://chrispinnock.com/tezos/packages/
 
-Upgrading to a newer release is made easy by the DNF package manager, using
-commands such as ``dnf upgrade <package>``, and
-``dnf install <new-package>``. Indeed, as the names of some packages (e.g.
-the baker) depend on their version, you may have to also install new packages.
-You may take a look at the available packages in the Octez Copr repository
-listed by ``dnf repoinfo``.
+New set of Debian packages
+""""""""""""""""""""""""""
+
+There is also a new generation of Debian packages that are available for testing.
+These packages will replace the currently available packages mentioned above.
+
+The new set of packages can be installed by adding the following apt repository::
+
+  export distribution=debian
+  export release=bookworm
+  export bucket="tezos-linux-protected-repo"
+
+  curl "https://$bucket.storage.googleapis.com/next/$distribution/octez.asc" | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/octez.gpg
+  echo "deb [arch=amd64] https://$bucket.storage.googleapis.com/next/$distribution $release main" | sudo tee /etc/apt/sources.list.d/octez.list
+  sudo apt-get update
+  sudo apt-get install octez-node ...
+
+Once the Octez binary packages are installed, they can be set up as services
+as explained in :doc:`./services`.
+
+Fedora Octez packages
+~~~~~~~~~~~~~~~~~~~~~
+
+If you're using Fedora, you can install packages with Octez binaries
+from the Octez release page indicated above
+using ``rpm`` or ``dnf``. Currently it supports the latest LTS release for
+Fedora and for RockyLinux.
+
+Upgrading to a new or more recent release requires downloading again all the ``rpm``
+packages and repeat the installation.
+
+For example using ``yum``::
+
+    yum install ./octez-client-19.1-1.x86_64.rpm
 
 .. _using_docker_images:
 
@@ -145,6 +194,14 @@ For every change committed in the GitLab repository, Docker images are
 automatically generated and published on `DockerHub
 <https://hub.docker.com/r/tezos/tezos/>`_. This provides a convenient
 way to run an always up-to-date ``octez-node``.
+
+From version 22.0 all Docker images for tezos are signed using Cosign.
+You can verify if the images are correctly signed using the Cosign utility, as explained below:
+
+.. toctree::
+   :maxdepth: 2
+
+   cosign-verify
 
 One way to run those Docker images is with `docker-compose <https://docs.docker.com/compose>`_.
 We provide ``docker-compose`` files for all active
@@ -249,9 +306,8 @@ Environment
 ~~~~~~~~~~~
 
 Currently Octez is being developed for Linux x86_64, mostly for
-Debian/Ubuntu and Arch Linux. The following OSes are also reported to
-work: macOS (x86_64), Arch Linux ARM (aarch64), Debian Linux (bullseye),
-Ubuntu Linux (focal). A Windows port is feasible and might be
+Ubuntu and Fedora Linux. The following OSes are also reported to
+work: macOS (x86_64), Arch Linux ARM (aarch64), Debian Linux (x86_64). A Windows port is feasible and might be
 developed in the future.
 
 .. note::
@@ -260,12 +316,22 @@ developed in the future.
     Docker container, you have to give extended privileges to this container,
     by passing option ``--privileged`` to the ``docker run`` command.
 
+.. warning::
+
+   Mixing LLVM and GNU binutils toolchains can cause issues when building Octez. If you encounter
+   an error like this, it may be that you have tools from both LLVM and GNU in scope.
+
+   ::
+
+     Error: ExternalToolError { reason: "Failed to create archive index with `ranlib`", tool: "ranlib", args: ["liboctez_rust_deps.a"], stdout: "", stderr: "LLVM ERROR: Invalid encoding\n" }
+
+   In this case, refer to :ref:`Mixing LLVM and GNU binutils <mixing_llvm_gnu_binutils>`.
 
 Install OPAM
 ~~~~~~~~~~~~
 
 First, you need to install the `OPAM <https://opam.ocaml.org/>`__
-package manager, at least version 2.0, that you can get by following the `install instructions <https://opam.ocaml.org/doc/Install.html>`__.
+package manager, at least version 2.1, that you can get by following the `install instructions <https://opam.ocaml.org/doc/Install.html>`__.
 
 After the first install of OPAM, use ``opam init --bare`` to set it up
 while avoiding to compile an OCaml compiler now, as this will be done in
@@ -294,7 +360,7 @@ of variable ``$ocaml_version`` in file ``scripts/version.sh``). To get an enviro
 .. literalinclude:: install-opam.sh
   :language: shell
   :start-after: [install ocaml compiler]
-  :end-before: [get system dependencies]
+  :end-before: [install tezos]
 
 .. note::
 
@@ -311,13 +377,6 @@ of variable ``$ocaml_version`` in file ``scripts/version.sh``). To get an enviro
    env --switch $ocaml_version)`` (replace ``$ocaml_version`` with its value
    in ``scripts/version.sh``) to see if it fixes the problem.
 
-In order to get the system dependencies of the binaries, do:
-
-.. literalinclude:: install-opam.sh
-  :language: shell
-  :start-after: [get system dependencies]
-  :end-before: [install tezos]
-
 .. note::
 
    If an OPAM commands times out, you may allocate it more time for its
@@ -333,9 +392,7 @@ Now, install all the binaries by:
   :end-before: [test executables]
 
 You can be more specific and only ``opam install octez-node``, ``opam
-install octez-baker-alpha``, ... In that case, it is enough to install
-the system dependencies of this package only by running ``opam depext
-octez-node`` for example instead of ``opam depext tezos``.
+install octez-baker-alpha``, ...
 
 .. warning::
 
@@ -357,7 +414,6 @@ released, you can update by:
 ::
 
    opam update
-   opam depext
    opam upgrade
 
 It is recommended to also run the command ``opam remove -a`` in order
@@ -395,7 +451,7 @@ If you plan to contribute to the Octez codebase, the way to go is to set up a
 complete development environment, by cloning the repository and compiling the
 sources using the provided makefile.
 
-**TL;DR**: From a fresh Debian Bullseye x86_64, you typically want to select a source branch in the Octez repository, e.g.:
+**TL;DR**: From a fresh Debian Bookworm x86_64, you typically want to select a source branch in the Octez repository, e.g.:
 
 .. literalinclude:: compile-sources.sh
   :language: shell
@@ -478,7 +534,7 @@ another location (such as ``/usr/local/bin``), the Octez binaries may
 prompt you to install the Zcash parameter files. The easiest way is to
 download and run this script::
 
-   wget https://raw.githubusercontent.com/zcash/zcash/master/zcutil/fetch-params.sh
+   wget https://raw.githubusercontent.com/zcash/zcash/713fc761dd9cf4c9087c37b078bdeab98697bad2/zcutil/fetch-params.sh
    chmod +x fetch-params.sh
    ./fetch-params.sh
 
@@ -511,6 +567,19 @@ and ``sapling-output.params``. Here is where you should expect to find those fil
    If Zcash is located elsewhere on your system (typically, on MacOS X), you may try creating a symbolic link such as: ``ln -s ~/Library/Application\ Support/ZcashParams ~/.zcash-params``.
 
 Note that the script ``fetch-params.sh`` downloads a third file containing parameters for Sprout (currently called ``sprout-groth16.params``), which is not loaded by Sapling and can be deleted to save a significant amount of space (this file is *much* bigger than the two other files).
+
+.. _setup_dal_crypto_params:
+
+Install DAL trusted setup
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Users running :doc:`DAL<../shell/dal>` as :ref:`slot producers<dal_profiles>`
+need to have a set of cryptographic parameters (known as an SRS) installed in
+order to run their :doc:`DAL node<../shell/dal_node>`. The parameters can be
+retrieved via the following script::
+
+  scripts/install_dal_trusted_setup.sh
+
 
 Get the sources
 ~~~~~~~~~~~~~~~
@@ -595,3 +664,11 @@ update the sources by doing ``git pull`` in the ``tezos/`` directory and replay
 the compilation scenario starting from ``make build-deps``.
 You may also use ``make clean`` (and ``rm -Rf _opam/`` if needed) before that, for restarting compilation in a
 fresh state.
+
+Appendix
+--------
+
+.. toctree::
+   :maxdepth: 2
+
+   get_troubleshooting

@@ -33,157 +33,203 @@ This sequence of operations was run:
         storage fees ........................... +ꜩ1.638
 
 Smart rollup [SMART_ROLLUP_HASH] memorized as "rollup"
-
-./octez-client rpc get '/chains/main/blocks/head/context/smart_rollups/smart_rollup/[SMART_ROLLUP_HASH]/genesis_info'
-{ "level": 2,
-  "commitment_hash": "[SC_ROLLUP_COMMITMENT_HASH]" }
-
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "5"
 
-./octez-smart-rollup-client-alpha get state value for vars/value --block head
-"\000\000\000\007"
+GET http://[HOST]:[PORT]/global/block/head/state?key=vars/value
+200 OK
+"00000007"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "26"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "26"
 
-./octez-smart-rollup-client-alpha get state value for vars/value --block head
-"\000\000\000\n"
+GET http://[HOST]:[PORT]/global/block/head/state?key=vars/value
+200 OK
+"0000000a"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "47"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "47"
 
-./octez-smart-rollup-client-alpha get state value for vars/value --block head
-"\000\000\000\r"
+GET http://[HOST]:[PORT]/global/block/head/state?key=vars/value
+200 OK
+"0000000d"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "69"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "69"
 
-./octez-smart-rollup-client-alpha get state value for vars/value --block head
-"\000\000\000\016"
+GET http://[HOST]:[PORT]/global/block/head/state?key=vars/value
+200 OK
+"00000010"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "91"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "91"
 
-./octez-smart-rollup-client-alpha get state value for vars/value --block head
-"\000\000\000\019"
+GET http://[HOST]:[PORT]/global/block/head/state?key=vars/value
+200 OK
+"00000013"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "113"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "113"
 
-./octez-smart-rollup-client-alpha get state value for vars/value --block head
-"\000\000\000\022"
+GET http://[HOST]:[PORT]/global/block/head/state?key=vars/value
+200 OK
+"00000016"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "135"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "135"
 
-./octez-smart-rollup-client-alpha get state value for vars/value --block head
-"\000\000\000\025"
+GET http://[HOST]:[PORT]/global/block/head/state?key=vars/value
+200 OK
+"00000019"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "157"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "157"
 
-./octez-smart-rollup-client-alpha get state value for vars/value --block head
-"\000\000\000\028"
+GET http://[HOST]:[PORT]/global/block/head/state?key=vars/value
+200 OK
+"0000001c"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "179"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "179"
 
-./octez-smart-rollup-client-alpha get state value for vars/value --block head
-"\000\000\000\031"
+GET http://[HOST]:[PORT]/global/block/head/state?key=vars/value
+200 OK
+"0000001f"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "201"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "201"
 
-./octez-smart-rollup-client-alpha get state value for vars/value --block head
-"\000\000\000\""
+GET http://[HOST]:[PORT]/global/block/head/state?key=vars/value
+200 OK
+"00000022"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/state_hash
+GET http://[HOST]:[PORT]/global/block/head/state_hash
+200 OK
 "[SC_ROLLUP_PVM_STATE_HASH]"
 
-./octez-smart-rollup-client-alpha rpc get /global/block/head/total_ticks
+GET http://[HOST]:[PORT]/global/block/head/total_ticks
+200 OK
 "224"
+

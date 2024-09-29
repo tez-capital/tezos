@@ -3,6 +3,7 @@
 (* Open Source License                                                       *)
 (* Copyright (c) 2023 TriliTech <contact@trili.tech>                         *)
 (* Copyright (c) 2023 Functori, <contact@functori.com>                       *)
+(* Copyright (c) 2023 Marigold <contact@marigold.dev>                        *)
 (*                                                                           *)
 (* Permission is hereby granted, free of charge, to any person obtaining a   *)
 (* copy of this software and associated documentation files (the "Software"),*)
@@ -26,12 +27,43 @@
 
 (** This module describes the execution context of the node. *)
 
-type lcc = {commitment : Commitment.Hash.t; level : int32}
+type lcc = Store.Lcc.lcc = {commitment : Commitment.Hash.t; level : int32}
 
-type genesis_info = {level : int32; commitment_hash : Commitment.Hash.t}
+type genesis_info = Metadata.genesis_info = {
+  level : int32;
+  commitment_hash : Commitment.Hash.t;
+}
 
 (** Abstract type for store to force access through this module. *)
 type 'a store constraint 'a = [< `Read | `Write > `Read]
+
+(** Exposed functions to manipulate Node_context store outside of this module *)
+module Node_store : sig
+  (** [load mode ~index_buffer_size ~l2_blocks_cache_size directory]
+    loads a store form the data persisted [directory] as described in
+    {!Store_sigs.load} *)
+  val load :
+    'a Store_sigs.mode ->
+    index_buffer_size:int ->
+    l2_blocks_cache_size:int ->
+    string ->
+    'a store tzresult Lwt.t
+
+  (** [close_store store] closes the store *)
+  val close : 'a store -> unit tzresult Lwt.t
+
+  (** [check_and_set_history_mode store history_mode] checks the
+    compatibility between given history mode and that of the store.
+    History mode can be converted from Archive to Full. Trying to
+    convert from Full to Archive will trigger an error.*)
+  val check_and_set_history_mode :
+    'a Store_sigs.mode ->
+    'a store ->
+    Configuration.history_mode option ->
+    unit tzresult Lwt.t
+
+  val of_store : 'a Store.t -> 'a store
+end
 
 type debug_logger = string -> unit Lwt.t
 
@@ -44,8 +76,28 @@ type current_protocol = {
       (** Protocol constants retrieved from the Tezos node. *)
 }
 
+type last_whitelist_update = {message_index : int; outbox_level : Int32.t}
+
+type private_info = {
+  last_whitelist_update : last_whitelist_update;
+  last_outbox_level_searched : int32;
+      (** If the rollup is private then the last search outbox level
+          when looking at whitelist update to execute. This is to
+          reduce the folding call at each cementation. If the rollup
+          is public then it's None. *)
+}
+
+type sync_info = {
+  on_synchronized : unit Lwt_condition.t;
+  mutable processed_level : int32;
+  sync_level_input : int32 Lwt_watcher.input;
+}
+
 type 'a t = {
+  config : Configuration.t;  (** Inlined configuration for the rollup node. *)
   cctxt : Client_context.full;  (** Client context used by the rollup node. *)
+  degraded : ('a, bool) Reference.t;
+      (** Track if node running in degraded mode. *)
   dal_cctxt : Dal_node_client.cctxt option;
       (** DAL client context to query the dal node, if the rollup node supports
           the DAL. *)
@@ -54,14 +106,6 @@ type 'a t = {
   data_dir : string;  (** Node data dir. *)
   l1_ctxt : Layer1.t;
       (** Layer 1 context to fetch blocks and monitor heads, etc.*)
-  rollup_address : Address.t;  (** Smart rollup tracked by the rollup node. *)
-  boot_sector_file : string option;
-      (** Optional path to the boot sector file. Useful only if the smart
-          rollup was bootstrapped and not originated. *)
-  mode : Configuration.mode;
-      (** Mode of the node, see {!type:Configuration.mode}. *)
-  operators : Configuration.operators;
-      (** Addresses of the rollup node operators by purposes. *)
   genesis_info : genesis_info;
       (** Origination information of the smart rollup. *)
   injector_retention_period : int;
@@ -70,27 +114,30 @@ type 'a t = {
   block_finality_time : int;
       (** Deterministic block finality time for the layer 1 protocol. *)
   kind : Kind.t;  (** Kind of the smart rollup. *)
-  fee_parameters : Configuration.fee_parameters;
-      (** Fee parameters to use when injecting operations in layer 1. *)
-  loser_mode : Loser_mode.t;
-      (** If different from [Loser_mode.no_failures], the rollup node
-          issues wrong commitments (for tests). *)
+  unsafe_patches : Pvm_patches.t;  (** Patches to apply to the PVM. *)
   lockfile : Lwt_unix.file_descr;
       (** A lock file acquired when the node starts. *)
   store : 'a store;  (** The store for the persistent storage. *)
-  context : 'a Context.index;
-      (** The persistent context for the rollup node. *)
-  lcc : ('a, lcc) Reference.t;  (** Last cemented commitment and its level. *)
+  context : 'a Context.t;  (** The persistent context for the rollup node. *)
+  lcc : ('a, lcc) Reference.t;
+      (** Last cemented commitment on L1 (independently of synchronized status
+          of rollup node) and its level. *)
   lpc : ('a, Commitment.t option) Reference.t;
-      (** The last published commitment, i.e. commitment that the operator is
-          staked on. *)
+      (** The last published commitment on L1, i.e. commitment that the operator
+          is staked on (even if the rollup node is not synchronized). *)
+  private_info : ('a, private_info option) Reference.t;
+      (** contains information for the rollup when it's private.*)
   kernel_debug_logger : debug_logger;
       (** Logger used for writing [kernel_debug] messages *)
   finaliser : unit -> unit Lwt.t;
       (** Aggregation of finalisers to run when the node context closes *)
-  mutable current_protocol : current_protocol;
+  current_protocol : current_protocol Reference.rw;
       (** Information about the current protocol. This value is changed in place
           on protocol upgrades. *)
+  global_block_watcher : Sc_rollup_block.t Lwt_watcher.input;
+      (** Watcher for the L2 chain, which enables RPC services to access
+          a stream of L2 blocks. *)
+  sync : sync_info;  (** Synchronization status with respect to the L1 node.  *)
 }
 
 (** Read/write node context {!t}. *)
@@ -102,8 +149,7 @@ type ro = [`Read] t
 (** [get_operator cctxt purpose] returns the public key hash for the operator
     who has purpose [purpose], if any.
 *)
-val get_operator :
-  _ t -> Configuration.purpose -> Signature.Public_key_hash.t option
+val get_operator : _ t -> 'a Purpose.t -> 'a Purpose.operator option
 
 (** [is_operator cctxt pkh] returns [true] if the public key hash [pkh] is an
     operator for the node (for any purpose). *)
@@ -113,39 +159,41 @@ val is_operator : _ t -> Signature.Public_key_hash.t -> bool
     mode.  *)
 val is_accuser : _ t -> bool
 
+(** [is_bailout node_ctxt] returns [true] if the rollup node runs in bailout
+    mode.  *)
+val is_bailout : _ t -> bool
+
 (** [is_loser node_ctxt] returns [true] if the rollup node runs has some
     failures planned. *)
 val is_loser : _ t -> bool
+
+(** [can_inject config op_kind] determines if a given operation kind can
+    be injected based on the configuration settings. *)
+val can_inject : _ t -> Operation_kind.t -> bool
+
+(** [check_op_in_whitelist_or_bailout_mode node_ctxt whitelist] Checks
+    when the rollup node is operating to determine if the operator is in the
+    whitelist or if the rollup node is in bailout mode. Bailout mode
+    does not publish any commitments but still defends previously
+    committed one. *)
+val check_op_in_whitelist_or_bailout_mode :
+  _ t -> Signature.Public_key_hash.t list -> unit tzresult
 
 (** [get_fee_parameter cctxt purpose] returns the fee parameter to inject an
     operation for a given [purpose]. If no specific fee parameters were
     configured for this purpose, returns the default fee parameter for this
     purpose.
 *)
-val get_fee_parameter :
-  _ t -> Configuration.operation_kind -> Injector_sigs.fee_parameter
+val get_fee_parameter : _ t -> Operation_kind.t -> Injector_common.fee_parameter
 
-(** [init cctxt ~data_dir mode l1_ctxt genesis_info protocol configuration]
-    initializes the rollup representation. The rollup origination level and kind
-    are fetched via an RPC call to the layer1 node that [cctxt] uses for RPC
-    requests.
-*)
-val init :
-  #Client_context.full ->
-  data_dir:string ->
-  ?log_kernel_debug_file:string ->
-  'a Store_sigs.mode ->
-  Layer1.t ->
-  genesis_info ->
-  lcc:lcc ->
-  lpc:Commitment.t option ->
-  Kind.t ->
-  current_protocol ->
-  Configuration.t ->
-  'a t tzresult Lwt.t
+(** The path for the lockfile used when starting and running the node. *)
+val global_lockfile_path : data_dir:string -> string
 
-(** Closes the store, context and Layer 1 monitor. *)
-val close : _ t -> unit tzresult Lwt.t
+(** The path for the lockfile used in block processing. *)
+val processing_lockfile_path : data_dir:string -> string
+
+(** The path for the lockfile used in garbage collection. *)
+val gc_lockfile_path : data_dir:string -> string
 
 (** [checkout_context node_ctxt block_hash] returns the context at block
     [block_hash]. *)
@@ -163,6 +211,10 @@ val readonly : _ t -> ro
 type 'a delayed_write = ('a, rw) Delayed_write_monad.t
 
 (** {2 Abstraction over store} *)
+
+(** [get_history_mode t] returns the current history mode for the rollup
+    node. *)
+val get_history_mode : _ t -> Configuration.history_mode tzresult Lwt.t
 
 (** {3 Layer 2 blocks} *)
 
@@ -187,19 +239,35 @@ val get_l2_block_by_level : _ t -> int32 -> Sc_rollup_block.t tzresult Lwt.t
 val find_l2_block_by_level :
   _ t -> int32 -> Sc_rollup_block.t option tzresult Lwt.t
 
-(** [get_full_l2_block node_ctxt hash] returns the full L2 block for L1 block
-    hash [hash]. The result contains the L2 block and its content (inbox,
-    messages, commitment). *)
+(** [get_full_l2_block ?get_outbox_messages node_ctxt hash] returns the full L2
+    block for L1 block hash [hash]. The result contains the L2 block and its
+    content (inbox, messages, commitment). If a function to retrieve outbox
+    messages is provided, the result also contains the outbox for this block.
+
+    NOTE: When given, [get_outbox_messages] is always instantiated with the
+    appropriate [Pvm_plugin.get_outbox_messages] function which is dependent on
+    the protocol. Passing this function around allows to break a dependency
+    cycle between {!Node_context} and {!Protocol_plugins}. *)
 val get_full_l2_block :
-  _ t -> Block_hash.t -> Sc_rollup_block.full tzresult Lwt.t
+  ?get_outbox_messages:
+    ('a t ->
+    Context.pvmstate ->
+    outbox_level:int32 ->
+    (int * Outbox_message.summary) list Lwt.t) ->
+  'a t ->
+  Block_hash.t ->
+  Sc_rollup_block.full tzresult Lwt.t
 
 (** [save_level t head] registers the correspondences [head.level |->
     head.hash] in the store. *)
 val save_level : rw -> Layer1.head -> unit tzresult Lwt.t
 
-(** [save_l2_head t l2_block] remembers that the [l2_block.head] is
-    processed. The system should not have to come back to it. *)
-val save_l2_head : rw -> Sc_rollup_block.t -> unit tzresult Lwt.t
+(** [save_l2_block t l2_block] remembers that the [l2_block] is processed. The
+    system should not have to come back to it. *)
+val save_l2_block : rw -> Sc_rollup_block.t -> unit tzresult Lwt.t
+
+(** [set_l2_head t l2_block] sets [l2_block] as the new head of the L2 chain. *)
+val set_l2_head : rw -> Sc_rollup_block.t -> unit tzresult Lwt.t
 
 (** [last_processed_head_opt store] returns the last processed head if it
     exists. *)
@@ -228,6 +296,9 @@ val hash_of_level_opt : _ t -> int32 -> Block_hash.t option tzresult Lwt.t
     if it is known by the Tezos Layer 1 node. *)
 val level_of_hash : _ t -> Block_hash.t -> int32 tzresult Lwt.t
 
+(** Returns the block header for a given hash using the L1 node. *)
+val header_of_hash : _ t -> Block_hash.t -> Layer1.header tzresult Lwt.t
+
 (** [get_predecessor_opt state head] returns the predecessor of block [head],
     when [head] is not the genesis block. *)
 val get_predecessor_opt :
@@ -235,10 +306,6 @@ val get_predecessor_opt :
 
 (** [get_predecessor state head] returns the predecessor block of [head]. *)
 val get_predecessor : _ t -> Layer1.head -> Layer1.head tzresult Lwt.t
-
-(** Same as {!get_predecessor_opt} with headers. *)
-val get_predecessor_header_opt :
-  _ t -> Layer1.header -> Layer1.header option tzresult Lwt.t
 
 (** Same as {!get_predecessor} with headers. *)
 val get_predecessor_header :
@@ -252,12 +319,22 @@ val get_tezos_reorg_for_new_head :
   Layer1.head ->
   Layer1.head Reorg.t tzresult Lwt.t
 
-(** [block_with_tick store ~max_level tick] returns [Some b] where [b] is the
-    last layer 2 block which contains the [tick] before [max_level]. If no such
-    block exists (the tick happened after [max_level], or we are too late), the
-    function returns [None]. *)
+(** [block_with_tick store ?min_level ~max_level tick] returns [Some b] where
+    [b] is the last layer 2 block which contains the [tick] before
+    [max_level]. If no such block exists (the tick happened after [max_level],
+    or we are too late), the function returns [None]. Fails if the tick happened
+    before [min_level]. *)
 val block_with_tick :
-  _ t -> max_level:int32 -> Z.t -> Sc_rollup_block.t option tzresult Lwt.t
+  _ t ->
+  ?min_level:int32 ->
+  max_level:int32 ->
+  Z.t ->
+  Sc_rollup_block.t option tzresult Lwt.t
+
+(** [tick_offset_of_commitment_period node_ctxt commtient] returns the global
+    initial tick (since genesis) of the PVM for the state at the beginning of the
+    commitment period that [commitment] concludes. *)
+val tick_offset_of_commitment_period : _ t -> Commitment.t -> Z.t tzresult Lwt.t
 
 (** {3 Commitments} *)
 
@@ -305,14 +382,22 @@ type commitment_source = Anyone | Us
 val commitment_was_published :
   _ t -> source:commitment_source -> Commitment.Hash.t -> bool tzresult Lwt.t
 
-(** {3 Inboxes} *)
+(** [set_lcc t lcc] saves the LCC both on disk and in the node context. It's written in the context iff [lcc] is is younger than its current value. *)
+val set_lcc : rw -> lcc -> unit tzresult Lwt.t
 
-type messages_info = {
-  is_first_block : bool;
-  predecessor : Block_hash.t;
-  predecessor_timestamp : Time.Protocol.t;
-  messages : string list;
-}
+(** [register_published_commitment t c ~first_published_at_level ~level
+    ~published_by_us] saves the publishing information for commitment [c] both
+    on disk and in the node context. We remember the first publication level
+    and the level the commitment was published by us. *)
+val register_published_commitment :
+  rw ->
+  Commitment.t ->
+  first_published_at_level:int32 ->
+  level:int32 ->
+  published_by_us:bool ->
+  unit tzresult Lwt.t
+
+(** {3 Inboxes} *)
 
 (** [get_inbox t inbox_hash] retrieves the inbox whose hash is [inbox_hash] from
     the rollup node's storage. *)
@@ -345,27 +430,25 @@ val inbox_of_head :
 val get_inbox_by_block_hash :
   _ t -> Block_hash.t -> Octez_smart_rollup.Inbox.t tzresult Lwt.t
 
-(** [get_messages t witness_hash] retrieves the messages for the merkelized
-    payloads hash [witness_hash] stored by the rollup node. *)
-val get_messages :
-  _ t -> Merkelized_payload_hashes_hash.t -> messages_info tzresult Lwt.t
-
-(** Same as {!get_messages} but returns [None] if the payloads hash is not known. *)
-val find_messages :
-  _ t -> Merkelized_payload_hashes_hash.t -> messages_info option tzresult Lwt.t
+(** Returns messages as they are stored in the store, unsafe to use because all
+    messages may not be present. Use {!Messages.get} instead.  *)
+val unsafe_find_stored_messages :
+  _ t ->
+  Merkelized_payload_hashes_hash.t ->
+  (string list * Block_hash.t) option tzresult Lwt.t
 
 (** [get_num_messages t witness_hash] retrieves the number of messages for the
     inbox witness [witness_hash] stored by the rollup node. *)
 val get_num_messages :
   _ t -> Merkelized_payload_hashes_hash.t -> int tzresult Lwt.t
 
-(** [save_messages t payloads_hash ~block_hash messages] associates the list of
+(** [save_messages t payloads_hash ~predecessor messages] associates the list of
     [messages] to the [payloads_hash]. The payload hash must be computed by
     calling, e.g. {!Sc_rollup.Inbox.add_all_messages}. *)
 val save_messages :
   rw ->
   Merkelized_payload_hashes_hash.t ->
-  block_hash:Block_hash.t ->
+  predecessor:Block_hash.t ->
   string list ->
   unit tzresult Lwt.t
 
@@ -380,11 +463,55 @@ type proto_info = {
       (** Hash of the {e current} protocol for this level. *)
 }
 
+(** {3 Outbox messages} *)
+
+(** Marks the outbox message at index for a given outbox level as executed in
+    the persistent storage. *)
+val set_outbox_message_executed :
+  rw -> outbox_level:int32 -> index:int -> unit tzresult Lwt.t
+
+(** [register_new_outbox_messages node_ctxt ~outbox_level ~indexes] registers
+    the messages indexes for the [outbox_level]. If messages were already
+    registered for this level, they are overwritten. Messages added are first
+    marked unexecuted. *)
+val register_new_outbox_messages :
+  rw -> outbox_level:int32 -> indexes:int list -> unit tzresult Lwt.t
+
+(** [register_missing_outbox_messages node_ctxt ~outbox_level ~indexes]
+    registers the messages indexes for the [outbox_level]. If messages were
+    already registered for this level, they are not overwritten. This function
+    is meant to be used to recompute missing outbox messages information. *)
+val register_missing_outbox_messages :
+  rw -> outbox_level:int32 -> indexes:int list -> unit tzresult Lwt.t
+
+(** Returns the pending messages (i.e. unexecuted) that can now be executed.
+    The returned list contains outbox levels and indexes for each level (in
+    order). *)
+val get_executable_pending_outbox_messages :
+  _ t -> (int32 * int list) list tzresult Lwt.t
+
+(** Returns the pending messages (i.e. unexecuted) that cannot be executed yet.
+    The returned list contains outbox levels and indexes for each level (in
+    order). *)
+val get_unexecutable_pending_outbox_messages :
+  _ t -> (int32 * int list) list tzresult Lwt.t
+
+(** {3 Protocol} *)
+
+(** [protocol_of_level_with_store store level] returns the protocol of block level [level]. *)
+val protocol_of_level_with_store :
+  _ Store.t -> int32 -> proto_info tzresult Lwt.t
+
 (** [protocol_of_level t level] returns the protocol of block level [level]. *)
 val protocol_of_level : _ t -> int32 -> proto_info tzresult Lwt.t
 
 (** Returns the last protocol seen by the rollup node. *)
 val last_seen_protocol : _ t -> Protocol_hash.t option tzresult Lwt.t
+
+(** Returns the activation level of a protocol or fails if the protocol was
+    never seen by the rollup node. *)
+val protocol_activation_level :
+  _ t -> Protocol_hash.t -> Store.Protocols.level tzresult Lwt.t
 
 (** [save_protocol_info t block ~predecessor] saves to disk the protocol
     information associated to the [block], if there is a protocol change
@@ -458,28 +585,76 @@ val save_slot_status :
 (* TODO: https://gitlab.com/tezos/tezos/-/issues/4636
    Missing docstrings. *)
 
-val find_confirmed_slots_history :
-  _ t -> Block_hash.t -> Dal.Slot_history.t option tzresult Lwt.t
+(** [gc ?wait_finished ?force node_ctxt level] triggers garbage collection for
+    the node in accordance with [node_ctxt.config.gc_parameters]. Upon
+    completion, all data for L2 levels lower than [level] will be removed. If
+    [wait_finished] is [true], the call blocks until the GC completes, otherwise
+    it is run asynchronously. When [force = true], a GC is triggered
+    independently of [node_ctxt.config.gc_parameters]. *)
+val gc :
+  ?wait_finished:bool ->
+  ?force:bool ->
+  [> `Write] t ->
+  level:int32 ->
+  unit tzresult Lwt.t
 
-val save_confirmed_slots_history :
-  rw -> Block_hash.t -> Dal.Slot_history.t -> unit tzresult Lwt.t
+(** [cancel_gc t] stops any currently ongoing GC. It returns [true] if a GC was
+    canceled. *)
+val cancel_gc : rw -> bool Lwt.t
 
-val find_confirmed_slots_histories :
-  _ t -> Block_hash.t -> Dal.Slot_history_cache.t option tzresult Lwt.t
+(** [get_gc_info node_ctxt step] returns information about the garbage
+    collected levels. If [step] is [`Started], it returns information for the
+    last started GC and if it's [`Successful], it returns information for the
+    last successful GC. *)
+val get_gc_info :
+  _ t ->
+  [`Started | `Successful] ->
+  Store.Gc_levels.levels option tzresult Lwt.t
 
-val save_confirmed_slots_histories :
-  rw -> Block_hash.t -> Dal.Slot_history_cache.t -> unit tzresult Lwt.t
+(** The first non garbage collected level available in the node. *)
+val first_available_level : _ t -> int32 tzresult Lwt.t
 
-(**/**)
+(** [check_level_available node_ctxt level] resolves with an error if the
+    [level] is before the first non garbage collected level. *)
+val check_level_available : _ t -> int32 -> unit tzresult Lwt.t
+
+(** The splitting period for the context, as defined in the configuration or
+    challenge window / 5. *)
+val splitting_period : _ t -> int
+
+val get_last_context_split_level : _ t -> int32 option tzresult Lwt.t
+
+val save_context_split_level : rw -> int32 -> unit tzresult Lwt.t
+
+(** {2 Helpers} *)
+
+(** [make_kernel_logger event ?log_kernel_debug_file logs_dir] returns two
+    functions [kernel_debug_logger] and [finaliser], to be used in the node
+    context. [kernel_debug_logger] writes kernel logs to
+    [logs_dir/log_kernel_debug_file] and emits them with the [event]. *)
+val make_kernel_logger :
+  (string -> unit Lwt.t) ->
+  ?log_kernel_debug_file:string ->
+  string ->
+  ((string -> unit Lwt.t) * (unit -> unit Lwt.t)) Lwt.t
+
+(** {2 Synchronization tracking} *)
+
+(** [is_synchronized node_ctxt] returns [true] iff the rollup node has processed
+    the latest available L1 head. *)
+val is_synchronized : _ t -> bool
+
+(** [wait_synchronized node_ctxt] is a promise that resolves when the rollup
+    node whose state is [node_ctxt] is synchronized with L1. If the node is
+    already synchronized, it resolves immediately. *)
+val wait_synchronized : _ t -> unit Lwt.t
 
 module Internal_for_tests : sig
-  (** Create a node context which really stores data on disk but does not
-      connect to any layer 1 node. It is meant to be used in unit tests for the
-      rollup node functions. *)
-  val create_node_context :
-    #Client_context.full ->
-    current_protocol ->
-    data_dir:string ->
-    Kind.t ->
-    Store_sigs.rw t tzresult Lwt.t
+  val write_protocols_in_store :
+    [> `Write] store -> Store.Protocols.value -> unit tzresult Lwt.t
+
+  (** Extract the underlying store from the node context. This function is
+           unsafe to use outside of tests as it breaks the abstraction barrier
+           provided by the [Node_context]. *)
+  val unsafe_get_store : 'a t -> 'a Store.t
 end

@@ -3,9 +3,9 @@
 
 (library
  (name distribution)
- (public_name octez-plonk.distribution)
+ (public_name octez-libs.plonk.distribution)
  (instrumentation (backend bisect_ppx))
  (libraries
-  octez-plonk
-  octez-plonk.aggregation)
+  octez-libs.plonk
+  octez-libs.plonk.aggregation)
  (preprocess (pps ppx_repr)))

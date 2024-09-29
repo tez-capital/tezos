@@ -41,16 +41,21 @@ module Parameters = struct
     protocol : Protocol.t;
     delegates : string list;
     runner : Runner.t option;
-    node : Node.t;
-    client : Client.t;
+    base_dir : string;
+    node_data_dir : string;
+    node_rpc_endpoint : Endpoint.t;
+    dal_node_rpc_endpoint : Endpoint.t option;
+    dal_node_timeout_percentage : int option;
     mutable pending_ready : unit option Lwt.u list;
     votefile : string option;
     liquidity_baking_toggle_vote : liquidity_baking_vote option;
     force_apply : bool;
     remote_mode : bool;
     operations_pool : string option;
-    dal_node : Dal_node.t option;
     minimal_nanotez_per_gas_unit : int option;
+    state_recorder : bool;
+    node_version_check_bypass : bool;
+    node_version_allowed : string option;
   }
 
   type session_state = {mutable ready : bool}
@@ -75,7 +80,7 @@ let set_ready baker =
   trigger_ready baker (Some ())
 
 let handle_raw_stdout baker line =
-  if line =~ rex "^Baker v.+ for .+ started.$" then set_ready baker
+  if line =~ rex "^Baker .+ for .+ started.$" then set_ready baker
 
 let liquidity_baking_votefile ?path vote =
   let votefile =
@@ -92,13 +97,17 @@ let liquidity_baking_votefile ?path vote =
       ]) ;
   votefile
 
-let create ~protocol ?name ?color ?event_pipe ?runner ?(delegates = [])
-    ?votefile ?(liquidity_baking_toggle_vote = Some Pass) ?(force_apply = false)
-    ?(remote_mode = false) ?operations_pool ?dal_node
-    ?minimal_nanotez_per_gas_unit node client =
+let create_from_uris ?runner ~protocol
+    ?(path = Uses.path (Protocol.baker protocol)) ?name ?color ?event_pipe
+    ?(delegates = []) ?votefile ?(liquidity_baking_toggle_vote = Some Pass)
+    ?(force_apply = false) ?(remote_mode = false) ?operations_pool
+    ?dal_node_rpc_endpoint ?dal_node_timeout_percentage
+    ?minimal_nanotez_per_gas_unit ?(state_recorder = false)
+    ?(node_version_check_bypass = false) ?node_version_allowed ~base_dir
+    ~node_data_dir ~node_rpc_endpoint () =
   let baker =
     create
-      ~path:(Protocol.baker protocol)
+      ~path
       ?name
       ?color
       ?event_pipe
@@ -107,20 +116,56 @@ let create ~protocol ?name ?color ?event_pipe ?runner ?(delegates = [])
         protocol;
         delegates;
         runner;
-        node;
-        client;
+        base_dir;
+        node_data_dir;
+        node_rpc_endpoint;
         pending_ready = [];
         votefile;
         liquidity_baking_toggle_vote;
         remote_mode;
         force_apply;
         operations_pool;
-        dal_node;
+        dal_node_rpc_endpoint;
+        dal_node_timeout_percentage;
         minimal_nanotez_per_gas_unit;
+        state_recorder;
+        node_version_check_bypass;
+        node_version_allowed;
       }
   in
   on_stdout baker (handle_raw_stdout baker) ;
   baker
+
+let create ?runner ~protocol ?path ?name ?color ?event_pipe ?(delegates = [])
+    ?votefile ?(liquidity_baking_toggle_vote = Some Pass) ?(force_apply = false)
+    ?(remote_mode = false) ?operations_pool ?dal_node
+    ?dal_node_timeout_percentage ?minimal_nanotez_per_gas_unit
+    ?(state_recorder = false) ?(node_version_check_bypass = false)
+    ?node_version_allowed node client =
+  let dal_node_rpc_endpoint = Option.map Dal_node.as_rpc_endpoint dal_node in
+  create_from_uris
+    ?runner
+    ~protocol
+    ?path
+    ?name
+    ?color
+    ?event_pipe
+    ~delegates
+    ?votefile
+    ~liquidity_baking_toggle_vote
+    ~force_apply
+    ~remote_mode
+    ?operations_pool
+    ?minimal_nanotez_per_gas_unit
+    ?dal_node_rpc_endpoint
+    ?dal_node_timeout_percentage
+    ~state_recorder
+    ~node_version_check_bypass
+    ?node_version_allowed
+    ~base_dir:(Client.base_dir client)
+    ~node_data_dir:(Node.data_dir node)
+    ~node_rpc_endpoint:(Node.as_rpc_endpoint node)
+    ()
 
 let run ?event_level ?event_sections_levels (baker : t) =
   (match baker.status with
@@ -128,11 +173,9 @@ let run ?event_level ?event_sections_levels (baker : t) =
   | Running _ -> Test.fail "baker %s is already running" baker.name) ;
   let delegates = baker.persistent_state.delegates in
   let runner = baker.persistent_state.runner in
-  let node = baker.persistent_state.node in
-  let client = baker.persistent_state.client in
-  let node_addr =
-    Printf.sprintf "http://%s:%d" (Node.rpc_host node) (Node.rpc_port node)
-  in
+  let node_data_dir = baker.persistent_state.node_data_dir in
+  let base_dir = baker.persistent_state.base_dir in
+  let node_addr = Endpoint.as_string baker.persistent_state.node_rpc_endpoint in
   let votefile =
     Cli_arg.optional_arg "votefile" Fun.id baker.persistent_state.votefile
   in
@@ -154,12 +197,14 @@ let run ?event_level ?event_sections_levels (baker : t) =
   let dal_node_endpoint =
     Cli_arg.optional_arg
       "dal-node"
-      (fun node ->
-        Printf.sprintf
-          "http://%s:%d"
-          (Dal_node.rpc_host node)
-          (Dal_node.rpc_port node))
-      baker.persistent_state.dal_node
+      Endpoint.as_string
+      baker.persistent_state.dal_node_rpc_endpoint
+  in
+  let dal_node_timeout_percentage =
+    Cli_arg.optional_arg
+      "dal-node-timeout-percentage"
+      string_of_int
+      baker.persistent_state.dal_node_timeout_percentage
   in
   let minimal_nanotez_per_gas_unit =
     Cli_arg.optional_arg
@@ -167,15 +212,30 @@ let run ?event_level ?event_sections_levels (baker : t) =
       (fun nanotez_per_gas -> string_of_int nanotez_per_gas)
       baker.persistent_state.minimal_nanotez_per_gas_unit
   in
+  let state_recorder =
+    Cli_arg.optional_switch "record-state" baker.persistent_state.state_recorder
+  in
+  let node_version_check_bypass =
+    Cli_arg.optional_switch
+      "node-version-check-bypass"
+      baker.persistent_state.node_version_check_bypass
+  in
+  let node_version_allowed =
+    Cli_arg.optional_arg
+      "node-version-allowed"
+      Fun.id
+      baker.persistent_state.node_version_allowed
+  in
   let run_args =
     if baker.persistent_state.remote_mode then ["remotely"]
-    else ["with"; "local"; "node"; Node.data_dir node]
+    else ["with"; "local"; "node"; node_data_dir]
   in
   let arguments =
-    ["--endpoint"; node_addr; "--base-dir"; Client.base_dir client; "run"]
+    ["--endpoint"; node_addr; "--base-dir"; base_dir; "run"]
     @ run_args @ liquidity_baking_toggle_vote @ votefile @ force_apply
-    @ operations_pool @ dal_node_endpoint @ delegates
-    @ minimal_nanotez_per_gas_unit
+    @ operations_pool @ dal_node_endpoint @ dal_node_timeout_percentage
+    @ delegates @ minimal_nanotez_per_gas_unit @ state_recorder
+    @ node_version_check_bypass @ node_version_allowed
   in
 
   let on_terminate _ =
@@ -208,30 +268,37 @@ let wait_for_ready baker =
         resolver :: baker.persistent_state.pending_ready ;
       check_event baker "Baker started." promise
 
-let init ~protocol ?name ?color ?event_pipe ?runner ?event_sections_levels
-    ?(delegates = []) ?votefile ?liquidity_baking_toggle_vote ?force_apply
-    ?remote_mode ?operations_pool ?dal_node ?minimal_nanotez_per_gas_unit node
-    client =
+let init ?runner ~protocol ?(path = Uses.path (Protocol.baker protocol)) ?name
+    ?color ?event_level ?event_pipe ?event_sections_levels ?(delegates = [])
+    ?votefile ?liquidity_baking_toggle_vote ?force_apply ?remote_mode
+    ?operations_pool ?dal_node ?dal_node_timeout_percentage
+    ?minimal_nanotez_per_gas_unit ?state_recorder ?node_version_check_bypass
+    ?node_version_allowed node client =
   let* () = Node.wait_for_ready node in
   let baker =
     create
+      ?runner
+      ~path
       ~protocol
       ?name
       ?color
       ?event_pipe
-      ?runner
       ?votefile
       ?liquidity_baking_toggle_vote
       ?force_apply
       ?remote_mode
       ?operations_pool
       ?dal_node
+      ?dal_node_timeout_percentage
       ?minimal_nanotez_per_gas_unit
+      ?state_recorder
+      ?node_version_check_bypass
+      ?node_version_allowed
       ~delegates
       node
       client
   in
-  let* () = run ?event_sections_levels baker in
+  let* () = run ?event_level ?event_sections_levels baker in
   let* () = wait_for_ready baker in
   return baker
 

@@ -1,26 +1,9 @@
 (*****************************************************************************)
 (*                                                                           *)
-(* Open Source License                                                       *)
+(* SPDX-License-Identifier: MIT                                              *)
 (* Copyright (c) 2018 Nomadic Development. <contact@tezcore.com>             *)
 (* Copyright (c) 2018-2022 Nomadic Labs, <contact@nomadic-labs.com>          *)
-(*                                                                           *)
-(* Permission is hereby granted, free of charge, to any person obtaining a   *)
-(* copy of this software and associated documentation files (the "Software"),*)
-(* to deal in the Software without restriction, including without limitation *)
-(* the rights to use, copy, modify, merge, publish, distribute, sublicense,  *)
-(* and/or sell copies of the Software, and to permit persons to whom the     *)
-(* Software is furnished to do so, subject to the following conditions:      *)
-(*                                                                           *)
-(* The above copyright notice and this permission notice shall be included   *)
-(* in all copies or substantial portions of the Software.                    *)
-(*                                                                           *)
-(* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR*)
-(* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,  *)
-(* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL   *)
-(* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER*)
-(* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING   *)
-(* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER       *)
-(* DEALINGS IN THE SOFTWARE.                                                 *)
+(* Copyright (c) 2024 TriliTech <contact@trili.tech>                         *)
 (*                                                                           *)
 (*****************************************************************************)
 
@@ -73,6 +56,16 @@ module type T = sig
 
     val fee_needed_to_overtake :
       op_to_overtake:operation -> candidate_op:operation -> int64 option
+
+    type ctxt
+
+    val get_context :
+      Tezos_protocol_environment.Context.t ->
+      head:Block_header.shell_header ->
+      ctxt tzresult Lwt.t
+
+    val sources_from_operation :
+      ctxt -> operation -> Signature.public_key_hash list Lwt.t
   end
 end
 
@@ -81,6 +74,10 @@ module type RPC = sig
 
   val rpc_services :
     Tezos_protocol_environment.rpc_context Tezos_rpc.Directory.directory
+
+  val get_blocks_preservation_cycles :
+    get_context:(unit -> Tezos_protocol_environment.Context.t Lwt.t) ->
+    int option Lwt.t
 end
 
 module No_plugin (Proto : Registered_protocol.T) :
@@ -124,6 +121,12 @@ module No_plugin (Proto : Registered_protocol.T) :
     end
 
     let fee_needed_to_overtake ~op_to_overtake:_ ~candidate_op:_ = None
+
+    type ctxt = unit
+
+    let get_context _ ~head:_ = Lwt_result_syntax.return_unit
+
+    let sources_from_operation _ _ = Lwt_syntax.return_nil
   end
 end
 
@@ -137,6 +140,15 @@ module type METRICS = sig
     unit Lwt.t
 end
 
+module type HTTP_CACHE_HEADERS = sig
+  val hash : Protocol_hash.t
+
+  val get_round_end_time :
+    get_context:(unit -> Tezos_protocol_environment.Context.t Lwt.t) ->
+    Tezos_base.Block_header.shell_header ->
+    Time.System.t option Lwt.t
+end
+
 module Undefined_metrics_plugin (Proto : sig
   val hash : Protocol_hash.t
 end) =
@@ -146,10 +158,24 @@ struct
   let update_metrics ~protocol_metadata:_ _ _ = Lwt.return_unit
 end
 
+module type SHELL_HELPERS = sig
+  val hash : Protocol_hash.t
+
+  val get_blocks_per_cycle :
+    Tezos_protocol_environment.Context.t -> int32 option Lwt.t
+end
+
 let rpc_table : (module RPC) Protocol_hash.Table.t =
   Protocol_hash.Table.create 5
 
 let metrics_table : (module METRICS) Protocol_hash.Table.t =
+  Protocol_hash.Table.create 5
+
+let http_cache_headers_table : (module HTTP_CACHE_HEADERS) Protocol_hash.Table.t
+    =
+  Protocol_hash.Table.create 5
+
+let shell_helpers_table : (module SHELL_HELPERS) Protocol_hash.Table.t =
   Protocol_hash.Table.create 5
 
 let register_rpc (module Rpc : RPC) =
@@ -159,9 +185,30 @@ let register_rpc (module Rpc : RPC) =
 let register_metrics (module Metrics : METRICS) =
   Protocol_hash.Table.replace metrics_table Metrics.hash (module Metrics)
 
+let register_http_cache_headers_plugin
+    (module Http_cache_headers : HTTP_CACHE_HEADERS) =
+  assert (
+    not
+      (Protocol_hash.Table.mem http_cache_headers_table Http_cache_headers.hash)) ;
+  Protocol_hash.Table.add
+    http_cache_headers_table
+    Http_cache_headers.hash
+    (module Http_cache_headers)
+
+let register_shell_helpers (module Shell_helpers : SHELL_HELPERS) =
+  assert (not (Protocol_hash.Table.mem shell_helpers_table Shell_helpers.hash)) ;
+  Protocol_hash.Table.add
+    shell_helpers_table
+    Shell_helpers.hash
+    (module Shell_helpers)
+
 let find_rpc = Protocol_hash.Table.find rpc_table
 
 let find_metrics = Protocol_hash.Table.find metrics_table
+
+let find_http_cache_headers = Protocol_hash.Table.find http_cache_headers_table
+
+let find_shell_helpers = Protocol_hash.Table.find shell_helpers_table
 
 let safe_find_metrics hash =
   match find_metrics hash with
@@ -184,34 +231,69 @@ let register_validation_plugin (module Proto_with_plugin : T) =
     Proto_with_plugin.hash
     (module Proto_with_plugin)
 
-let validation_plugin_not_found =
-  Internal_event.Simple.declare_1
-    ~section:["block"; "validation"]
-    ~name:"validation_plugin_not_found"
-    ~msg:"no validation plugin found for protocol {protocol_hash}"
-    ~level:Warning
-    ~pp1:Protocol_hash.pp
-    ("protocol_hash", Protocol_hash.encoding)
+type error += Ill_formed_operation of Operation_hash.t
+
+let () =
+  register_error_kind
+    `Permanent
+    ~id:"validation.plugin.ill_formed_operation"
+    ~title:"Ill_formed_operation"
+    ~description:"Ill-formed operation filtered"
+    ~pp:(fun ppf oph ->
+      Format.fprintf
+        ppf
+        "Ill-formed operation filtered: %a."
+        Operation_hash.pp
+        oph)
+    Data_encoding.(obj1 (req "operation_hash" Operation_hash.encoding))
+    (function Ill_formed_operation oph -> Some oph | _ -> None)
+    (fun oph -> Ill_formed_operation oph)
+
+module Patch_T (Proto : T) : T = struct
+  include Proto
+
+  let validate_operation ?check_signature validation_state oph op =
+    let open Lwt_syntax in
+    let* status = Proto.Plugin.syntactic_check op in
+    match status with
+    | `Ill_formed -> Lwt_result_syntax.tzfail (Ill_formed_operation oph)
+    | `Well_formed ->
+        Proto.validate_operation ?check_signature validation_state oph op
+
+  module Mempool = struct
+    include Proto.Mempool
+
+    let add_operation ?check_signature ?conflict_handler validation_info
+        mempool_state (oph, op) =
+      let open Lwt_syntax in
+      let* status = Proto.Plugin.syntactic_check op in
+      match status with
+      | `Ill_formed ->
+          Lwt.return_error
+            (Proto.Mempool.Validation_error
+               (TzTrace.make (Ill_formed_operation oph)))
+      | `Well_formed ->
+          Proto.Mempool.add_operation
+            ?check_signature
+            ?conflict_handler
+            validation_info
+            mempool_state
+            (oph, op)
+  end
+end
 
 let proto_with_validation_plugin ~block_hash protocol_hash =
   let open Lwt_result_syntax in
-  match Protocol_hash.Table.find validation_plugin_table protocol_hash with
-  | Some proto_with_plugin -> return proto_with_plugin
-  | None -> (
-      match Registered_protocol.get protocol_hash with
-      | None ->
-          tzfail
-            (Block_validator_errors.Unavailable_protocol
-               {block = block_hash; protocol = protocol_hash})
-      | Some (module Proto : Registered_protocol.T) ->
-          let*! () =
-            match Proto.environment_version with
-            | V0 ->
-                (* This is normal for protocols Genesis and 000
-                   because they don't have a plugin. *)
-                Lwt.return_unit
-            | _ ->
-                Internal_event.Simple.(emit validation_plugin_not_found)
-                  protocol_hash
-          in
-          return (module No_plugin (Proto) : T))
+  let* (module Proto_with_plugin) =
+    match Protocol_hash.Table.find validation_plugin_table protocol_hash with
+    | Some proto_with_plugin -> return proto_with_plugin
+    | None -> (
+        match Registered_protocol.get protocol_hash with
+        | None ->
+            tzfail
+              (Block_validator_errors.Unavailable_protocol
+                 {block = block_hash; protocol = protocol_hash})
+        | Some (module Proto : Registered_protocol.T) ->
+            return (module No_plugin (Proto) : T))
+  in
+  return (module Patch_T (Proto_with_plugin) : T)

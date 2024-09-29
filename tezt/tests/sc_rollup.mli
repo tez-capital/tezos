@@ -32,5 +32,4 @@
 
 val register : protocols:Protocol.t list -> unit
 
-val register_migration :
-  migrate_from:Protocol.t -> migrate_to:Protocol.t -> unit
+val register_protocol_independent : unit -> unit

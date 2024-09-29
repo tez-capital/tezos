@@ -85,25 +85,27 @@ let callback_entrypoint_arg =
     string_parameter
 
 let contract_call_options =
-  Tezos_clic.args9
+  Tezos_clic.args10
     tez_amount_arg
     fee_arg
     Client_proto_context_commands.dry_run_switch
     Client_proto_context_commands.verbose_signing_switch
     gas_limit_arg
+    safety_guard_arg
     storage_limit_arg
     counter_arg
     no_print_source_flag
     fee_parameter_args
 
 let contract_view_options =
-  Tezos_clic.args10
+  Tezos_clic.args11
     callback_entrypoint_arg
     tez_amount_arg
     fee_arg
     Client_proto_context_commands.dry_run_switch
     Client_proto_context_commands.verbose_signing_switch
     gas_limit_arg
+    safety_guard_arg
     storage_limit_arg
     counter_arg
     no_print_source_flag
@@ -176,9 +178,9 @@ let commands_ro () : #Protocol_client_context.full Tezos_clic.command list =
               ~block:cctxt#block
               ~contract
               ~action
-              ~sender:addr
-              ?gas
-              ?payer
+              ~sender:(Some addr)
+              ~gas
+              ~payer
               ~unparsing_mode
               ()
           in
@@ -215,9 +217,9 @@ let commands_ro () : #Protocol_client_context.full Tezos_clic.command list =
               ~block:cctxt#block
               ~contract
               ~action
-              ~sender
-              ?gas
-              ?payer
+              ~sender:(Some sender)
+              ~gas
+              ~payer
               ~unparsing_mode
               ()
           in
@@ -242,10 +244,11 @@ let commands_ro () : #Protocol_client_context.full Tezos_clic.command list =
               cctxt
               ~chain:cctxt#chain
               ~block:cctxt#block
+              ~sender:None
               ~contract
               ~action
-              ?gas
-              ?payer
+              ~gas
+              ~payer
               ~unparsing_mode
               ()
           in
@@ -273,6 +276,7 @@ let commands_ro () : #Protocol_client_context.full Tezos_clic.command list =
                dry_run,
                verbose_signing,
                gas_limit,
+               safety_guard,
                storage_limit,
                counter,
                no_print_source,
@@ -303,6 +307,7 @@ let commands_ro () : #Protocol_client_context.full Tezos_clic.command list =
               ~src_sk
               ~tez_amount
               ?gas_limit
+              ?safety_guard
               ?storage_limit
               ?counter
               ~fee_parameter
@@ -341,6 +346,7 @@ let commands_ro () : #Protocol_client_context.full Tezos_clic.command list =
                dry_run,
                verbose_signing,
                gas_limit,
+               safety_guard,
                storage_limit,
                counter,
                no_print_source,
@@ -372,6 +378,7 @@ let commands_ro () : #Protocol_client_context.full Tezos_clic.command list =
               ~src_sk
               ~tez_amount
               ?gas_limit
+              ?safety_guard
               ?storage_limit
               ?counter
               ~fee_parameter
@@ -407,6 +414,7 @@ let commands_ro () : #Protocol_client_context.full Tezos_clic.command list =
                dry_run,
                verbose_signing,
                gas_limit,
+               safety_guard,
                storage_limit,
                counter,
                no_print_source,
@@ -436,6 +444,7 @@ let commands_ro () : #Protocol_client_context.full Tezos_clic.command list =
               ~src_sk
               ~tez_amount
               ?gas_limit
+              ?safety_guard
               ?storage_limit
               ?counter
               ~fee_parameter
@@ -458,13 +467,14 @@ let commands_rw () : #Protocol_client_context.full Tezos_clic.command list =
       command
         ~group
         ~desc:"Transfer tokens between two given accounts"
-        (Tezos_clic.args10
+        (Tezos_clic.args11
            implicit_as_arg
            tez_amount_arg
            fee_arg
            Client_proto_context_commands.dry_run_switch
            Client_proto_context_commands.verbose_signing_switch
            gas_limit_arg
+           safety_guard_arg
            storage_limit_arg
            counter_arg
            no_print_source_flag
@@ -479,6 +489,7 @@ let commands_rw () : #Protocol_client_context.full Tezos_clic.command list =
                dry_run,
                verbose_signing,
                gas_limit,
+               safety_guard,
                storage_limit,
                counter,
                no_print_source,
@@ -510,6 +521,7 @@ let commands_rw () : #Protocol_client_context.full Tezos_clic.command list =
               ~src_sk:caller_sk
               ~tez_amount
               ?gas_limit
+              ?safety_guard
               ?storage_limit
               ?counter
               ~fee_parameter
@@ -540,6 +552,7 @@ let commands_rw () : #Protocol_client_context.full Tezos_clic.command list =
                dry_run,
                verbose_signing,
                gas_limit,
+               safety_guard,
                storage_limit,
                counter,
                no_print_source,
@@ -568,6 +581,7 @@ let commands_rw () : #Protocol_client_context.full Tezos_clic.command list =
               ~src_sk
               ~tez_amount
               ?gas_limit
+              ?safety_guard
               ?storage_limit
               ?counter
               ~fee_parameter
@@ -586,12 +600,13 @@ let commands_rw () : #Protocol_client_context.full Tezos_clic.command list =
         ~desc:
           "Execute multiple token transfers from a single source account. If \
            one of the token transfers fails, none of them are executed."
-        (args9
+        (args10
            default_fee_arg
            implicit_as_arg
            Client_proto_context_commands.dry_run_switch
            Client_proto_context_commands.verbose_signing_switch
            default_gas_limit_arg
+           safety_guard_arg
            default_storage_limit_arg
            counter_arg
            no_print_source_flag
@@ -644,6 +659,7 @@ let commands_rw () : #Protocol_client_context.full Tezos_clic.command list =
                dry_run,
                verbose_signing,
                gas_limit,
+               safety_guard,
                storage_limit,
                counter,
                no_print_source,
@@ -677,6 +693,7 @@ let commands_rw () : #Protocol_client_context.full Tezos_clic.command list =
                   ?default_fee:fee
                   ?default_gas_limit:gas_limit
                   ?default_storage_limit:storage_limit
+                  ?safety_guard
                   ()
               in
               let*! _ =

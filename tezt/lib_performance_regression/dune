@@ -2,13 +2,13 @@
 ; Edit file manifest/main.ml instead.
 
 (library
- (name tezt_performance_regression)
- (public_name tezt-performance-regression)
+ (name tezt_tezos_tezt_performance_regression)
+ (public_name tezt-tezos.tezt-performance-regression)
  (libraries
-  tezt
+  octez-libs.tezt-wrapper
   uri
-  cohttp-lwt-unix)
+  octez-libs.cohttp-lwt-unix)
  (flags
   (:standard)
-  -open Tezt
-  -open Tezt.Base))
+  -open Tezt_wrapper
+  -open Tezt_wrapper.Base))

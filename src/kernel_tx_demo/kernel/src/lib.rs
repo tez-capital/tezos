@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2022-2023 TriliTech <contact@trili.tech>
+// SPDX-FileCopyrightText: 2022-2024 TriliTech <contact@trili.tech>
 // SPDX-FileCopyrightText: 2023 Marigold <contact@marigold.dev>
 // SPDX-FileCopyrightText: 2022-2023 Nomadic Labs <contact@nomadic-labs.com>
 //
@@ -14,6 +14,8 @@
 extern crate alloc;
 extern crate tezos_crypto_rs as crypto;
 
+#[cfg(feature = "dal")]
+pub mod dal;
 pub mod inbox;
 pub mod storage;
 pub mod transactions;
@@ -23,6 +25,7 @@ pub(crate) mod fake_hash;
 
 use crypto::hash::{ContractTz1Hash, HashTrait, HashType, SmartRollupHash};
 use inbox::DepositFromInternalPayloadError;
+use tezos_smart_rollup::entrypoint;
 use tezos_smart_rollup_core::MAX_INPUT_MESSAGE_SIZE;
 use tezos_smart_rollup_encoding::inbox::ExternalMessageFrame;
 use tezos_smart_rollup_encoding::michelson::ticket::{StringTicket, Ticket};
@@ -36,13 +39,16 @@ use tezos_smart_rollup_encoding::inbox::{InboxMessage, InternalInboxMessage, Tra
 use tezos_smart_rollup_host::runtime::{Runtime, RuntimeError, ValueType};
 use transactions::external_inbox::ProcessExtMsgError;
 use transactions::process::execute_one_operation;
-use transactions::store::CACHED_MESSAGES_STORE_PREFIX;
+use transactions::store::{CACHED_MESSAGES_STORE_PREFIX, DAL_PAYLOAD_PATH};
 
+use crate::inbox::v1::ParsedBatch;
 use crate::inbox::InboxDeposit;
 use crate::storage::{
     deposit_ticket_to_storage, init_account_storage, AccountStorage, AccountStorageError,
 };
+use crate::transactions::external_inbox::process_batch_message;
 use crate::transactions::store::cached_message_path;
+use crate::transactions::withdrawal::process_withdrawals;
 
 impl TryFrom<MichelsonPair<MichelsonString, StringTicket>> for InboxDeposit {
     type Error = DepositFromInternalPayloadError;
@@ -56,6 +62,7 @@ impl TryFrom<MichelsonPair<MichelsonString, StringTicket>> for InboxDeposit {
 }
 
 /// Entrypoint of the *transactions* kernel.
+#[cfg_attr(feature = "tx-kernel", entrypoint::main)]
 pub fn transactions_run<Host>(host: &mut Host)
 where
     Host: Runtime,
@@ -88,6 +95,36 @@ where
             debug_msg!(host, "Error enumerating cached header payload {}", _err);
         }
         return;
+    } else if let Ok(data) = host.store_read_all(&DAL_PAYLOAD_PATH) {
+        // TODO: https://gitlab.com/tezos/tezos/-/issues/6393
+        // Enable processing DAL payload incrementally with reboots.
+        #[cfg(feature = "debug")]
+        debug_msg!(host, "Found cached DAL payload, processing\n");
+        match ParsedBatch::parse(&data) {
+            Ok((_, batch)) => {
+                #[cfg(feature = "debug")]
+                debug_msg!(host, "Process parsed batch {:?}\n", batch);
+                for withdrawals in process_batch_message(host, &mut account_storage, batch) {
+                    process_withdrawals(host, withdrawals)
+                }
+            }
+            Err(_e) => {
+                #[cfg(feature = "debug")]
+                debug_msg!(host, "Failed to parse DAL payload. Error: {:?}\n", _e);
+            }
+        }
+        match host.store_delete(&DAL_PAYLOAD_PATH) {
+            Ok(()) => {}
+            Err(_e) => {
+                #[cfg(feature = "debug")]
+                debug_msg!(
+                    host,
+                    "Failed to delete processed DAL payload. Error: {:?}\n",
+                    _e
+                );
+            }
+        }
+        return;
     }
 
     #[cfg(feature = "debug")]
@@ -107,6 +144,7 @@ where
         if let Err(_err) = filter_inbox_message(
             host,
             &mut account_storage,
+            message.level,
             message.as_ref(),
             &mut counter,
             &rollup_address,
@@ -137,7 +175,9 @@ enum TransactionError<'a> {
     #[error("Invalid internal inbox message, expected deposit: {0}")]
     InvalidInternalInbox(#[from] DepositFromInternalPayloadError),
     #[error("Error storing ticket on rollup")]
-    StorageError(#[from] AccountStorageError),
+    AccountStorageError(#[from] AccountStorageError),
+    #[error("Error storing DAL related parameters")]
+    DalStorageError(#[from] storage::dal::StorageError),
     #[error("Failed to process external message: {0}")]
     ProcessExternalMsgError(#[from] ProcessExtMsgError),
     #[error("Failed to construct path: {0:?}")]
@@ -149,6 +189,7 @@ enum TransactionError<'a> {
 fn filter_inbox_message<'a, Host: Runtime>(
     host: &mut Host,
     account_storage: &mut AccountStorage,
+    _inbox_level: u32,
     inbox_message: &'a [u8],
     counter: &mut u32,
     rollup_address: &SmartRollupHash,
@@ -159,12 +200,38 @@ fn filter_inbox_message<'a, Host: Runtime>(
     .map_err(TransactionError::MalformedInboxMessage)?;
 
     match message {
+        InboxMessage::Internal(_msg @ InternalInboxMessage::StartOfLevel) => {
+            #[cfg(feature = "debug")]
+            debug_msg!(host, "InboxMetadata: {}\n", _msg);
+            #[cfg(feature = "dal")]
+            {
+                // TODO: https://gitlab.com/tezos/tezos/-/issues/6270
+                // Make DAL parameters available to the kernel.
+                let attestation_lag = 4;
+                let slot_size = 32768;
+                let page_size = 128;
+                let num_pages = slot_size / page_size;
+                let published_level = (_inbox_level - attestation_lag) as i32;
+                // TODO: https://gitlab.com/tezos/tezos/-/issues/6400
+                // Make it possible to track multiple slot indexes.
+                let slot_index = storage::dal::get_or_set_slot_index(host, 0 as u8)?;
+                dal::store_dal_slot(
+                    host,
+                    published_level,
+                    num_pages,
+                    page_size,
+                    slot_index,
+                    DAL_PAYLOAD_PATH.into(),
+                );
+            }
+            Ok(())
+        }
         InboxMessage::Internal(InternalInboxMessage::Transfer(Transfer {
             payload,
             destination,
             ..
         })) => {
-            if rollup_address.0 != destination.hash().0 {
+            if rollup_address != destination.hash() {
                 #[cfg(feature = "debug")]
                 debug_msg!(
                     host,
@@ -186,9 +253,7 @@ fn filter_inbox_message<'a, Host: Runtime>(
         }
 
         InboxMessage::Internal(
-            _msg @ (InternalInboxMessage::StartOfLevel
-            | InternalInboxMessage::EndOfLevel
-            | InternalInboxMessage::InfoPerLevel(..)),
+            _msg @ (InternalInboxMessage::EndOfLevel | InternalInboxMessage::InfoPerLevel(..)),
         ) => {
             #[cfg(feature = "debug")]
             debug_msg!(host, "InboxMetadata: {}\n", _msg);
@@ -246,13 +311,6 @@ enum CachedTransactionError {
 const MAX_ENVELOPE_CONTENT_SIZE: usize =
     MAX_INPUT_MESSAGE_SIZE - HashType::SmartRollupHash.size() - 2;
 
-/// Define the `kernel_run` for the transactions kernel.
-#[cfg(feature = "tx-kernel")]
-pub mod tx_kernel {
-    use tezos_smart_rollup_entrypoint::kernel_entry;
-    kernel_entry!(crate::transactions_run);
-}
-
 #[cfg(test)]
 mod test {
     use tezos_smart_rollup_encoding::{
@@ -278,7 +336,7 @@ mod test {
         let mut mock_runtime = MockHost::default();
 
         let destination =
-            ContractTz1Hash::from_b58check("tz4MSfZsn6kMDczShy8PMeB628TNukn9hi2K").unwrap();
+            ContractTz1Hash::from_b58check("tz1XdRrrqrMfsFKA8iuw53xHzug9ipr6MuHq").unwrap();
 
         let ticket_creator =
             Contract::from_b58check("KT1JW6PwhfaEJu6U3ENsxUeja48AdtqSoekd").unwrap();
@@ -316,7 +374,7 @@ mod test {
         let mut mock_runtime = MockHost::default();
 
         // setup message
-        let receiver = gen_ed25519_keys().0.pk_hash().unwrap();
+        let receiver = gen_ed25519_keys().0.pk_hash();
         let originator = Contract::Originated(
             ContractKt1Hash::from_b58check("KT1ThEdxfUcWUwqsdergy3QnbCWGHSUHeHJq").unwrap(),
         );

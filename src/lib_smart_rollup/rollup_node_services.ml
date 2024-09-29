@@ -4,6 +4,7 @@
 (* Copyright (c) 2021 Nomadic Labs, <contact@nomadic-labs.com>               *)
 (* Copyright (c) 2023 TriliTech <contact@trili.tech>                         *)
 (* Copyright (c) 2023 Functori, <contact@functori.com>                       *)
+(* Copyright (c) 2023 Marigold <contact@marigold.dev>                        *)
 (*                                                                           *)
 (* Permission is hereby granted, free of charge, to any person obtaining a   *)
 (* copy of this software and associated documentation files (the "Software"),*)
@@ -84,8 +85,113 @@ type message_status =
       published_at_level : int32;
     }
 
+type gc_info = {
+  first_available_level : int32;
+  last_gc_started_at : int32 option;
+  last_context_split_level : int32 option;
+  last_successful_gc_target : int32 option;
+}
+
+type sync_result =
+  | Synchronized
+  | Synchronizing of {
+      processed_level : int32;
+      l1_head_level : int32;
+      percentage_done : float;
+    }
+
+type l1_health = {
+  connection : [`Connected | `Disconnected | `Reconnecting];
+  blocks_late : int32;
+  last_seen_head : (Block_hash.t * int32 * Time.Protocol.t) option;
+}
+
+type health = {
+  healthy : bool;
+  degraded : bool;
+  l1 : l1_health;
+  active_workers : (string * [`Running | `Crashed of error]) list;
+}
+
+type version = {
+  version : string;
+  store_version : string;
+  context_version : string;
+}
+
+type injector_operation = {
+  op : L1_operation.t;
+  errors : int;
+  last_error : tztrace option;
+}
+
 module Encodings = struct
   open Data_encoding
+
+  let version =
+    conv
+      (fun {version; store_version; context_version} ->
+        (version, store_version, context_version))
+      (fun (version, store_version, context_version) ->
+        {version; store_version; context_version})
+    @@ obj3
+         (req "version" string)
+         (req "store_version" string)
+         (req "context_version" string)
+
+  let l1_health =
+    conv
+      (fun {connection; blocks_late; last_seen_head} ->
+        (connection, blocks_late, last_seen_head))
+      (fun (connection, blocks_late, last_seen_head) ->
+        {connection; blocks_late; last_seen_head})
+    @@ obj3
+         (req
+            "connection"
+            (string_enum
+               [
+                 ("connected", `Connected);
+                 ("reconnecting", `Reconnecting);
+                 ("disconnected", `Disconnected);
+               ]))
+         (req "blocks_late" int32)
+         (opt
+            "last_seen_head"
+            (obj3
+               (req "hash" Block_hash.encoding)
+               (req "level" int32)
+               (req "timestamp" Time.Protocol.encoding)))
+
+  let health =
+    conv
+      (fun {healthy; degraded; l1; active_workers} ->
+        (healthy, degraded, l1, active_workers))
+      (fun (healthy, degraded, l1, active_workers) ->
+        {healthy; degraded; l1; active_workers})
+    @@ obj4
+         (req "healthy" bool)
+         (req "degraded" bool)
+         (req "l1" l1_health)
+         (req
+            "active_workers"
+            (list
+               (tup2
+                  string
+                  (union
+                     [
+                       case
+                         (Tag 0)
+                         ~title:"running"
+                         (constant "running")
+                         (function `Running -> Some () | _ -> None)
+                         (fun () -> `Running);
+                       case
+                         (Tag 1)
+                         ~title:"crashed"
+                         (obj1 (req "crashed" error_encoding))
+                         (function `Crashed e -> Some e | _ -> None)
+                         (fun e -> `Crashed e);
+                     ]))))
 
   let commitment_with_hash =
     obj2
@@ -99,10 +205,18 @@ module Encodings = struct
       (opt "first_published_at_level" int32)
       (opt "published_at_level" int32)
 
-  let queued_message =
+  let outbox =
     obj2
-      (req "hash" L2_message.Hash.encoding)
-      (req "message" L2_message.encoding)
+      (req "outbox_level" int32)
+      (req
+         "messages"
+         (list
+            (obj2
+               (req "message_index" int31)
+               (opt "message" Outbox_message.summary_encoding))))
+
+  let queued_message =
+    obj2 (req "id" L2_message.Id.encoding) (req "message" L2_message.encoding)
 
   let batcher_queue = list queued_message
 
@@ -176,8 +290,7 @@ module Encodings = struct
                     finalized,
                     cemented )
             | _ -> None)
-          (fun ((), op, (oph, op_index, l1_block, l1_level), finalized, cemented)
-               ->
+          (fun ((), op, (oph, op_index, l1_block, l1_level), finalized, cemented) ->
             Included
               {op; oph; op_index; l1_block; l1_level; finalized; cemented});
         case
@@ -253,6 +366,234 @@ module Encodings = struct
 
   let message_status_output =
     merge_objs (obj1 (opt "content" (string' Hex))) message_status
+
+  let gc_info : gc_info Data_encoding.t =
+    conv
+      (fun {
+             first_available_level;
+             last_gc_started_at;
+             last_context_split_level;
+             last_successful_gc_target;
+           } ->
+        ( first_available_level,
+          last_gc_started_at,
+          last_context_split_level,
+          last_successful_gc_target ))
+      (fun ( first_available_level,
+             last_gc_started_at,
+             last_context_split_level,
+             last_successful_gc_target ) ->
+        {
+          first_available_level;
+          last_gc_started_at;
+          last_context_split_level;
+          last_successful_gc_target;
+        })
+    @@ obj4
+         (req
+            "first_available_level"
+            int32
+            ~description:
+              "First level where data is guaranteed to be available in the \
+               rollup node.")
+         (opt
+            "last_gc_level"
+            int32
+            ~description:"The level at which the last GC was triggered.")
+         (opt
+            "last_context_split_level"
+            int32
+            ~description:
+              "The level at which the context was split for the last time. \
+               Commits before this level are in other chunks.")
+         (opt
+            "last_successful_gc_target"
+            int32
+            ~description:
+              "The level which was the target of the last successful GC.")
+
+  let ocaml_gc_stat_encoding =
+    let open Gc in
+    conv
+      (fun {
+             minor_words;
+             promoted_words;
+             major_words;
+             minor_collections;
+             major_collections;
+             forced_major_collections;
+             heap_words;
+             heap_chunks;
+             live_words;
+             live_blocks;
+             free_words;
+             free_blocks;
+             largest_free;
+             fragments;
+             compactions;
+             top_heap_words;
+             stack_size;
+           } ->
+        ( ( minor_words,
+            promoted_words,
+            major_words,
+            minor_collections,
+            major_collections,
+            forced_major_collections ),
+          ( (heap_words, heap_chunks, live_words, live_blocks, free_words),
+            ( free_blocks,
+              largest_free,
+              fragments,
+              compactions,
+              top_heap_words,
+              stack_size ) ) ))
+      (fun ( ( minor_words,
+               promoted_words,
+               major_words,
+               minor_collections,
+               major_collections,
+               forced_major_collections ),
+             ( (heap_words, heap_chunks, live_words, live_blocks, free_words),
+               ( free_blocks,
+                 largest_free,
+                 fragments,
+                 compactions,
+                 top_heap_words,
+                 stack_size ) ) ) ->
+        {
+          minor_words;
+          promoted_words;
+          major_words;
+          minor_collections;
+          major_collections;
+          forced_major_collections;
+          heap_words;
+          heap_chunks;
+          live_words;
+          live_blocks;
+          free_words;
+          free_blocks;
+          largest_free;
+          fragments;
+          compactions;
+          top_heap_words;
+          stack_size;
+        })
+      (merge_objs
+         (obj6
+            (req "minor_words" float)
+            (req "promoted_words" float)
+            (req "major_words" float)
+            (req "minor_collections" int31)
+            (req "major_collections" int31)
+            (req "forced_major_collections" int31))
+         (merge_objs
+            (obj5
+               (req "heap_words" int31)
+               (req "heap_chunks" int31)
+               (req "live_words" int31)
+               (req "live_blocks" int31)
+               (req "free_words" int31))
+            (obj6
+               (req "free_blocks" int31)
+               (req "largest_free" int31)
+               (req "fragments" int31)
+               (req "compactions" int31)
+               (req "top_heap_words" int31)
+               (req "stack_size" int31))))
+
+  let mem_stat_encoding =
+    let open Memory in
+    union
+      ~tag_size:`Uint8
+      [
+        case
+          (Tag 0)
+          (conv
+             (fun {page_size; size; resident; shared; text; lib; data; dt} ->
+               (page_size, size, resident, shared, text, lib, data, dt))
+             (fun (page_size, size, resident, shared, text, lib, data, dt) ->
+               {page_size; size; resident; shared; text; lib; data; dt})
+             (obj8
+                (req "page_size" int31)
+                (req "size" int64)
+                (req "resident" int64)
+                (req "shared" int64)
+                (req "text" int64)
+                (req "lib" int64)
+                (req "data" int64)
+                (req "dt" int64)))
+          ~title:"Linux_proc_statm"
+          (function Statm x -> Some x | _ -> None)
+          (function res -> Statm res);
+        case
+          (Tag 1)
+          (conv
+             (fun {page_size; mem; resident} -> (page_size, mem, resident))
+             (fun (page_size, mem, resident) -> {page_size; mem; resident})
+             (obj3
+                (req "page_size" int31)
+                (req "mem" float)
+                (req "resident" int64)))
+          ~title:"Darwin_ps"
+          (function Ps x -> Some x | _ -> None)
+          (function res -> Ps res);
+      ]
+
+  let synchronization_result =
+    union
+      [
+        case
+          ~title:"synchronized"
+          (Tag 0)
+          (constant "synchronized")
+          (function Synchronized -> Some () | _ -> None)
+          (fun () -> Synchronized);
+        case
+          ~title:"synchronizing"
+          (Tag 1)
+          (obj1
+             (req
+                "synchronizing"
+                (obj3
+                   (req "processed_level" int32)
+                   (req "l1_head_level" int32)
+                   (req "percentage_done" float))))
+          (function
+            | Synchronizing {processed_level; l1_head_level; percentage_done} ->
+                Some (processed_level, l1_head_level, percentage_done)
+            | _ -> None)
+          (fun (processed_level, l1_head_level, percentage_done) ->
+            Synchronizing {processed_level; l1_head_level; percentage_done});
+      ]
+
+  let injector_queues_total =
+    obj2
+      (req
+         "injectors"
+         (list
+            (obj2
+               (req "tags" (list Operation_kind.encoding))
+               (req "queue_size" int31))))
+      (req "total" int31)
+
+  let injector_operation =
+    conv
+      (fun {op; errors; last_error} -> (op, (errors, last_error)))
+      (fun (op, (errors, last_error)) -> {op; errors; last_error})
+    @@ merge_objs
+         L1_operation.encoding
+         (obj1
+            (dft
+               "errors"
+               (obj2 (req "count" int31) (opt "last" trace_encoding))
+               (0, None)))
+
+  let injector_queues =
+    list
+      (obj2
+         (req "tags" (list Operation_kind.encoding))
+         (req "queue" (list injector_operation)))
 end
 
 module Arg = struct
@@ -287,15 +628,51 @@ module Arg = struct
       ~destruct:destruct_block_id
       ()
 
-  let l2_message_hash : L2_message.hash Tezos_rpc.Arg.t =
+  let l2_message_id : L2_message.id Tezos_rpc.Arg.t =
     Tezos_rpc.Arg.make
-      ~descr:"A L2 message hash."
-      ~name:"l2_message_hash"
-      ~construct:L2_message.Hash.to_b58check
+      ~descr:"A L2 message id."
+      ~name:"l2_message_id"
+      ~construct:L2_message.Id.to_b58check
       ~destruct:(fun s ->
-        L2_message.Hash.of_b58check_opt s
-        |> Option.to_result ~none:"Invalid L2 message hash")
+        L2_message.Id.of_b58check_opt s
+        |> Option.to_result ~none:"Invalid L2 message id")
       ()
+
+  let commitment_hash : Commitment.Hash.t Tezos_rpc.Arg.t =
+    Tezos_rpc.Arg.make
+      ~descr:"A commitment hash."
+      ~name:"commitment_hash"
+      ~construct:Commitment.Hash.to_b58check
+      ~destruct:(fun s ->
+        Commitment.Hash.of_b58check_opt s
+        |> Option.to_result ~none:"Invalid commitment hash")
+      ()
+
+  let operation_kind : Operation_kind.t Tezos_rpc.Arg.t =
+    Tezos_rpc.Arg.make
+      ~descr:"A kind of operation for the injector."
+      ~name:"operation_kind"
+      ~construct:Operation_kind.to_string
+      ~destruct:(fun s ->
+        Operation_kind.of_string s
+        |> Option.to_result ~none:"Invalid operation kind")
+      ()
+end
+
+module Query = struct
+  type proto_query = {protocol : Protocol_hash.t option}
+
+  let proto_query : proto_query Tezos_rpc.Query.t =
+    let open Tezos_rpc.Query in
+    query (fun protocol -> {protocol})
+    |+ opt_field "protocol" Protocol_hash.rpc_arg (fun p -> p.protocol)
+    |> seal
+
+  let operation_tag_query : Operation_kind.t option Tezos_rpc.Query.t =
+    let open Tezos_rpc.Query in
+    query (fun tag -> tag)
+    |+ opt_field "tag" Arg.operation_kind (fun k -> k)
+    |> seal
 end
 
 module type PREFIX = sig
@@ -355,6 +732,13 @@ module Global = struct
       ~query:Tezos_rpc.Query.empty
       ~output:(Data_encoding.option Encodings.commitment_with_hash)
       (path / "last_stored_commitment")
+
+  let global_block_watcher =
+    Tezos_rpc.Service.get_service
+      ~description:"Monitor and streaming the L2 blocks"
+      ~query:Tezos_rpc.Query.empty
+      ~output:Sc_rollup_block.encoding
+      (path / "monitor_blocks")
 end
 
 module Local = struct
@@ -384,10 +768,45 @@ module Local = struct
         (Data_encoding.option Encodings.commitment_with_hash_and_level_infos)
       (path / "last_published_commitment")
 
+  let commitment =
+    Tezos_rpc.Service.get_service
+      ~description:"Commitment computed and published by the node"
+      ~query:Tezos_rpc.Query.empty
+      ~output:
+        (Data_encoding.option Encodings.commitment_with_hash_and_level_infos)
+      (path / "commitments" /: Arg.commitment_hash)
+
+  let outbox_pending_executable =
+    Tezos_rpc.Service.get_service
+      ~description:"Pending outbox messages which can be executed"
+      ~query:Tezos_rpc.Query.empty
+      ~output:(Data_encoding.list Encodings.outbox)
+      (path / "outbox" / "pending" / "executable")
+
+  let outbox_pending_unexecutable =
+    Tezos_rpc.Service.get_service
+      ~description:"Pending outbox messages which cannot yet be executed"
+      ~query:Tezos_rpc.Query.empty
+      ~output:(Data_encoding.list Encodings.outbox)
+      (path / "outbox" / "pending" / "unexecutable")
+
+  let gc_info =
+    Tezos_rpc.Service.get_service
+      ~description:"Information about garbage collection"
+      ~query:Tezos_rpc.Query.empty
+      ~output:Encodings.gc_info
+      (path / "gc_info")
+
   let injection =
+    let query_drop_duplicate : bool Tezos_rpc.Query.t =
+      let open Tezos_rpc.Query in
+      query Fun.id
+      |+ field "drop_duplicate" Tezos_rpc.Arg.bool false Fun.id
+      |> seal
+    in
     Tezos_rpc.Service.post_service
       ~description:"Inject messages in the batcher's queue"
-      ~query:Tezos_rpc.Query.empty
+      ~query:query_drop_duplicate
       ~input:
         Data_encoding.(
           def
@@ -397,9 +816,9 @@ module Local = struct
       ~output:
         Data_encoding.(
           def
-            "message_hashes"
-            ~description:"Hashes of injected L2 messages"
-            (list L2_message.Hash.encoding))
+            "message_ids"
+            ~description:"Ids of injected L2 messages"
+            (list L2_message.Id.encoding))
       (path / "batcher" / "injection")
 
   let batcher_queue =
@@ -414,5 +833,162 @@ module Local = struct
       ~description:"Retrieve an L2 message and its status"
       ~query:Tezos_rpc.Query.empty
       ~output:Encodings.message_status_output
-      (path / "batcher" / "queue" /: Arg.l2_message_hash)
+      (path / "batcher" / "queue" /: Arg.l2_message_id)
+
+  let dal_injection =
+    let input_encoding =
+      Data_encoding.(obj1 (req "slot_content" Data_encoding.Variable.string))
+    in
+    Tezos_rpc.Service.post_service
+      ~description:"Inject the given slot in the DAL queue"
+      ~query:Tezos_rpc.Query.empty
+      ~input:
+        Data_encoding.(
+          def "dal_slot" ~description:"Slot to inject" input_encoding)
+      ~output:Data_encoding.unit
+      (path / "dal" / "injection")
+
+  let injector_operation_status =
+    Tezos_rpc.Service.get_service
+      ~description:
+        "Retrieve the status of the injected operation using its injector ID."
+      ~query:Tezos_rpc.Query.empty
+      ~output:Encodings.message_status
+      (path / "injector" / "operation"
+     /: Tezos_crypto.Hashed.Injector_operations_hash.rpc_arg / "status")
+
+  let dal_injected_operations_statuses =
+    Tezos_rpc.Service.get_service
+      ~description:
+        "Retrieve the statuses of all known operations injected via DAL."
+      ~query:Tezos_rpc.Query.empty
+      ~output:
+        Data_encoding.(
+          list
+            (obj2
+               (req "id" Tezos_crypto.Hashed.Injector_operations_hash.encoding)
+               (req "status" Encodings.message_status)))
+      (path / "dal" / "injected" / "operations" / "statuses")
+
+  let forget_dal_injection_id =
+    Tezos_rpc.Service.post_service
+      ~description:"Forget information about the injection whose id is given"
+      ~query:Tezos_rpc.Query.empty
+      ~input:Data_encoding.unit
+      ~output:Data_encoding.unit
+      (path / "dal" / "injection"
+     /: Tezos_crypto.Hashed.Injector_operations_hash.rpc_arg / "forget")
+
+  let dal_slot_indices =
+    let input_encoding = Data_encoding.(obj1 (req "indices" (list uint8))) in
+    Tezos_rpc.Service.post_service
+      ~description:
+        "Provide the (new) list of slot indices to use to the rollup node's \
+         DAL injector"
+      ~query:Tezos_rpc.Query.empty
+      ~input:
+        Data_encoding.(
+          def "slot_indices" ~description:"Slot indices to set" input_encoding)
+      ~output:Data_encoding.unit
+      (path / "dal" / "slot" / "indices")
+
+  let synchronized =
+    Tezos_rpc.Service.get_service
+      ~description:
+        "Wait for the node to have synchronized its L2 chain with the L1 \
+         chain, streaming its progress."
+      ~query:Tezos_rpc.Query.empty
+      ~output:Encodings.synchronization_result
+      (path / "synchronized")
+end
+
+module Root = struct
+  open Tezos_rpc.Path
+
+  include Make_services (struct
+    type prefix = unit
+
+    let prefix = root
+  end)
+
+  let ping =
+    Tezos_rpc.Service.get_service
+      ~description:
+        "Returns an empty response if the rollup node can answer requests"
+      ~query:Tezos_rpc.Query.empty
+      ~output:Data_encoding.unit
+      (path / "ping")
+
+  let health =
+    Tezos_rpc.Service.get_service
+      ~description:"Returns health status information for the rollup node"
+      ~query:Tezos_rpc.Query.empty
+      ~output:Encodings.health
+      (path / "health")
+
+  let version =
+    Tezos_rpc.Service.get_service
+      ~description:"Returns the version information of the rollup node"
+      ~query:Tezos_rpc.Query.empty
+      ~output:Encodings.version
+      (path / "version")
+
+  let ocaml_gc =
+    Tezos_rpc.Service.get_service
+      ~description:"Gets stats from the OCaml Garbage Collector"
+      ~query:Tezos_rpc.Query.empty
+      ~output:Encodings.ocaml_gc_stat_encoding
+      (path / "stats" / "ocaml_gc")
+
+  let memory =
+    Tezos_rpc.Service.get_service
+      ~description:"Gets memory usage stats"
+      ~query:Tezos_rpc.Query.empty
+      ~output:Encodings.mem_stat_encoding
+      (path / "stats" / "memory")
+
+  let openapi =
+    Tezos_rpc.Service.get_service
+      ~description:"OpenAPI specification of RPCs for rollup node"
+      ~query:Query.proto_query
+      ~output:Data_encoding.json
+      (path / "openapi")
+end
+
+module Admin = struct
+  open Tezos_rpc.Path
+
+  include Make_services (struct
+    type prefix = unit
+
+    let prefix = open_root / "admin"
+  end)
+
+  let injector_queues_total =
+    Tezos_rpc.Service.get_service
+      ~description:"Get total operations queued in injectors"
+      ~query:Tezos_rpc.Query.empty
+      ~output:Encodings.injector_queues_total
+      (path / "injector" / "queues" / "total")
+
+  let injector_queues =
+    Tezos_rpc.Service.get_service
+      ~description:"Get operation queues of injectors"
+      ~query:Query.operation_tag_query
+      ~output:Encodings.injector_queues
+      (path / "injector" / "queues")
+
+  let clear_injector_queues =
+    Tezos_rpc.Service.delete_service
+      ~description:"Clear operation queues of injectors"
+      ~query:Query.operation_tag_query
+      ~output:Data_encoding.unit
+      (path / "injector" / "queues")
+
+  let cancel_gc =
+    Tezos_rpc.Service.get_service
+      ~description:"Cancel any ongoing GC"
+      ~query:Tezos_rpc.Query.empty
+      ~output:Data_encoding.bool
+      (path / "cancel_gc")
 end

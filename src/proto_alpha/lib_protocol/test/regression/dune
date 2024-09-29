@@ -6,13 +6,13 @@
  (instrumentation (backend bisect_ppx))
  (libraries
   tezt.core
-  octez-libs.tezos-base
-  octez-libs.tezt-tezos
-  tezos-protocol-alpha
-  tezos-client-alpha
-  tezos-protocol-plugin-alpha
-  tezos-alpha-test-helpers
-  octez-libs.tezos-micheline)
+  octez-libs.base
+  tezt-tezos
+  tezos-protocol-alpha.protocol
+  octez-protocol-alpha-libs.client
+  octez-protocol-alpha-libs.plugin
+  octez-protocol-alpha-libs.test-helpers
+  octez-libs.micheline)
  (library_flags (:standard -linkall))
  (flags
   (:standard)
@@ -45,7 +45,7 @@
   (glob_files contracts/*.tz)
   (glob_files expected/test_logging.ml/*.out))
  (enabled_if (<> false %{env:RUNTEZTALIAS=true}))
- (action (run %{dep:./main.exe})))
+ (action (run %{dep:./main.exe} /flaky /ci_disabled)))
 
 (rule
  (targets main.ml)

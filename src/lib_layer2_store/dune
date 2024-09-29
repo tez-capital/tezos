@@ -3,17 +3,23 @@
 
 (library
  (name tezos_layer2_store)
- (package tezos-layer2-store)
+ (public_name octez-l2-libs.layer2_store)
  (instrumentation (backend bisect_ppx))
  (libraries
   index
-  octez-libs.tezos-base
-  irmin-pack
-  irmin-pack.unix
-  irmin
+  octez-libs.base
+  octez-internal-libs.irmin_pack
+  octez-internal-libs.irmin_pack.unix
+  octez-internal-libs.irmin
   aches-lwt
-  octez-libs.tezos-stdlib-unix
-  octez-libs.tezos-context.encoding)
+  octez-libs.stdlib-unix
+  octez-libs.tezos-context.encoding
+  octez-libs.context.sigs
+  octez-libs.tezos-context.helpers
+  octez-riscv-pvm
+  camlzip
+  tar
+  tar-unix)
  (library_flags (:standard -linkall))
  (flags
   (:standard)

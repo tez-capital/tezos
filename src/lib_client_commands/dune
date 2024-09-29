@@ -3,20 +3,20 @@
 
 (library
  (name tezos_client_commands)
- (public_name tezos-client-commands)
+ (public_name octez-shell-libs.client-commands)
  (instrumentation (backend bisect_ppx))
  (libraries
-  octez-libs.tezos-base
-  octez-libs.tezos-rpc
-  tezos-clic
-  tezos-clic.unix
-  tezos-client-base
-  octez-libs.tezos-shell-services
+  octez-libs.base
+  octez-libs.rpc
+  octez-libs.clic
+  octez-libs.clic.unix
+  octez-shell-libs.client-base
+  octez-shell-libs.shell-services
   octez-libs.tezos-p2p-services
-  octez-libs.tezos-stdlib-unix
-  octez-libs.tezos-base.unix
-  tezos-signer-backends
-  data-encoding
+  octez-libs.stdlib-unix
+  octez-libs.base.unix
+  octez-shell-libs.signer-backends
+  octez-libs.data-encoding
   uri)
  (library_flags (:standard -linkall))
  (flags

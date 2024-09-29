@@ -23,6 +23,8 @@
 (*                                                                           *)
 (*****************************************************************************)
 
+type error += Undetermined_issuance_coeff_for_cycle of Cycle_repr.t
+
 (** [set_adaptive_issuance_enable ctxt] sets the feature flag in the
    in-memory part of the context if the adaptive issuance feature has
    already launched. This means that the activation vote resulted in
@@ -36,7 +38,7 @@ val load_reward_coeff : Raw_context.t -> Raw_context.t tzresult Lwt.t
 
 (** [update_stored_rewards_at_cycle_end ctxt ~new_cycle] updates
     {!Storage.Issuance_coeff} with a new coefficient that will be applied
-    [preserved_cycles] cycles after the given [new_cycle]. This new coefficient
+    [consensus_rights_delay] cycles after the given [new_cycle]. This new coefficient
     depends on the current {!Storage.Total_supply}, and the total active stake
     for when this coefficient is computed.
 
@@ -47,7 +49,7 @@ val update_stored_rewards_at_cycle_end :
   Raw_context.t -> new_cycle:Cycle_repr.t -> Raw_context.t tzresult Lwt.t
 
 (** [init ctxt] adds into the context an adaptive issuance vote EMA
-    at 0, and and adaptive issuance launch cycle at None. *)
+    at 0, and adaptive issuance launch cycle at None. *)
 val init : Raw_context.t -> Raw_context.t tzresult Lwt.t
 
 (** [update_ema ctxt ~vote] returns the new context with the new EMA *)
@@ -72,11 +74,65 @@ module For_RPC : sig
       from the storage.
 
       Fails if the given cycle is not between [current_cycle] and
-      [current_cycle + preserved_cycles].
+      [current_cycle + consensus_rights_delay].
 
       If adaptive issuance has not been activated,
       then this function returns [Q.one].
       Used only for RPCs. To get the actual rewards, use [Delegate_rewards]. *)
   val get_reward_coeff :
     Raw_context.t -> cycle:Cycle_repr.t -> Q.t tzresult Lwt.t
+
+  (** [get_reward_bonus ctxt cycle] reads the reward bonus for the given cycle
+      from the storage. If [cycle] is [None], returns 0.
+
+      Returns 0 if the given cycle is not between [current_cycle] and
+      [current_cycle + consensus_rights_delay].
+
+      If adaptive issuance has not been activated,
+      then this function returns 0.
+      Used only for RPCs. To get the actual rewards, use [Delegate_rewards]. *)
+  val get_reward_bonus :
+    Raw_context.t ->
+    cycle:Cycle_repr.t option ->
+    Issuance_bonus_repr.t tzresult Lwt.t
+end
+
+module Internal_for_tests : sig
+  (** Reward computation functions *)
+  val compute_reward_coeff_ratio_without_bonus :
+    stake_ratio:Q.t -> issuance_ratio_max:Q.t -> issuance_ratio_min:Q.t -> Q.t
+
+  val compute_bonus :
+    issuance_ratio_max:Q.t ->
+    seconds_per_cycle:int64 ->
+    stake_ratio:Q.t ->
+    base_reward_coeff_ratio:Q.t ->
+    previous_bonus:Issuance_bonus_repr.t ->
+    reward_params:Constants_parametric_repr.adaptive_rewards_params ->
+    Issuance_bonus_repr.t tzresult
+
+  val compute_coeff :
+    issuance_ratio_max:Q.t ->
+    issuance_ratio_min:Q.t ->
+    base_total_issued_per_minute:Tez_repr.t ->
+    base_reward_coeff_ratio:Q.t ->
+    q_total_supply:Q.t ->
+    bonus:Issuance_bonus_repr.t ->
+    Q.t
+
+  val compute_min :
+    reward_params:Constants_parametric_repr.adaptive_rewards_params ->
+    launch_cycle:Cycle_repr.t option ->
+    new_cycle:Cycle_repr.t ->
+    Q.t
+
+  val dyn_max : stake_ratio:Q.t -> Q.t
+
+  val compute_max :
+    issuance_ratio_min:Q.t ->
+    reward_params:Constants_parametric_repr.adaptive_rewards_params ->
+    launch_cycle:Cycle_repr.t option ->
+    new_cycle:Cycle_repr.t ->
+    stake_ratio:Q.t ->
+    Q.t
 end

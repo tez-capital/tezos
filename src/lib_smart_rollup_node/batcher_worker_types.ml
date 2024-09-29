@@ -25,8 +25,12 @@
 
 module Request = struct
   type ('a, 'b) t =
-    | Register : string list -> (L2_message.hash list, error trace) t
-    | New_head : Layer1.head -> (unit, error trace) t
+    | Register : {
+        messages : string list;
+        drop_duplicate : bool;
+      }
+        -> (L2_message.id list, error trace) t
+    | Produce_batches : (unit, error trace) t
 
   type view = View : _ t -> view
 
@@ -39,31 +43,34 @@ module Request = struct
         case
           (Tag 0)
           ~title:"Register"
-          (obj2
+          (obj3
              (req "request" (constant "register"))
-             (req "messages" (list L2_message.content_encoding)))
+             (req "messages" (list L2_message.content_encoding))
+             (req "drop_duplicate" bool))
           (function
-            | View (Register messages) -> Some ((), messages) | _ -> None)
-          (fun ((), messages) -> View (Register messages));
+            | View (Register {messages; drop_duplicate}) ->
+                Some ((), messages, drop_duplicate)
+            | _ -> None)
+          (fun ((), messages, drop_duplicate) ->
+            View (Register {messages; drop_duplicate}));
         case
           (Tag 1)
-          ~title:"New_head"
-          (obj2
-             (req "request" (constant "new_head"))
-             (req "block" Layer1.head_encoding))
-          (function View (New_head b) -> Some ((), b) | _ -> None)
-          (fun ((), b) -> View (New_head b));
+          ~title:"Produce_batches"
+          (obj1 (req "request" (constant "produce_batches")))
+          (function View Produce_batches -> Some () | _ -> None)
+          (fun () -> View Produce_batches);
       ]
 
   let pp ppf (View r) =
     match r with
-    | Register messages ->
-        Format.fprintf ppf "register %d new L2 message" (List.length messages)
-    | New_head {Layer1.hash; level} ->
+    | Register {messages; drop_duplicate} ->
         Format.fprintf
           ppf
-          "switching to new L1 head %a at level %ld"
-          Block_hash.pp
-          hash
-          level
+          "register %d new L2 message%a"
+          (List.length messages)
+          (fun fmt () ->
+            if drop_duplicate then Format.pp_print_string fmt ""
+            else Format.fprintf fmt ", checking if message was already injected")
+          ()
+    | Produce_batches -> Format.fprintf ppf "Producing messages batches."
 end

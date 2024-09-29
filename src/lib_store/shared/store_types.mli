@@ -25,6 +25,61 @@
 
 (** {1 Global types used in the store library} *)
 
+module Block_store_status : sig
+  (** The type used to describe the status of the store. *)
+  type t
+
+  (* Setters *)
+
+  val set_idle_status : t Stored_data.t -> unit tzresult Lwt.t
+
+  val set_merge_status : t Stored_data.t -> unit tzresult Lwt.t
+
+  (* Status querying *)
+
+  val is_idle : t -> bool
+
+  val is_merging : t -> bool
+
+  val get_status_value : t -> int
+
+  (* Initialisers *)
+
+  val create_idle_status : t
+
+  (* Equality function *)
+  val equal : t -> t -> bool
+
+  (* Encoding *)
+  val encoding : t Data_encoding.t
+
+  (* Printing *)
+
+  val pp : Format.formatter -> t -> unit
+
+  module Legacy : sig
+    type t
+
+    val set_idle_status : t Stored_data.t -> unit tzresult Lwt.t
+
+    val set_merge_status : t Stored_data.t -> unit tzresult Lwt.t
+
+    val is_idle : t -> bool
+
+    val is_merging : t -> bool
+
+    val create_idle_status : t
+
+    val equal : t -> t -> bool
+
+    val encoding : t Data_encoding.t
+
+    val pp : Format.formatter -> t -> unit
+  end
+
+  val of_legacy : Legacy.t Stored_data.t -> t tzresult Lwt.t
+end
+
 (** The type used to describe a block pointer i.e. its hash and level. *)
 type block_descriptor = Block_hash.t * int32
 
@@ -127,3 +182,10 @@ module Protocol_levels : sig
     val encoding : activation_block t Data_encoding.t
   end
 end
+
+type metadata_stat = {
+  block_metadata_size : Int64.t;
+  operation_metadata_arity : int list;
+  operation_metadata_size : Int64.t;
+  too_large_operation_metadata_count : Int64.t;
+}

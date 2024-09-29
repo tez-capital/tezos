@@ -34,10 +34,8 @@ module Event = struct
       ~name:"block_validation_start"
       ~msg:"replaying block {alias}{hash} ({level})"
       ~level:Notice
-      ~pp1:
-        (fun fmt -> function
-          | None -> ()
-          | Some alias -> Format.fprintf fmt "%s: " alias)
+      ~pp1:(fun fmt -> function
+        | None -> () | Some alias -> Format.fprintf fmt "%s: " alias)
       ("alias", Data_encoding.(option string))
       ~pp2:Block_hash.pp
       ("hash", Block_hash.encoding)
@@ -299,11 +297,9 @@ let replay_one_block strict main_chain_store validator_process block =
         (not (Bytes.equal expected_block_receipt_bytes block_metadata_bytes))
         (fun () ->
           let to_json block =
-            Data_encoding.Json.construct
-              Proto.block_header_metadata_encoding_with_legacy_attestation_name
+            Data_encoding.Json.construct Proto.block_header_metadata_encoding
             @@ Data_encoding.Binary.of_bytes_exn
-                 Proto
-                 .block_header_metadata_encoding_with_legacy_attestation_name
+                 Proto.block_header_metadata_encoding
                  block
           in
           let exp = to_json expected_block_receipt_bytes in
@@ -341,16 +337,11 @@ let replay_one_block strict main_chain_store validator_process block =
           in
           let to_json metadata_bytes =
             Data_encoding.Json.construct
-              Proto
-              .operation_data_and_receipt_encoding_with_legacy_attestation_name
+              Proto.operation_data_and_receipt_encoding
               Data_encoding.Binary.
-                ( of_bytes_exn
-                    Proto.operation_data_encoding_with_legacy_attestation_name
-                    op,
-                  of_bytes_exn
-                    Proto
-                    .operation_receipt_encoding_with_legacy_attestation_name
-                    metadata_bytes )
+                ( of_bytes_exn Proto.operation_data_encoding op,
+                  of_bytes_exn Proto.operation_receipt_encoding metadata_bytes
+                )
           in
           let exp_json_opt, got_json_opt =
             match (exp_m, got_m) with
@@ -410,24 +401,31 @@ let replay ~internal_events ~singleprocess ~strict
       in
       let main_chain_store = Store.main_chain_store store in
       let* validator_process =
-        Block_validator_process.init validator_env (Internal main_chain_store)
+        Block_validator_process.init
+          (Internal (validator_env, main_chain_store))
       in
       return (validator_process, store)
     else
       let* validator_process =
         Block_validator_process.init
-          validator_env
           (External
              {
-               data_dir = config.data_dir;
-               readonly;
-               genesis;
-               context_root;
-               protocol_root;
+               parameters =
+                 {
+                   data_dir = config.data_dir;
+                   readonly;
+                   genesis;
+                   context_root;
+                   protocol_root;
+                   sandbox_parameters = None;
+                   user_activated_upgrades =
+                     config.blockchain_network.user_activated_upgrades;
+                   user_activated_protocol_overrides =
+                     config.blockchain_network.user_activated_protocol_overrides;
+                   operation_metadata_size_limit;
+                   internal_events;
+                 };
                process_path = Sys.executable_name;
-               sandbox_parameters = None;
-               dal_config = config.blockchain_network.dal_config;
-               internal_events;
              })
       in
       let commit_genesis =
@@ -479,9 +477,9 @@ let run ?verbosity ~singleprocess ~strict ~operation_metadata_size_limit
       config.blockchain_network.genesis
       config.data_dir
   in
-  Lwt_lock_file.try_with_lock
-    ~when_locked:(fun () ->
-      failwith "Data directory is locked by another process")
+  Lwt_lock_file.with_lock
+    ~when_locked:
+      (`Fail (Exn (Failure "Data directory is locked by another process")))
     ~filename:(Data_version.lock_file config.data_dir)
   @@ fun () ->
   (* Main loop *)
@@ -494,6 +492,22 @@ let run ?verbosity ~singleprocess ~strict ~operation_metadata_size_limit
   let*! () =
     Tezos_base_unix.Internal_event_unix.init ~config:internal_events ()
   in
+  (match Option.map String.lowercase_ascii @@ Sys.getenv_opt "PROFILING" with
+  | Some (("true" | "on" | "yes" | "terse" | "detailed" | "verbose") as mode) ->
+      let max_lod =
+        match mode with
+        | "detailed" -> Profiler.Detailed
+        | "verbose" -> Profiler.Verbose
+        | _ -> Profiler.Terse
+      in
+      let instance =
+        Profiler.instance
+          Tezos_base_unix.Simple_profiler.auto_write_to_txt_file
+          Filename.Infix.(config.data_dir // "/node_profiling.txt", max_lod)
+      in
+      Tezos_base.Profiler.(plug main) instance ;
+      Tezos_protocol_environment.Environment_profiler.plug instance
+  | _ -> ()) ;
   Updater.init (Data_version.protocol_dir config.data_dir) ;
   Lwt_exit.(
     wrap_and_exit
@@ -550,6 +564,7 @@ let process verbosity singleprocess strict blocks data_dir config_file
       config
       blocks
   in
+  Lwt.Exception_filter.(set handle_all_except_runtime) ;
   match Lwt_main.run run with
   | Ok () -> `Ok ()
   | Error err -> `Error (false, Format.asprintf "%a" pp_print_trace err)

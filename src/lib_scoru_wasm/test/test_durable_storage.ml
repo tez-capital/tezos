@@ -79,7 +79,7 @@ let assert_invalid_key run =
       match caught_exn with
       | Durable.Invalid_key _ -> Lwt.return_ok ()
       | Host_funcs.Key_too_large _ -> Lwt.return_ok ()
-      | x -> raise x)
+      | x -> Lwt.reraise x)
 
 (* Test checking that if [key] is too large, [store_has key] traps. *)
 let test_store_has_key_too_long ~version () =
@@ -321,14 +321,14 @@ let test_v1_and_above ~version test =
   | Wasm_pvm_state.V0 ->
       (* the host function is not available before [V1]. *)
       Lwt.return_ok ()
-  | V1 | V2 | V3 -> test ~version
+  | V1 | V2 | V3 | V4 | V5 | V6 -> test ~version
 
 let test_v2_and_above ~version test =
   match version with
   | Wasm_pvm_state.V0 | V1 ->
       (* the host function is not available before [V1]. *)
       Lwt.return_ok ()
-  | V2 | V3 -> test ~version
+  | V2 | V3 | V4 | V5 | V6 -> test ~version
 
 let test_store_get_hash ~version =
   let open Lwt_syntax in

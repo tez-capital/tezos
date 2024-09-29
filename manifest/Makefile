@@ -1,7 +1,21 @@
 # To be able to bootstrap this, we don't use any tool to build (not dune in particular).
 # This allows to run this before make build-deps as long as OCaml is installed.
 
-SOURCE=JSON_AST.ml JSON_parser.mli JSON_parser.ml JSON_lexer.ml tezos_protocol.ml manifest.mli manifest.ml main.mli main.ml
+SOURCE=JSON_AST.ml JSON_parser.mli JSON_parser.ml JSON_lexer.ml tezos_protocol.ml \
+       manifest.mli manifest.ml \
+       externals.ml \
+       internals.ml \
+       product_data_encoding.mli product_data_encoding.ml \
+       product_cohttp.mli product_cohttp.ml \
+       product_prometheus.mli product_prometheus.ml \
+       product_resto.mli product_resto.ml \
+       product_octez.mli product_octez.ml \
+       product_client_libs.mli product_client_libs.ml \
+       product_tooling.mli product_tooling.ml \
+       product_etherlink.ml \
+       product_teztale.ml \
+       product_ciao.ml \
+       main.mli main.ml
 
 .PHONY: all
 all: manifest

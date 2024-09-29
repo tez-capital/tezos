@@ -34,8 +34,19 @@ type t =
       refutation : Game.refutation;
     }
   | Timeout of {rollup : Address.t; stakers : Game.index}
+  | Recover_bond of {rollup : Address.t; staker : Signature.Public_key_hash.t}
+      (** Encoding for L1 operations (used by injector for on-disk persistence). *)
+  | Execute_outbox_message of {
+      rollup : Address.t;
+      cemented_commitment : Commitment.Hash.t;
+      output_proof : string;
+    }
+  | Publish_dal_commitment of {
+      slot_index : Dal.Slot_index.t;
+      commitment : Dal.Commitment.t;
+      commitment_proof : Dal.Commitment_proof.t;
+    }
 
-(** Encoding for L1 operations (used by injector for on-disk persistence). *)
 val encoding : t Data_encoding.t
 
 (** Pretty printer (human readable) for L1 operations. *)

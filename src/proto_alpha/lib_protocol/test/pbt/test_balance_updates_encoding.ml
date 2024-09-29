@@ -46,19 +46,31 @@ let default_contract =
 
 let contract = Receipt_repr.Contract default_contract
 
-let staker =
+let unstaked_frozen_staker =
   let open Gen in
   oneofl
     [
-      Receipt_repr.Shared default_delegate;
-      Receipt_repr.Single
+      Unstaked_frozen_staker_repr.Shared default_delegate;
+      Unstaked_frozen_staker_repr.Single
         (Contract_repr.Implicit default_delegate, default_delegate);
-      Receipt_repr.Single (default_contract, default_delegate);
+      Unstaked_frozen_staker_repr.Single (default_contract, default_delegate);
+    ]
+
+let frozen_staker =
+  let open Gen in
+  oneofl
+    [
+      Frozen_staker_repr.shared_between_stakers ~delegate:default_delegate;
+      Frozen_staker_repr.baker default_delegate;
+      Frozen_staker_repr.single_staker
+        ~staker:default_contract
+        ~delegate:default_delegate;
+      Frozen_staker_repr.baker_edge default_delegate;
     ]
 
 let deposits =
   let open Gen in
-  let+ staker in
+  let+ staker = frozen_staker in
   Receipt_repr.Deposits staker
 
 let lost_attesting_rewards =
@@ -67,7 +79,7 @@ let lost_attesting_rewards =
 
 let unstaked_deposits =
   let open Gen in
-  let+ staker in
+  let+ staker = unstaked_frozen_staker in
   Receipt_repr.Unstaked_deposits (staker, Cycle_repr.root)
 
 let commitments = Receipt_repr.Commitments Blinded_public_key_hash.zero
@@ -123,7 +135,13 @@ let generate_update_origin =
 
 let generate_balance_updates : Receipt_repr.balance_updates Gen.t =
   Gen.list
-    (Gen.tup3 generate_balance generate_balance_update generate_update_origin)
+    (Gen.map
+       (fun (balance, balance_update, update_origin) ->
+         Receipt_repr.item balance balance_update update_origin)
+       (Gen.tup3
+          generate_balance
+          generate_balance_update
+          generate_update_origin))
 
 (** {2 Tests} *)
 let eq balance_updates1 balance_updates2 =
@@ -131,13 +149,20 @@ let eq balance_updates1 balance_updates2 =
   let res =
     List.for_all2
       ~when_different_lengths:()
-      (fun (b1, bu1, uo1) (b2, bu2, uo2) ->
-        compare b1 b2 = 0
-        && (match (bu1, bu2) with
-           | Debited tz1, Debited tz2 | Credited tz1, Credited tz2 ->
-               Tez_repr.equal tz1 tz2
-           | Debited tz1, Credited tz2 | Credited tz1, Debited tz2 ->
-               Tez_repr.(equal tz1 zero) && Tez_repr.(equal tz2 zero))
+      (fun (Balance_update_item (b1, bu1, uo1))
+           (Balance_update_item (b2, bu2, uo2)) ->
+        (let token1 = token_of_balance b1 in
+         let token2 = token_of_balance b2 in
+         match Token.eq token1 token2 with
+         | None -> false
+         | Some Refl -> (
+             compare b1 b2 = 0
+             &&
+             match (bu1, bu2) with
+             | Debited tz1, Debited tz2 | Credited tz1, Credited tz2 ->
+                 Token.equal token1 tz1 tz2
+             | Debited tz1, Credited tz2 | Credited tz1, Debited tz2 ->
+                 Token.is_zero token1 tz1 && Token.is_zero token1 tz2))
         && compare_update_origin uo1 uo2 = 0)
       balance_updates1
       balance_updates2
@@ -148,16 +173,6 @@ let test_balance_updates encoding =
   let gen = generate_balance_updates in
   test_roundtrip ~count:2000 ~title:"Balance_updates" ~gen ~eq encoding
 
-let test_binary_balance_updates encoding1 encoding2 =
-  let gen = generate_balance_updates in
-  test_roundtrip_through_binary
-    ~count:2000
-    ~title:"Balance_updates"
-    ~gen
-    ~eq
-    encoding1
-    encoding2
-
 let () =
   let qcheck_wrap = qcheck_wrap ~rand:(Random.State.make_self_init ()) in
   Alcotest.run
@@ -167,17 +182,4 @@ let () =
       ( "roundtrip",
         qcheck_wrap [test_balance_updates Receipt_repr.balance_updates_encoding]
       );
-      ( "legacy : roundtrip",
-        qcheck_wrap
-          [
-            test_balance_updates
-              Receipt_repr.balance_updates_encoding_with_legacy_attestation_name;
-          ] );
-      ( "roundtrip 2 encodings",
-        qcheck_wrap
-          [
-            test_binary_balance_updates
-              Receipt_repr.balance_updates_encoding
-              Receipt_repr.balance_updates_encoding_with_legacy_attestation_name;
-          ] );
     ]
