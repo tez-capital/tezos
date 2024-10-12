@@ -150,7 +150,7 @@ let compute_min
     ~initial:issuance_ratio_initial_min
     ~final:issuance_ratio_final_min
 
-let dyn_max ~stake_ratio =
+(* let dyn_max ~stake_ratio =
   let r =
     if Compare.Q.(stake_ratio <= Q.(5 // 100)) then Q.(10 // 100)
     else if Compare.Q.(stake_ratio >= Q.(50 // 100)) then Q.(1 // 100)
@@ -166,11 +166,11 @@ let dyn_max ~stake_ratio =
   in
   if Compare.Q.(r <= Q.(1 // 100)) then Q.(1 // 100)
   else if Compare.Q.(r >= Q.(10 // 100)) then Q.(10 // 100)
-  else r
+  else r *)
 
 let compute_max ~issuance_ratio_min
     ~(reward_params : Constants_parametric_repr.adaptive_rewards_params)
-    ~launch_cycle ~new_cycle ~stake_ratio =
+    ~launch_cycle ~new_cycle (* ~stake_ratio *) =
   let Constants_parametric_repr.
         {
           initial_period;
@@ -190,10 +190,11 @@ let compute_max ~issuance_ratio_min
       ~launch_cycle
       ~new_cycle
   in
-  let dyn_max = dyn_max ~stake_ratio in
-  let true_max = Compare.Q.min max_max dyn_max in
+  (* let dyn_max = dyn_max ~stake_ratio in
+  let true_max = Compare.Q.min max_max dyn_max in *)
   (* If max < min, we set the max to the min *)
-  Compare.Q.max true_max issuance_ratio_min
+  (* Compare.Q.max true_max issuance_ratio_min *)
+  Compare.Q.max max_max issuance_ratio_min
 
 let compute_reward_coeff_ratio_without_bonus =
   let q_1600 = Q.of_int 1600 in
@@ -230,7 +231,7 @@ let compute_bonus ~issuance_ratio_max ~seconds_per_cycle ~stake_ratio
   let max_new_bonus =
     Compare.Q.min base_reward_coeff_dist_to_max (max_bonus :> Q.t)
   in
-  (* [dist] is the distance from [stake_ratio] to [48%,52%] *)
+  (* [dist] is the distance from [stake_ratio] to 40%,44%] *)
   let unsigned_dist =
     Q.(max zero (abs (stake_ratio - center_dz) - radius_dz))
   in
@@ -311,7 +312,7 @@ let compute_and_store_reward_coeff_at_cycle_end ctxt ~new_cycle =
     let issuance_ratio_max =
       compute_max
         ~issuance_ratio_min
-        ~stake_ratio
+        (* ~stake_ratio *)
         ~launch_cycle
         ~new_cycle
         ~reward_params
@@ -440,7 +441,7 @@ module Internal_for_tests = struct
 
   let compute_min = compute_min
 
-  let dyn_max = dyn_max
+  (* let dyn_max = dyn_max *)
 
   let compute_max = compute_max
 end
