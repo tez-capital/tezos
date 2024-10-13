@@ -1,0 +1,38 @@
+name: test & build docs 
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup env
+        run: |
+          apt update && apt install -y rsync git m4 build-essential patch unzip wget opam zip jq bc \
+            autoconf cmake libev-dev libffi-dev libgmp-dev libhidapi-dev libpq-dev libsqlite3-dev pkg-config zlib1g-dev && \
+            apt clean
+          wget https://sh.rustup.rs/rustup-init.sh && \
+            chmod +x rustup-init.sh && \
+            ./rustup-init.sh --profile minimal --default-toolchain 1.78.0 -y
+
+      - name: Build
+        run: |
+          . $HOME/.cargo/env && \
+          opam init --bare -y && \
+          make build-deps && \
+          eval $(opam env) && \
+          make
+          mv octez-accuser-PsQuebec octez-accuser-PsQena42
+          mv octez-baker-PsQuebec octez-baker-PsQena42
+          zip octez-all.zip octez-*
+          
+      - name: Upload files to a GitHub release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          file_glob: true
+          tag: ${{ github.ref }}
+          file: bin/octez-*
