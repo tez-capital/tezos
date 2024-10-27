@@ -17,7 +17,8 @@ jobs:
       - name: Setup env
         run: |
           sudo apt update && sudo apt install -y rsync git m4 build-essential patch unzip wget opam zip jq bc \
-            autoconf cmake libev-dev libffi-dev libgmp-dev libhidapi-dev libpq-dev libsqlite3-dev pkg-config zlib1g-dev && \
+            autoconf cmake libev-dev libffi-dev libgmp-dev libhidapi-dev libpq-dev libsqlite3-dev pkg-config zlib1g-dev \
+            libusb-1.0-0-dev libusb-dev libudev-dev && \
             sudo apt clean
           wget https://sh.rustup.rs/rustup-init.sh && \
             chmod +x rustup-init.sh && \
