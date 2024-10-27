@@ -28,7 +28,9 @@ jobs:
         with:
           file: ./containers/tezos/Dockerfile
           platforms: linux/amd64
-          build-args: GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} ARCH=x64
+          build-args: |
+            GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+            ARCH=x64
           tags: ghcr.io/tez-capital/tezos:latest
           push: true
           provenance: false
@@ -38,7 +40,9 @@ jobs:
         with:
           file: ./containers/tezos/Dockerfile
           platforms: linux/arm64
-          build-args: GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} ARCH=arm64
+          build-args: |
+            GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+            ARCH=arm64
           tags: ghcr.io/tez-capital/tezos:latest
           push: true
           provenance: false
