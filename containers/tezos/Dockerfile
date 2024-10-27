@@ -10,7 +10,7 @@ ENV TEZOS_USER=tezos \
     REPO_API=https://api.github.com/repos/tez-capital/tezos/releases/latest
 
 RUN apt-get update && apt-get install -y \
-    curl jq install libhidapi-libusb0 libsqlite3-0 libgmpxx4ldbl libpq5 libev4 \
+    curl jq libhidapi-libusb0 libsqlite3-0 libgmpxx4ldbl libpq5 libev4 \
     unzip \
     && rm -rf /var/lib/apt/lists/* && \
     apt-get clean
