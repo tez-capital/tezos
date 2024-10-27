@@ -10,9 +10,10 @@ ENV TEZOS_USER=tezos \
     REPO_API=https://api.github.com/repos/tez-capital/tezos/releases/latest
 
 RUN apt-get update && apt-get install -y \
-    curl jq \
+    curl jq install libhidapi-libusb0 libsqlite3-0 libgmpxx4ldbl libpq5 libev4 \
     unzip \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* && \
+    apt-get clean
 
 RUN useradd -m -d ${TEZOS_HOME} -s /bin/bash ${TEZOS_USER}
 
@@ -35,6 +36,11 @@ RUN if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
 
 USER ${TEZOS_USER}
 WORKDIR ${TEZOS_HOME}
+
+RUN curl -o fetch-params.sh https://raw.githubusercontent.com/zcash/zcash/713fc761dd9cf4c9087c37b078bdeab98697bad2/zcutil/fetch-params.sh && \
+    chmod +x fetch-params.sh && \
+    ./fetch-params.sh && \
+    rm fetch-params.sh
 
 COPY ./scripts/ ${TEZOS_SHARE}/
 
