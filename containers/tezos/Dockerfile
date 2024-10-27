@@ -33,7 +33,7 @@ RUN if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
     curl -L -o octez.zip ${DOWNLOAD_URL} && \
     unzip octez.zip -d ${TEZOS_BIN} && \
     rm octez.zip
-RUN "http		80/tcp		www		# WorldWideWeb HTTP" > /etc/services
+RUN echo "http		80/tcp		www		# WorldWideWeb HTTP" > /etc/services
 
 USER ${TEZOS_USER}
 WORKDIR ${TEZOS_HOME}
