@@ -1,4 +1,4 @@
-name: test & build docs 
+name: release
 
 on:
   release:
@@ -29,7 +29,7 @@ jobs:
           opam init --bare -y && \
           make build-deps && \
           eval $(opam env) && \
-          make
+          make static
           mv octez-accuser-PsQuebec octez-accuser-PsQena42
           mv octez-baker-PsQuebec octez-baker-PsQena42
           zip octez-all-${{ matrix.architecture }}.zip octez-*
