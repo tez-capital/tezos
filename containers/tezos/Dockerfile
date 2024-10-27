@@ -1,5 +1,6 @@
 FROM docker.io/ubuntu:jammy
 
+ARG TARGETPLATFORM
 ARG ARCH
 
 ENV TEZOS_USER=tezos \
@@ -18,7 +19,14 @@ RUN useradd -m -d ${TEZOS_HOME} -s /bin/bash ${TEZOS_USER}
 COPY scripts/docker/entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-RUN LATEST_TAG=$(curl -s ${REPO_API} | jq -r .tag_name) && \
+RUN if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
+        ARCH="x64"; \
+    elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then \
+        ARCH="arm64"; \
+    else \
+        echo "Unsupported platform: ${TARGETPLATFORM}"; exit 1; \
+    fi && \
+    LATEST_TAG=$(curl -s ${REPO_API} | jq -r .tag_name) && \
     DOWNLOAD_URL="https://github.com/tez-capital/tezos/releases/download/${LATEST_TAG}/octez-all-${ARCH}.zip" && \
     echo "Downloading ${DOWNLOAD_URL}" && \
     curl -L -o octez.zip ${DOWNLOAD_URL} && \
