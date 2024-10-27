@@ -26,7 +26,7 @@ jobs:
       - name: tezwatch container
         uses: docker/build-push-action@v4
         with:
-          file: ./containers/tezos/Containerfile
+          file: ./containers/tezos/Dockerfile
           platforms: linux/amd64
           build-args: GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} ARCH=x64
           tags: ghcr.io/tez-capital/tezos:latest
@@ -36,7 +36,7 @@ jobs:
       - name: tezwatch container
         uses: docker/build-push-action@v4
         with:
-          file: ./containers/tezos/Containerfile
+          file: ./containers/tezos/Dockerfile
           platforms: linux/arm64
           build-args: GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} ARCH=arm64
           tags: ghcr.io/tez-capital/tezos:latest
