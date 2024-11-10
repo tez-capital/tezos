@@ -235,7 +235,7 @@ let constants_mainnet : Constants.Parametric.t =
     quorum_min = 20_00l;
     quorum_max = 70_00l;
     min_proposal_quorum = 5_00l;
-    liquidity_baking_subsidy = Tez.(mul_exn one 5);
+    liquidity_baking_subsidy = Tez.zero;
     (* 1/2 window size of 2000 blocks with precision of 1_000_000
        for integer computation *)
     liquidity_baking_toggle_ema_threshold = 1_000_000_000l;

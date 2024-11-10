@@ -23,6 +23,11 @@
 (*                                                                           *)
 (*****************************************************************************)
 
+(*****************************************************************************)
+(* Unto the people is the Tezos chain granted,                               *)
+(*                  that by their hand it be ruled and by their will guided. *)
+(*****************************************************************************)
+
 (* Tezos Protocol Implementation - Protocol Signature Instance *)
 
 type block_header_data = Alpha_context.Block_header.protocol_data
@@ -467,4 +472,4 @@ module Mempool = struct
          ~predecessor_hash:head_hash)
 end
 
-(* Vanity nonce: 1686978992224547 *)
+(* Vanity nonce: 6205810367454350 *)

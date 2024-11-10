@@ -1472,7 +1472,7 @@ let prepare_first_block ~level ~timestamp _chain_id ctxt =
               quorum_min = c.quorum_min;
               quorum_max = c.quorum_max;
               min_proposal_quorum = c.min_proposal_quorum;
-              liquidity_baking_subsidy = c.liquidity_baking_subsidy;
+              liquidity_baking_subsidy = Tez_repr.zero;
               liquidity_baking_toggle_ema_threshold =
                 c.liquidity_baking_toggle_ema_threshold;
               minimal_block_delay = c.minimal_block_delay;
