@@ -244,38 +244,15 @@ let () =
   in
   Assert.leq_int ~loc:__LOC__ total_computed max_expected
 
-(** Test that the amount of the liquidity baking subsidy is epsilon smaller than
-   1/16th of the maximum reward. *)
+(** Test that the amount of the liquidity baking subsidy is 0 of the maximum reward. *)
 let () =
   register_test
     ~title:
-      "liquidity_baking_subsidy parameter is 1/16th of total baking rewards"
+      "liquidity_baking_subsidy parameter is 0"
   @@ fun () ->
   let open Lwt_result_wrap_syntax in
   let constants = Default_parameters.constants_mainnet in
-  let get_reward =
-    Protocol.Alpha_context.Delegate.Rewards.For_RPC.reward_from_constants
-      constants
-  in
-  let*?@ baking_reward_bonus_per_slot =
-    get_reward ~reward_kind:Baking_reward_bonus_per_slot
-  in
-  let*? baking_reward_bonus =
-    baking_reward_bonus_per_slot
-    *? Int64.of_int (constants.consensus_committee_size / 3)
-  in
-  let*?@ baking_reward_fixed_portion =
-    get_reward ~reward_kind:Baking_reward_fixed_portion
-  in
-  let*? baking_rewards = baking_reward_fixed_portion +? baking_reward_bonus in
-  let*?@ attesting_reward_per_slot =
-    get_reward ~reward_kind:Attesting_reward_per_slot
-  in
-  let*? validators_rewards =
-    attesting_reward_per_slot *? Int64.of_int constants.consensus_committee_size
-  in
-  let*? total_rewards = baking_rewards +? validators_rewards in
-  let expected_subsidy = total_rewards /! 16L in
+  let expected_subsidy = Protocol.Alpha_context.Tez.zero in
   let*?@ liquidity_baking_subsidy =
     Protocol.Alpha_context.Delegate.Rewards.For_RPC
     .liquidity_baking_subsidy_from_constants
