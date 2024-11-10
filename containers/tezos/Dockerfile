@@ -90,6 +90,7 @@ COPY ./scripts/ /usr/local/share/tezos/
 
 RUN apk add --no-cache ca-certificates
 
+RUN adduser -D -h /home/tezos -s /bin/sh tezos
 RUN mv /usr/local/bin/octez-baker-PsQuebec /usr/local/bin/octez-baker-PsQ3NAxQ
 RUN mv /usr/local/bin/octez-accuser-PsQuebec /usr/local/bin/octez-accuser-PsQ3NAxQ
 
