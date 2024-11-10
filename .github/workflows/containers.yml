@@ -6,7 +6,11 @@ on:
 
 jobs:
   build-amd64:
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-22.04]   # Specify the OS to run on
+        architecture: [x64]  # Define the architectures you want to support
     steps:
       - uses: actions/checkout@v4
 
@@ -41,7 +45,11 @@ jobs:
           provenance: false
 
   build-arm64:
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-22.04]   # Specify the OS to run on
+        architecture: [arm64]  # Define the architectures you want to support
     steps:
       - uses: actions/checkout@v4
 
@@ -49,7 +57,7 @@ jobs:
         run: |
           rm -rf /opt/hostedtoolcache
           df -h
-          
+
       - name: Login to ghcr.io
         uses: docker/login-action@v2
         with:
