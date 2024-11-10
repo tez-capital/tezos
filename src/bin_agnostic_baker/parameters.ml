@@ -91,7 +91,7 @@ let protocol_info = function
     | "PtParisBxoLz5gzMmn3d9WBQNoPSZakgnkMC2VNuQ3KXfUtUQeZ" ) as full_hash ->
       (String.sub full_hash 0 8, Frozen)
   | ( "PsParisCZo7KAh1Z1smVd9ZMZ1HHn5gkzbM94V3PLCpknFWhUAi"
-    | "PsQuebecnLByd3JwTiGadoG4nGWi3HYiLXUjkibeFV8dCFeVMUg" ) as full_hash ->
+    | "PsQ3NAxQC3pXSizDrKEkPHsarkKD78T58X9CXBfYaiXAi2rsvsD" ) as full_hash ->
       (String.sub full_hash 0 8, Active)
   | "ProtoALphaALphaALphaALphaALphaALphaALphaALphaDdp3zK" -> ("alpha", Active)
   | _ -> (*We assume that unmatched protocols are beta ones*) ("beta", Active)
