@@ -16,7 +16,8 @@ ENV BLST_PORTABLE=true
 # We install sccache as a static binary because at the moment of writing
 # the package sccache is not available on ubuntu jammy
 #hadolint ignore=DL3008,DL3009
-RUN apk add bubblewrap eudev-dev libusb-dev \
+RUN apk add --no-cache openssl 
+RUN apk add --no-cache bubblewrap eudev-dev libusb-dev \
       rsync git m4 build-base cargo \
       patch unzip curl wget ca-certificates \
       opam jq bc sqlite-static \
