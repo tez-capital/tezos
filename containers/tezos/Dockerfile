@@ -88,7 +88,7 @@ COPY --from=builder /workspace/octez-* /usr/local/bin/
 COPY scripts/docker/entrypoint.sh /usr/local/bin/
 COPY ./scripts/ /usr/local/share/tezos/
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates curl
 
 RUN adduser -D -h /home/tezos -s /bin/sh tezos
 RUN mv /usr/local/bin/octez-baker-PsQuebec /usr/local/bin/octez-baker-PsQ3NAxQ
