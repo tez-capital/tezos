@@ -94,8 +94,8 @@ RUN adduser -D -h /home/tezos -s /bin/sh tezos
 RUN mv /usr/local/bin/octez-baker-PsQuebec /usr/local/bin/octez-baker-PsQ3NAxQ
 RUN mv /usr/local/bin/octez-accuser-PsQuebec /usr/local/bin/octez-accuser-PsQ3NAxQ
 
-RUN auth_wget https://raw.githubusercontent.com/zcash/zcash/713fc761dd9cf4c9087c37b078bdeab98697bad2/zcutil/fetch-params.sh \
-    -O /tmp/fetch-params.sh && sh /tmp/fetch-params.sh && \
+RUN curl -L https://raw.githubusercontent.com/zcash/zcash/713fc761dd9cf4c9087c37b078bdeab98697bad2/zcutil/fetch-params.sh \
+    -o /tmp/fetch-params.sh && sh /tmp/fetch-params.sh && \
     mv /root/.zcash-params /usr/local/share/zcash-params
 
 USER tezos
