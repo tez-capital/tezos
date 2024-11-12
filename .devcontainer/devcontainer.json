@@ -1,0 +1,28 @@
+{
+    "name": "OCaml Dune Dev Container",
+    "build": {
+        "dockerfile": "./Dockerfile",
+        "context": ".."
+    },
+    "workspaceFolder": "/workspace",
+    "forwardPorts": [
+        8080
+    ],
+    "mounts": [
+        "source=${localWorkspaceFolder},target=/workspace,type=bind"
+    ],
+    "remoteUser": "root",
+    "runArgs": [
+        "--privileged"
+    ],
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "terminal.integrated.shell.linux": "/bin/bash"
+            },
+            "extensions": [
+                "ocamllabs.ocaml-platform"
+            ]
+        }
+    }
+}
